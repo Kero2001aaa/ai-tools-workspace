@@ -17,7 +17,31 @@ fi
 # Chromium system libraries, and browser binary during Codespaces creation.
 if [ -f requirements-browser.txt ]; then
   uv pip install --python .venv/bin/python -r requirements-browser.txt
+
+  # The base Codespaces image may contain an outdated Yarn APT signing key.
+  # Temporarily disable only that third-party source while installing the
+  # official Debian packages required by Playwright, then restore it.
+  yarn_source="/etc/apt/sources.list.d/yarn.list"
+  yarn_disabled="${yarn_source}.codespace-disabled"
+  restore_yarn_source() {
+    if sudo test -f "$yarn_disabled"; then
+      sudo mv "$yarn_disabled" "$yarn_source"
+    fi
+  }
+
+  if sudo test -f "$yarn_source"; then
+    if sudo test -e "$yarn_disabled"; then
+      echo "Refusing to overwrite existing APT backup: $yarn_disabled" >&2
+      exit 1
+    fi
+    sudo mv "$yarn_source" "$yarn_disabled"
+    trap restore_yarn_source EXIT
+  fi
+
   sudo .venv/bin/python -m playwright install-deps chromium
+  restore_yarn_source
+  trap - EXIT
+
   .venv/bin/python -m playwright install chromium
 fi
 
