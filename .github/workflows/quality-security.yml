@@ -6,9 +6,16 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    # Weekly dependency, test, and MCP security checks (UTC).
+    - cron: "23 4 * * 3"
 
 permissions:
   contents: read
+
+concurrency:
+  group: quality-security-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-and-security:
