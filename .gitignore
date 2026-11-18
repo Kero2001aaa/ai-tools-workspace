@@ -11,3 +11,6 @@ __pycache__/
 node_modules/
 dist/
 build/
+
+# Local persistent memory database (never commit user memory)
+.data/
