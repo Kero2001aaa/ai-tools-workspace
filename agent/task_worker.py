@@ -1,7 +1,6 @@
 """Execute one queued workspace task from a strict allowlist."""
 import argparse
 import json
-import os
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
