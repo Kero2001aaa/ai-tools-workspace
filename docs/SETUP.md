@@ -1,43 +1,45 @@
 # Setup and operating guide
 
-## 1. Create the Codespace (one manual action)
+## 1. Create the Codespace
 
 1. Open https://github.com/Kero2001aaa/ai-tools-workspace
 2. Select **Code** → **Codespaces** → **Create codespace on main**.
-3. Wait for the container to finish its first setup. The bootstrap script installs the lightweight Python foundation.
-4. Open the terminal inside the browser-based VS Code if you need to run commands.
+3. Wait for the container setup to finish.
+4. Open the terminal inside the browser-based VS Code.
 
 The repository connection can prepare files and commits, but it cannot create or operate your Codespace session.
 
 ## 2. Verify the environment
 
-In the Codespaces terminal:
+The project uses Python 3.12 and a local virtual environment. In the Codespaces terminal run:
 
 ```bash
 python --version
-node --version
-docker --version
-python -c "import langgraph; import langchain_mcp_adapters; print('Core packages OK')"
+.venv/bin/python -c "import langgraph; import langchain_mcp_adapters; print('Core packages OK')"
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m agent "Research LangGraph"
 ```
+
+The test command should report four tests and `OK`.
 
 ## 3. Configure credentials safely
 
-- Open the `.env` file in the Codespace.
-- Add only the API keys for services you actually choose to use.
+- The bootstrap script creates a local `.env` file from `.env.example`.
+- Add only API keys for services you explicitly choose to use.
 - Never paste keys into chat, commit them to Git, or put them in source files.
-- Some hosted providers require paid plans or usage-based billing. Source code being open-source does not make those APIs free.
+- Some hosted providers require paid plans or usage-based billing. Open-source code does not make hosted APIs free.
 
 ## 4. Recommended build order
 
-1. **LangGraph** — agent workflow and orchestration.
-2. **MCP adapters / mcp-use** — connect compatible tools through MCP.
-3. **Mem0** — add persistent memory after choosing a storage backend.
-4. **Exa and Firecrawl** — optional research providers; configure keys only if needed.
-5. **LLMLingua** — optional token/prompt compression; evaluate resource requirements before installing.
-6. **MCP Scanner** — scan third-party MCP servers before enabling them.
+1. **LangGraph** — agent workflow and orchestration. The initial provider-free workflow is implemented and tested.
+2. **MCP adapters** — connect compatible tools through MCP, starting with a small, trusted local example.
+3. **Persistent memory** — choose a storage backend and retention policy before adding Mem0 or an alternative.
+4. **Research providers** — evaluate Exa and Firecrawl; configure keys only if needed.
+5. **Prompt compression** — evaluate LLMLingua only after measuring context and resource requirements.
+6. **MCP security scanning** — scan third-party servers before enabling them.
 7. **Browser automation** — add only after deciding which browser and authentication model to use.
 
-Do not install every repository blindly. Some components overlap, require separate services, consume significant memory, or need paid API credentials.
+Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
 
 ## 5. What this setup does not do
 
@@ -46,6 +48,6 @@ Do not install every repository blindly. Some components overlap, require separa
 - It does not provision paid cloud resources or API subscriptions.
 - It does not store credentials in GitHub.
 
-## 6. Shut down to avoid unnecessary compute use
+## 6. Control Codespaces costs
 
-When finished, use the Codespaces menu to stop the Codespace. Review your included monthly compute/storage quota and billing settings before leaving it running.
+Stop Codespaces when they are not in use. Check the Codespaces page for active instances and stop unused ones. Review your GitHub billing and included quota before leaving a Codespace running.
