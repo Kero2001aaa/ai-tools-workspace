@@ -1,0 +1,50 @@
+name: Workspace quality and security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Create environment and install project dependencies
+        run: |
+          uv venv .venv --python 3.12
+          uv pip install --python .venv/bin/python -r requirements.txt
+
+      - name: Run unit tests
+        run: .venv/bin/python -m unittest discover -s tests -v
+
+      - name: Export approved MCP tool inventory
+        run: .venv/bin/python -m scripts.export_mcp_tools --output .data/mcp-tools.json
+
+      - name: Scan MCP tool definitions
+        run: |
+          uvx --python 3.13 --from cisco-ai-mcp-scanner mcp-scanner \
+            --analyzers yara,schema --format detailed \
+            static --tools .data/mcp-tools.json
+
+      - name: Audit Python dependencies with OSV
+        run: |
+          uvx --python 3.13 --from cisco-ai-mcp-scanner mcp-scanner \
+            vulnerable-package requirements.txt \
+            --vulnerability-service osv --format detailed
