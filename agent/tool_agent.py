@@ -1,6 +1,7 @@
 """LangGraph agent that can call approved tools from the local MCP server."""
 import argparse
 import asyncio
+import sys
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -16,7 +17,7 @@ async def load_workspace_tools():
         {
             "workspace": {
                 "transport": "stdio",
-                "command": __import__("sys").executable,
+                "command": sys.executable,
                 "args": ["-m", "agent.mcp_server"],
             }
         }
