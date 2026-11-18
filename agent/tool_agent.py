@@ -1,6 +1,7 @@
 """LangGraph agent that can call approved local MCP tools."""
 import argparse
 import asyncio
+import os
 import sys
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -8,6 +9,7 @@ from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from agent.context_manager import compact_messages, estimate_tokens
 from agent.model import load_chat_model
 
 
@@ -33,6 +35,15 @@ def build_tool_agent(model, tools):
     model_with_tools = model.bind_tools(tools)
 
     def call_model(state: MessagesState):
+        context_budget = max(1, int(os.getenv("AGENT_CONTEXT_TOKEN_BUDGET", "6000")))
+        reserved_tokens = max(0, int(os.getenv("AGENT_CONTEXT_RESERVED_TOKENS", "1200")))
+        history_budget = max(1, context_budget - reserved_tokens)
+        history = compact_messages(state["messages"], history_budget)
+        print(
+            f"Context estimate: {estimate_tokens(history)} / "
+            f"{history_budget} history tokens (heuristic)",
+            file=sys.stderr,
+        )
         messages = [
             SystemMessage(content=(
                 "You are a technical research assistant. Use available tools when "
@@ -44,7 +55,7 @@ def build_tool_agent(model, tools):
                 "when relevant. Save durable, useful facts only when asked or clearly "
                 "expected. Never store passwords, API keys, or sensitive personal data."
             )),
-            *state["messages"],
+            *history,
         ]
         return {"messages": [model_with_tools.invoke(messages)]}
 
