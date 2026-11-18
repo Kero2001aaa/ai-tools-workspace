@@ -13,6 +13,14 @@ if [ -f requirements.txt ]; then
   uv pip install --python .venv/bin/python -r requirements.txt
 fi
 
+# Browser automation is part of this workspace: install its Python package,
+# Chromium system libraries, and browser binary during Codespaces creation.
+if [ -f requirements-browser.txt ]; then
+  uv pip install --python .venv/bin/python -r requirements-browser.txt
+  sudo .venv/bin/python -m playwright install-deps chromium
+  .venv/bin/python -m playwright install chromium
+fi
+
 if [ ! -f .env ]; then
   cp .env.example .env
   echo "Created .env from .env.example. Add API keys only in this private Codespace."
