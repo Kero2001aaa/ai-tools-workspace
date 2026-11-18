@@ -25,6 +25,8 @@ async def load_workspace_tools():
                    "args": ["-m", "agent.memory_mcp_server"]},
         "research": {"transport": "stdio", "command": sys.executable,
                      "args": ["-m", "agent.research_mcp_server"]},
+        "tasks": {"transport": "stdio", "command": sys.executable,
+                  "args": ["-m", "agent.task_mcp_server"]},
     }
     if os.getenv("ENABLE_BROWSER_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}:
         servers["browser"] = {
