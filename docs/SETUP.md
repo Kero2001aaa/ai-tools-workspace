@@ -20,7 +20,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent "Research LangGraph"
 ```
 
-The test suite should report fourteen tests and `OK`. With no model credentials, the CLI runs in offline mode.
+The test suite should report twenty-one tests and `OK`. With no model credentials, the CLI runs in offline mode.
 
 ## 3. Optional zero-budget inference with OpenRouter
 
@@ -127,7 +127,32 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 The MCP discovery command should list the two utility tools and three memory tools. The tool-calling agent connects to both servers automatically.
 
-## 8. Recommended build order
+## 8. Web research integration (Stage 6)
+
+The workspace includes an optional research MCP server:
+- `web_search(query, num_results)` — uses Exa when `EXA_API_KEY` is configured; otherwise Firecrawl Search when `FIRECRAWL_API_KEY` is configured.
+- `scrape_url(url)` — extracts the main page as Markdown through Firecrawl.
+- `research_provider_status()` — reports configured providers without revealing credential values.
+
+No research API request is made during server startup or tool discovery. Providers are contacted only when the model invokes a research tool. Search prefers Exa if both keys exist. Scraping requires Firecrawl. Page content is capped and treated as untrusted data.
+
+**Free-tier options (checked November 18, 2026):**
+- Exa documents $10 in monthly free credits and says no payment method is required: https://exa.ai/pricing
+- Firecrawl documents 1,000 free credits per month, no card required; basic scrape costs 1 credit/page and search costs 2 credits per 10 results: https://www.firecrawl.dev/pricing and https://docs.firecrawl.dev/
+- These are limited allowances, not unlimited services. Do not enable pay-as-you-go, add a card, buy credits, or attach billing.
+
+**Setup:**
+1. Create an Exa API key at https://dashboard.exa.ai/ and/or a Firecrawl API key at https://www.firecrawl.dev/app/api-keys.
+2. Add the key(s) to the private Codespace `.env` file as `EXA_API_KEY` and/or `FIRECRAWL_API_KEY`. Never paste keys into chat or commit them.
+3. Pull the latest repository changes and run the tests and discovery commands.
+4. Test search with: `Search the web for the official LangGraph documentation and summarize the most relevant result with its URL.`
+5. Test extraction by asking the agent to scrape an official documentation page. Scraping requires Firecrawl.
+
+Without keys, tools remain discoverable but research calls return a clear configuration error. Local memory and utility tools continue working.
+
+The implementation uses direct HTTPS requests and `httpx`; it does not install third-party provider servers or run remote code. URL validation rejects localhost, private/reserved IP literals, and embedded URL credentials. This is a baseline safeguard, not a substitute for provider-side security controls.
+
+## 9. Recommended build order
 
 1. **LangGraph** — workflow and orchestration; implemented and tested.
 2. **Chat-model adapter** — configurable OpenAI-compatible interface; live inference was verified with the configured free-model route.
@@ -141,7 +166,7 @@ The MCP discovery command should list the two utility tools and three memory too
 
 Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
 
-## 9. What this setup does not do
+## 10. What this setup does not do
 
 - It does not increase ChatGPT's native context window, token allowance, or model permissions.
 - It does not connect these services to this ChatGPT conversation automatically.
@@ -149,6 +174,6 @@ Do not install every repository blindly. Components can overlap, require separat
 - It does not store credentials in GitHub.
 - It does not guarantee a free provider's uptime, model availability, or quality.
 
-## 10. Control Codespaces costs
+## 11. Control Codespaces costs
 
 Stop Codespaces when they are not in use. Check the Codespaces page for active instances and stop unused ones. Review your GitHub billing and included quota before leaving a Codespace running.
