@@ -1,6 +1,7 @@
-# Lightweight orchestration and MCP client foundation.
-# External providers and optional heavy packages are intentionally excluded.
+# Agent orchestration, MCP client, and configurable chat-model adapter.
+# Provider credentials are optional; no hosted service is called by default.
 langgraph
 langchain-mcp-adapters
+langchain-openai
 python-dotenv
 pydantic
