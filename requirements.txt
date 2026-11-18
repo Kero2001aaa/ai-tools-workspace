@@ -3,5 +3,6 @@
 langgraph
 langchain-mcp-adapters
 langchain-openai
+httpx
 python-dotenv
 pydantic
