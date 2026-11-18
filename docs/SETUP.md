@@ -20,7 +20,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent "Research LangGraph"
 ```
 
-The test suite should report twenty-seven tests and `OK`. With no model credentials, the CLI runs in offline mode.
+The test suite should report thirty-three tests and `OK`. With no model credentials, the CLI runs in offline mode.
 
 ## 3. Optional zero-budget inference with OpenRouter
 
@@ -180,7 +180,57 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-## 10. Recommended build order
+## 10. MCP security scanning (Stage 8)
+
+The workspace can export the definitions of its eight approved MCP tools and scan that inventory with Cisco AI Defense's open-source MCP Scanner.
+
+### Design and privacy
+
+- Cisco MCP Scanner is deliberately **not** installed into the agent's main `.venv`. It has a heavier dependency stack and is invoked on demand through `uvx` in an isolated tool environment.
+- The export contains only tool names, descriptions, and JSON input schemas.
+- It does not export API keys, environment variables, local memory contents, tool outputs, or conversation history.
+- The exported inventory is written to `.data/mcp-tools.json`; `.data/` is ignored by Git.
+- The YARA static scan does not require Cisco AI Defense, LLM, or VirusTotal API keys. It does require downloading the scanner and its dependencies on first use.
+- A YARA/static scan is a useful screening step, not proof that a server is safe. It does not replace source review, runtime controls, or least-privilege design.
+
+### Export and scan the approved tool definitions
+
+After pulling the repository updates and running the tests:
+
+```bash
+.venv/bin/python -m scripts.export_mcp_tools
+```
+
+Expected: eight tool definitions exported to `.data/mcp-tools.json`.
+
+Then run Cisco's YARA-only static scan in an isolated Python 3.13 tool environment:
+
+```bash
+uvx --python 3.13 --from cisco-ai-mcp-scanner mcp-scanner --analyzers yara --format detailed static --tools .data/mcp-tools.json
+```
+
+No API keys or paid services are required for this YARA-only static scan. The first invocation may take time and download dependencies into uv's tool cache. It does not add those dependencies to the project's `.venv`.
+
+### Optional dependency vulnerability audit
+
+Cisco MCP Scanner also exposes a dependency audit using public vulnerability data:
+
+```bash
+uvx --python 3.13 --from cisco-ai-mcp-scanner mcp-scanner vulnerable-package requirements.txt
+```
+
+This makes network requests to the configured vulnerability data service. It does not require a Cisco or LLM API key. Review findings before changing dependency versions; do not automatically apply fixes.
+
+### Important limitations
+
+- Static scanning examines exported tool metadata, not the complete runtime behavior of the server.
+- The source-code behavioral analyzer is a separate capability and may require a configured LLM provider; it is not part of the zero-cost baseline.
+- Do not connect an unknown MCP server merely to scan it. Review its source, command, arguments, environment, and filesystem/network permissions first.
+- Never place real credentials in scanner command arguments or exported JSON.
+
+Cisco project and usage documentation: https://github.com/cisco-ai-defense/mcp-scanner
+
+## 11. Recommended build order
 
 1. **LangGraph** — workflow and orchestration; implemented.
 2. **Chat-model adapter** — configurable OpenAI-compatible interface; live inference verified with the configured free-model route.
@@ -189,12 +239,12 @@ uv pip install --python .venv/bin/python -r requirements.txt
 5. **Persistent memory** — local SQLite store and MCP tools implemented; keyword retrieval.
 6. **Research providers** — Exa search and Firecrawl scraping both live-verified.
 7. **Context budgeting** — conservative, dependency-free history selection implemented; local test verification pending.
-8. **MCP security scanning** — next: inspect and scan third-party servers before enabling them.
+8. **MCP security scanning** — Cisco MCP Scanner integration is available on demand; local verification pending.
 9. **Browser automation** — add after deciding which browser and authentication model to use.
 
 Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
 
-## 11. What this setup does not do
+## 12. What this setup does not do
 
 - It does not increase ChatGPT's native context window, token allowance, or model permissions.
 - It does not connect these services to this ChatGPT conversation automatically.
@@ -202,6 +252,6 @@ Do not install every repository blindly. Components can overlap, require separat
 - It does not store credentials in GitHub.
 - It does not guarantee a free provider's uptime, model availability, or quality.
 
-## 12. Control Codespaces costs
+## 13. Control Codespaces costs
 
 Stop Codespaces when they are not in use. Check the Codespaces page for active instances and stop unused ones. Review your GitHub billing and included quota before leaving a Codespace running.
