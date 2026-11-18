@@ -36,14 +36,19 @@ async def load_workspace_tools():
 
 
 def restrict_tools_for_request(tools, request: str):
-    """Remove explicitly forbidden tools before the model can call them."""
-    if not re.search(r"\bdo not use\b", request, re.IGNORECASE):
+    """Remove tool names explicitly listed after 'do not use' in the request."""
+    prohibited_clauses = re.findall(
+        r"\bdo not use\b([^.!?\n]*)", request, re.IGNORECASE
+    )
+    prohibited_text = " ".join(prohibited_clauses)
+    if not prohibited_text:
         return tools
     forbidden = {
         tool.name for tool in tools
-        if re.search(rf"\b{re.escape(tool.name)}\b", request, re.IGNORECASE)
+        if re.search(rf"\b{re.escape(tool.name)}\b", prohibited_text, re.IGNORECASE)
     }
     return [tool for tool in tools if tool.name not in forbidden]
+
 
 def build_tool_agent(model, tools):
     """Build a ReAct-style graph using explicitly supplied tools."""
