@@ -14,15 +14,21 @@ from agent.model import load_chat_model
 
 
 async def load_workspace_tools():
-    """Start the local utility, memory, and optional research MCP servers."""
-    client = MultiServerMCPClient({
+    """Start local MCP servers; browser tools are opt-in and separately installed."""
+    servers = {
         "workspace": {"transport": "stdio", "command": sys.executable,
                       "args": ["-m", "agent.mcp_server"]},
         "memory": {"transport": "stdio", "command": sys.executable,
                    "args": ["-m", "agent.memory_mcp_server"]},
         "research": {"transport": "stdio", "command": sys.executable,
                      "args": ["-m", "agent.research_mcp_server"]},
-    })
+    }
+    if os.getenv("ENABLE_BROWSER_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        servers["browser"] = {
+            "transport": "stdio", "command": sys.executable,
+            "args": ["-m", "agent.browser_mcp_server"],
+        }
+    client = MultiServerMCPClient(servers)
     return await client.get_tools()
 
 
