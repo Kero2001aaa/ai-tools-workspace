@@ -1,4 +1,4 @@
-"""Connect to both local MCP servers and list their approved tools."""
+"""Connect to the local utility, memory, and research MCP servers."""
 import asyncio
 import sys
 
@@ -6,27 +6,19 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 
 async def list_workspace_tools() -> None:
-    """Start the local utility and memory servers over stdio."""
-    client = MultiServerMCPClient(
-        {
-            "workspace": {
-                "transport": "stdio",
-                "command": sys.executable,
-                "args": ["-m", "agent.mcp_server"],
-            },
-            "memory": {
-                "transport": "stdio",
-                "command": sys.executable,
-                "args": ["-m", "agent.memory_mcp_server"],
-            },
-        }
-    )
+    """Start all local stdio servers and list their tools."""
+    client = MultiServerMCPClient({
+        "workspace": {"transport": "stdio", "command": sys.executable,
+                      "args": ["-m", "agent.mcp_server"]},
+        "memory": {"transport": "stdio", "command": sys.executable,
+                   "args": ["-m", "agent.memory_mcp_server"]},
+        "research": {"transport": "stdio", "command": sys.executable,
+                     "args": ["-m", "agent.research_mcp_server"]},
+    })
     tools = await client.get_tools()
-
     if not tools:
         print("MCP servers connected, but exposed no tools.")
         return
-
     print(f"Connected to local MCP servers. Discovered {len(tools)} tool(s):")
     for tool in tools:
         print(f"- {tool.name}: {tool.description}")
