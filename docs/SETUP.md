@@ -20,7 +20,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent "Research LangGraph"
 ```
 
-The test suite should report six tests and `OK`. With no model credentials, the CLI runs in offline mode.
+The test suite should report nine tests and `OK`. With no model credentials, the CLI runs in offline mode.
 
 ## 3. Optional zero-budget inference with OpenRouter
 
@@ -67,20 +67,43 @@ MODEL_NAME=your-model-id
 
 Verify current pricing, free-tier eligibility, rate limits, and data handling before configuring another provider. Do not attach billing or enable paid inference.
 
-## 5. Recommended build order
+## 5. Local MCP server (Stage 3)
+
+A minimal local MCP server is included. It exposes two read-only tools:
+
+- `text_stats(text)` — counts characters, words, and lines in text supplied by the caller.
+- `workspace_status()` — reports the workspace label and Python version.
+
+It does not execute shell commands, read arbitrary files, access environment variables, or make network requests.
+
+After pulling the latest changes, run the tests and discover the tools:
+
+```bash
+git pull --ff-only
+uv pip install --python .venv/bin/python -r requirements.txt
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m agent.mcp_client
+```
+
+The MCP client starts the local server over standard input/output, discovers its tools, prints their names and descriptions, and exits. This verifies the MCP transport and adapter. The tools are not yet wired into the model's reasoning loop; that is the next integration step. Review each future server's code and permissions before connecting it.
+
+## 6. Recommended build order
 
 1. **LangGraph** — workflow and orchestration; implemented and tested.
-2. **Chat-model adapter** — configurable OpenAI-compatible interface; implemented. OpenRouter free routing is the documented first live-provider option, but it is not connected until you add your own key.
-3. **MCP adapters** — connect one trusted tool at a time and restrict its permissions.
-4. **Persistent memory** — choose a storage backend, retention policy, and deletion process before adding Mem0 or an alternative.
-5. **Research providers** — evaluate Exa and Firecrawl; configure keys only if needed.
-6. **Prompt compression** — evaluate LLMLingua only after measuring context and resource requirements.
-7. **MCP security scanning** — scan third-party servers before enabling them.
-8. **Browser automation** — add only after deciding which browser and authentication model to use.
+2. **Chat-model adapter** — configurable OpenAI-compatible interface; live inference was verified with the user's configured free-model route.
+3. **Local MCP server and client** — implemented; run the discovery command above to verify the transport in the Codespace.
+4. **Model tool-calling loop** — next step: let the model select approved MCP tools and return tool results to the workflow.
+5. **Persistent memory** — choose a storage backend, retention policy, and deletion process before adding Mem0 or an alternative.
+6. **Research providers** — evaluate Exa and Firecrawl; configure keys only if needed.
+7. **Prompt compression** — evaluate LLMLingua only after measuring context and resource requirements.
+8. **MCP security scanning** — scan third-party servers before enabling them.
+9. **Browser automation** — add only after deciding which browser and authentication model to use.
 
 Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
 
-## 6. What this setup does not do
+Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
+
+## 7. What this setup does not do
 
 - It does not increase ChatGPT's native context window, token allowance, or model permissions.
 - It does not connect these services to this ChatGPT conversation automatically.
@@ -88,6 +111,6 @@ Do not install every repository blindly. Components can overlap, require separat
 - It does not store credentials in GitHub.
 - It does not guarantee a free provider's uptime, model availability, or quality.
 
-## 7. Control Codespaces costs
+## 8. Control Codespaces costs
 
 Stop Codespaces when they are not in use. Check the Codespaces page for active instances and stop unused ones. Review your GitHub billing and included quota before leaving a Codespace running.
