@@ -3,11 +3,13 @@ import asyncio
 import os
 import sys
 
+from dotenv import load_dotenv
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 
 async def list_workspace_tools() -> None:
     """Start local stdio servers; browser discovery is opt-in."""
+    load_dotenv()
     servers = {
         "workspace": {"transport": "stdio", "command": sys.executable,
                       "args": ["-m", "agent.mcp_server"]},
