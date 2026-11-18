@@ -1,4 +1,4 @@
-"""Tests for the LangGraph MCP tool-calling workflow."""
+"""Tests for the asynchronous LangGraph MCP tool-calling workflow."""
 import unittest
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -8,8 +8,8 @@ from agent.tool_agent import build_tool_agent
 
 
 @tool
-def text_stats(text: str) -> dict[str, int]:
-    """Return a small set of text statistics."""
+async def text_stats(text: str) -> dict[str, int]:
+    """Return a small set of text statistics asynchronously."""
     return {"characters": len(text), "words": len(text.split())}
 
 
@@ -38,17 +38,19 @@ class FakeToolCallingModel:
         return AIMessage(content="The text has 10 characters and 2 words.")
 
 
-class ToolAgentTests(unittest.TestCase):
-    def test_agent_executes_tool_and_returns_final_answer(self):
+class ToolAgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_executes_async_tool_and_returns_final_answer(self):
         model = FakeToolCallingModel()
         agent = build_tool_agent(model, [text_stats])
-        result = agent.invoke(
+        result = await agent.ainvoke(
             {"messages": [HumanMessage(content="Count the words in CNC plasma.")]},
             config={"recursion_limit": 5},
         )
 
-        self.assertEqual(result["messages"][-1].content,
-                         "The text has 10 characters and 2 words.")
+        self.assertEqual(
+            result["messages"][-1].content,
+            "The text has 10 characters and 2 words.",
+        )
         self.assertEqual(model.calls, 2)
         self.assertTrue(any(message.type == "tool" for message in result["messages"]))
 
