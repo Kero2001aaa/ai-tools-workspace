@@ -46,6 +46,16 @@ List recent tasks:
 - The initial worker executes one task and exits. It is not a daemon or autonomous scheduler.
 - Do not enqueue sensitive data. The queue is local to the Codespace and is not automatically backed up.
 
+## MCP integration
+
+The agent and MCP discovery client also start `agent.task_mcp_server`. This exposes three narrow tools to the model:
+
+- `enqueue_task`: accepts only `workspace_status` or `memory_recent`.
+- `run_one_task`: executes at most one due allowlisted task.
+- `list_tasks`: returns recent queue records.
+
+These tools use the same local SQLite queue as the CLI. The model cannot supply shell commands, Python code, or arbitrary URLs through this interface. Task execution remains limited to the two explicitly implemented task types. The queue is not an autonomous scheduler; a worker call is still required to execute queued work.
+
 ## Verification
 
 ```bash
