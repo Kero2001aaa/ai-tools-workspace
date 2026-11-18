@@ -4,7 +4,10 @@ import os
 from urllib.parse import urlsplit
 
 import httpx
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+
+load_dotenv()
 
 mcp = FastMCP("ai-tools-workspace-research")
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
