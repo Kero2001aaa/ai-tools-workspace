@@ -89,7 +89,7 @@ The MCP client starts the local server over standard input/output, discovers its
 
 ## 6. Model-driven MCP tool calling (Stage 4)
 
-The tool-calling workflow is implemented in `agent/tool_agent.py`. It gives the configured chat model access to the local utility tools and the local memory tools. LangGraph routes model tool calls to the MCP tools, returns their results to the model, and stops after a bounded number of graph steps.
+The tool-calling workflow is implemented in `agent/tool_agent.py`. It gives the configured chat model access to local utility, memory, and optional research tools. LangGraph routes model tool calls to the MCP tools, returns their results to the model, and stops after a bounded number of graph steps.
 
 Run it after configuring a model:
 
@@ -125,7 +125,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent.mcp_client
 ```
 
-The MCP discovery command should list the two utility tools and three memory tools. The tool-calling agent connects to both servers automatically.
+The MCP discovery command should list two utility tools, three memory tools, and three research tools. The tool-calling agent connects to all three local servers automatically.
 
 ## 8. Web research integration (Stage 6)
 
@@ -159,7 +159,7 @@ The implementation uses direct HTTPS requests and `httpx`; it does not install t
 3. **Local MCP server and client** — implemented; local transport and tool discovery verified.
 4. **Model tool-calling loop** — implemented; the included test uses a fake model to verify tool execution without spending API requests.
 5. **Persistent memory** — local SQLite store and MCP tools implemented; semantic/vector retrieval is not included.
-6. **Research providers** — evaluate Exa and Firecrawl; configure keys only if needed.
+6. **Research providers** — Exa/Firecrawl MCP integration implemented; provider calls still require your own free-tier API key(s).
 7. **Prompt compression** — evaluate LLMLingua only after measuring context and resource requirements.
 8. **MCP security scanning** — scan third-party servers before enabling them.
 9. **Browser automation** — add only after deciding which browser and authentication model to use.
