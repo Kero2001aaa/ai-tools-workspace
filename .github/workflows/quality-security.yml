@@ -48,3 +48,9 @@ jobs:
           uvx --python 3.13 --from cisco-ai-mcp-scanner mcp-scanner \
             vulnerable-package requirements.txt \
             --vulnerability-service osv --format detailed
+
+      - name: Audit optional browser dependencies with OSV
+        run: |
+          uvx --python 3.13 --from cisco-ai-mcp-scanner mcp-scanner \
+            vulnerable-package requirements-browser.txt \
+            --vulnerability-service osv --format detailed
