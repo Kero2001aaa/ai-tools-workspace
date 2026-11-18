@@ -34,8 +34,6 @@ if [ -f requirements-browser.txt ]; then
   fi
 
   sudo .venv/bin/python -m playwright install-deps chromium
-  restore_yarn_source
-  trap - EXIT
 
   .venv/bin/python -m playwright install chromium
 fi
