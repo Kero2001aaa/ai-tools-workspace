@@ -289,8 +289,8 @@ Playwright documentation: https://playwright.dev/python/docs/intro
 4. **Model tool-calling loop** — implemented; asynchronous tool execution verified.
 5. **Persistent memory** — local SQLite store and MCP tools implemented; keyword retrieval.
 6. **Research providers** — Exa search and Firecrawl scraping both live-verified.
-7. **Context budgeting** — conservative, dependency-free history selection implemented; local test verification pending.
-8. **MCP security scanning** — Cisco MCP Scanner integration is available on demand; local verification pending.
+7. **Context budgeting** — conservative, dependency-free history selection implemented and covered by unit tests.
+8. **MCP security scanning** — Cisco MCP Scanner YARA/schema and OSV dependency audits verified; automated in GitHub Actions.
 9. **Browser automation** — optional Playwright MCP server implemented; requires a separate browser install and explicit opt-in.
 
 Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
