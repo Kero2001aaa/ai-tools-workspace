@@ -25,7 +25,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent "Explain LangGraph"
 ```
 
-See [docs/SETUP.md](docs/SETUP.md) for model configuration, credential handling, and the integration roadmap.
+See [docs/SETUP.md](docs/SETUP.md) for model configuration and credential handling, and [docs/AUTOMATION.md](docs/AUTOMATION.md) for scheduled maintenance automation.
 
 ## Important limitations
 
