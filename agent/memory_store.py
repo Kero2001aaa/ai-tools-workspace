@@ -70,7 +70,10 @@ class MemoryStore:
         if not terms:
             return []
         clauses = " OR ".join("LOWER(content) LIKE ? ESCAPE '\\'" for _ in terms)
-        parameters = [f"%{term.replace('%', r'\%').replace('_', r'\_')}%" for term in terms]
+        parameters = []
+        for term in terms:
+            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            parameters.append(f"%{escaped}%")
         with self._connect() as connection:
             rows = connection.execute(
                 f"SELECT id, content, tags, created_at FROM memories WHERE {clauses}",
@@ -81,7 +84,7 @@ class MemoryStore:
             lowered = row["content"].casefold()
             score = sum(term in lowered for term in terms)
             ranked.append((score, row))
-        ranked.sort(key=lambda item: (-item[0], item[1]["created_at"]), reverse=False)
+        ranked.sort(key=lambda item: (-item[0], -item[1]["id"]))
         return [
             {
                 "id": row["id"],
