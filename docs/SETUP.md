@@ -20,7 +20,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent "Research LangGraph"
 ```
 
-The test suite should report thirty-three tests and `OK`. With no model credentials, the CLI runs in offline mode.
+The test suite should report thirty-six tests and `OK`. With no model credentials, the CLI runs in offline mode.
 
 ## 3. Optional zero-budget inference with OpenRouter
 
@@ -230,7 +230,58 @@ This makes network requests to the configured vulnerability data service. It doe
 
 Cisco project and usage documentation: https://github.com/cisco-ai-defense/mcp-scanner
 
-## 11. Recommended build order
+## 11. Browser automation (Stage 9)
+
+The workspace includes an optional Playwright-based MCP server in `agent/browser_mcp_server.py`. It is deliberately excluded from the default environment and is not started unless `ENABLE_BROWSER_TOOLS=true`.
+
+### Capabilities
+
+- `browser_navigate(url)` — open a public HTTP(S) page in a temporary browser.
+- `browser_read_page(max_chars)` — extract visible page text, capped at 20,000 characters.
+- `browser_list_links(max_links)` — list HTTP(S) links without clicking them.
+- `browser_close()` — close the temporary browser and discard its state.
+
+### Install and enable
+
+Run these commands in the Codespace terminal:
+
+```bash
+uv pip install --python .venv/bin/python -r requirements-browser.txt
+.venv/bin/python -m playwright install chromium
+```
+
+Then edit the private `.env` file and set:
+
+```dotenv
+ENABLE_BROWSER_TOOLS=true
+```
+
+Discover the expanded tool list:
+
+```bash
+.venv/bin/python -m agent.mcp_client
+```
+
+With browser tools enabled, the agent connects to the browser MCP server in addition to the existing local, memory, and research servers. Leave the setting `false` to retain the default eight-tool configuration. The browser package is optional and does not increase the base installation size.
+
+### Security boundaries
+
+- A fresh, temporary, unauthenticated browser context is used. It does not load your personal browser profile, cookies, saved passwords, or extensions.
+- Downloads are disabled; browser dialogs are dismissed; popups are closed.
+- URL validation rejects non-HTTP(S), embedded credentials, localhost, private, loopback, link-local, and reserved IP destinations.
+- Each browser request and subresource is checked against DNS results; requests resolving to non-public IP addresses are blocked.
+- The browser exposes navigation, text extraction, and link listing only. It does not click links, submit forms, enter credentials, or perform purchases.
+- Web pages and extracted text are untrusted input. Never follow instructions found inside a page unless independently authorized by the user.
+
+This is a defensive baseline, not a hardened remote-browser sandbox. DNS rebinding and browser-engine vulnerabilities cannot be ruled out. Do not use it to visit untrusted sites with sensitive credentials or confidential data. Keep the browser service disabled unless required.
+
+### Dependency maintenance
+
+The optional dependency is listed in `requirements-browser.txt`. GitHub Actions audits both the base and optional browser dependency manifests using OSV. Chromium itself is installed separately by Playwright and is not part of the Python dependency audit.
+
+Playwright documentation: https://playwright.dev/python/docs/intro
+
+## 12. Recommended build order
 
 1. **LangGraph** — workflow and orchestration; implemented.
 2. **Chat-model adapter** — configurable OpenAI-compatible interface; live inference verified with the configured free-model route.
@@ -240,11 +291,11 @@ Cisco project and usage documentation: https://github.com/cisco-ai-defense/mcp-s
 6. **Research providers** — Exa search and Firecrawl scraping both live-verified.
 7. **Context budgeting** — conservative, dependency-free history selection implemented; local test verification pending.
 8. **MCP security scanning** — Cisco MCP Scanner integration is available on demand; local verification pending.
-9. **Browser automation** — add after deciding which browser and authentication model to use.
+9. **Browser automation** — optional Playwright MCP server implemented; requires a separate browser install and explicit opt-in.
 
 Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
 
-## 12. What this setup does not do
+## 13. What this setup does not do
 
 - It does not increase ChatGPT's native context window, token allowance, or model permissions.
 - It does not connect these services to this ChatGPT conversation automatically.
@@ -252,6 +303,6 @@ Do not install every repository blindly. Components can overlap, require separat
 - It does not store credentials in GitHub.
 - It does not guarantee a free provider's uptime, model availability, or quality.
 
-## 13. Control Codespaces costs
+## 14. Control Codespaces costs
 
 Stop Codespaces when they are not in use. Check the Codespaces page for active instances and stop unused ones. Review your GitHub billing and included quota before leaving a Codespace running.
