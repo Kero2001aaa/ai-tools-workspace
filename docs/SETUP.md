@@ -20,7 +20,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent "Research LangGraph"
 ```
 
-The test suite should report ten tests and `OK`. With no model credentials, the CLI runs in offline mode.
+The test suite should report fourteen tests and `OK`. With no model credentials, the CLI runs in offline mode.
 
 ## 3. Optional zero-budget inference with OpenRouter
 
@@ -89,7 +89,7 @@ The MCP client starts the local server over standard input/output, discovers its
 
 ## 6. Model-driven MCP tool calling (Stage 4)
 
-The tool-calling workflow is implemented in `agent/tool_agent.py`. It gives the configured chat model access only to the two local MCP tools described above. LangGraph routes model tool calls to the MCP tools, returns their results to the model, and stops after a bounded number of graph steps.
+The tool-calling workflow is implemented in `agent/tool_agent.py`. It gives the configured chat model access to the local utility tools and the local memory tools. LangGraph routes model tool calls to the MCP tools, returns their results to the model, and stops after a bounded number of graph steps.
 
 Run it after configuring a model:
 
@@ -99,15 +99,41 @@ Run it after configuring a model:
 
 This command makes a model API request. It requires a model that supports tool/function calling; a free-model router may select a model that does not. If the selected model rejects tool definitions or does not call tools, choose a currently available tool-capable model and verify its pricing is still zero before using it. Do not add credits or enable paid routing. The graph has a recursion limit of ten steps to prevent unbounded tool loops.
 
-The MCP tools currently perform only local text counting and runtime-status reporting. They do not provide web search, file access, shell execution, or persistent memory.
+The utility tools perform local text counting and runtime-status reporting. The memory tools provide local SQLite persistence and keyword retrieval. They do not provide web search, arbitrary file access, or shell execution.
 
-## 7. Recommended build order
+## 7. Local persistent memory (Stage 5)
+
+The workspace includes an offline SQLite memory store exposed through a second local MCP server.
+
+Available tools:
+- `remember(content, tags)` — save a concise, non-sensitive fact or project note.
+- `recall(query, limit)` — retrieve matching memories using keyword matching.
+- `recent_memories(limit)` — list the newest saved memories.
+
+The default database is `.data/memory.sqlite3`. The entire `.data/` directory is ignored by Git and is not committed. You can override the path with `WORKSPACE_MEMORY_DB`.
+
+This is deliberately a zero-cost baseline: it uses Python's built-in SQLite library, makes no network calls, requires no API key, and does not use embeddings. Retrieval is keyword-based, not semantic. The model should save durable, useful information only when the user asks for it or clearly expects it; never save passwords, API keys, or sensitive personal data.
+
+The database lives inside the Codespace filesystem. It is separate from GitHub and is not automatically backed up to another service. Deleting the Codespace can delete its local database; export or backup should be added before relying on it as the only copy of important information.
+
+After pulling the changes, run:
+
+```bash
+git pull --ff-only
+uv pip install --python .venv/bin/python -r requirements.txt
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m agent.mcp_client
+```
+
+The MCP discovery command should list the two utility tools and three memory tools. The tool-calling agent connects to both servers automatically.
+
+## 8. Recommended build order
 
 1. **LangGraph** — workflow and orchestration; implemented and tested.
 2. **Chat-model adapter** — configurable OpenAI-compatible interface; live inference was verified with the configured free-model route.
 3. **Local MCP server and client** — implemented; local transport and tool discovery verified.
 4. **Model tool-calling loop** — implemented; the included test uses a fake model to verify tool execution without spending API requests.
-5. **Persistent memory** — choose a storage backend, retention policy, and deletion process before adding Mem0 or an alternative.
+5. **Persistent memory** — local SQLite store and MCP tools implemented; semantic/vector retrieval is not included.
 6. **Research providers** — evaluate Exa and Firecrawl; configure keys only if needed.
 7. **Prompt compression** — evaluate LLMLingua only after measuring context and resource requirements.
 8. **MCP security scanning** — scan third-party servers before enabling them.
@@ -115,7 +141,7 @@ The MCP tools currently perform only local text counting and runtime-status repo
 
 Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
 
-## 8. What this setup does not do
+## 9. What this setup does not do
 
 - It does not increase ChatGPT's native context window, token allowance, or model permissions.
 - It does not connect these services to this ChatGPT conversation automatically.
@@ -123,6 +149,6 @@ Do not install every repository blindly. Components can overlap, require separat
 - It does not store credentials in GitHub.
 - It does not guarantee a free provider's uptime, model availability, or quality.
 
-## 9. Control Codespaces costs
+## 10. Control Codespaces costs
 
 Stop Codespaces when they are not in use. Check the Codespaces page for active instances and stop unused ones. Review your GitHub billing and included quota before leaving a Codespace running.
