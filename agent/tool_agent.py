@@ -15,6 +15,7 @@ from agent.model import load_chat_model
 
 async def load_workspace_tools():
     """Start local MCP servers; browser tools are opt-in and separately installed."""
+    load_dotenv()
     servers = {
         "workspace": {"transport": "stdio", "command": sys.executable,
                       "args": ["-m", "agent.mcp_server"]},
