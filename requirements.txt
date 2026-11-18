@@ -1,0 +1,6 @@
+# Lightweight orchestration and MCP client foundation.
+# External providers and optional heavy packages are intentionally excluded.
+langgraph
+langchain-mcp-adapters
+python-dotenv
+pydantic
