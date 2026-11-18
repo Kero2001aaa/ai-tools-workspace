@@ -20,7 +20,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent "Research LangGraph"
 ```
 
-The test suite should report nine tests and `OK`. With no model credentials, the CLI runs in offline mode.
+The test suite should report ten tests and `OK`. With no model credentials, the CLI runs in offline mode.
 
 ## 3. Optional zero-budget inference with OpenRouter
 
@@ -85,14 +85,28 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent.mcp_client
 ```
 
-The MCP client starts the local server over standard input/output, discovers its tools, prints their names and descriptions, and exits. This verifies the MCP transport and adapter. The tools are not yet wired into the model's reasoning loop; that is the next integration step. Review each future server's code and permissions before connecting it.
+The MCP client starts the local server over standard input/output, discovers its tools, prints their names and descriptions, and exits. This verifies the MCP transport and adapter. The tools are now wired into the model's reasoning loop in Stage 4 below. Review each future server's code and permissions before connecting it.
 
-## 6. Recommended build order
+## 6. Model-driven MCP tool calling (Stage 4)
+
+The tool-calling workflow is implemented in `agent/tool_agent.py`. It gives the configured chat model access only to the two local MCP tools described above. LangGraph routes model tool calls to the MCP tools, returns their results to the model, and stops after a bounded number of graph steps.
+
+Run it after configuring a model:
+
+```bash
+.venv/bin/python -m agent.tool_agent "Count the words and characters in this sentence: CNC plasma cutting uses a controlled electrical arc."
+```
+
+This command makes a model API request. It requires a model that supports tool/function calling; a free-model router may select a model that does not. If the selected model rejects tool definitions or does not call tools, choose a currently available tool-capable model and verify its pricing is still zero before using it. Do not add credits or enable paid routing. The graph has a recursion limit of ten steps to prevent unbounded tool loops.
+
+The MCP tools currently perform only local text counting and runtime-status reporting. They do not provide web search, file access, shell execution, or persistent memory.
+
+## 7. Recommended build order
 
 1. **LangGraph** — workflow and orchestration; implemented and tested.
-2. **Chat-model adapter** — configurable OpenAI-compatible interface; live inference was verified with the user's configured free-model route.
-3. **Local MCP server and client** — implemented; run the discovery command above to verify the transport in the Codespace.
-4. **Model tool-calling loop** — next step: let the model select approved MCP tools and return tool results to the workflow.
+2. **Chat-model adapter** — configurable OpenAI-compatible interface; live inference was verified with the configured free-model route.
+3. **Local MCP server and client** — implemented; local transport and tool discovery verified.
+4. **Model tool-calling loop** — implemented; the included test uses a fake model to verify tool execution without spending API requests.
 5. **Persistent memory** — choose a storage backend, retention policy, and deletion process before adding Mem0 or an alternative.
 6. **Research providers** — evaluate Exa and Firecrawl; configure keys only if needed.
 7. **Prompt compression** — evaluate LLMLingua only after measuring context and resource requirements.
@@ -101,9 +115,7 @@ The MCP client starts the local server over standard input/output, discovers its
 
 Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
 
-Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
-
-## 7. What this setup does not do
+## 8. What this setup does not do
 
 - It does not increase ChatGPT's native context window, token allowance, or model permissions.
 - It does not connect these services to this ChatGPT conversation automatically.
@@ -111,6 +123,6 @@ Do not install every repository blindly. Components can overlap, require separat
 - It does not store credentials in GitHub.
 - It does not guarantee a free provider's uptime, model availability, or quality.
 
-## 8. Control Codespaces costs
+## 9. Control Codespaces costs
 
 Stop Codespaces when they are not in use. Check the Codespaces page for active instances and stop unused ones. Review your GitHub billing and included quota before leaving a Codespace running.
