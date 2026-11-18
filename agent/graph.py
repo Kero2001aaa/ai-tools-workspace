@@ -1,10 +1,10 @@
-"""A provider-free LangGraph workflow smoke test.
+"""LangGraph workflow with an optional, injected chat model.
 
-This is orchestration scaffolding, not an LLM-powered assistant yet.
-It deliberately runs without API keys or external network services.
+Without a model, the workflow remains fully offline and makes no API calls.
 """
 from typing import TypedDict
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 
@@ -28,35 +28,54 @@ def classify_request(state: AgentState) -> dict[str, str]:
     return {"intent": intent}
 
 
-def prepare_response(state: AgentState) -> dict[str, str]:
-    """Return an honest workflow status; no model inference is performed."""
-    intent = state["intent"]
-    return {
-        "response": (
-            f"LangGraph workflow executed successfully. "
-            f"Detected intent: {intent}. "
-            "No LLM or external service was called."
-        )
-    }
+def build_agent(model=None):
+    """Build the workflow, optionally injecting a LangChain chat model."""
 
+    def generate_response(state: AgentState) -> dict[str, str]:
+        if model is None:
+            return {
+                "response": (
+                    "Offline mode: request classified as "
+                    f"{state['intent']}. No LLM or external service was called. "
+                    "Configure MODEL_API_KEY and MODEL_NAME to enable inference."
+                )
+            }
 
-def build_agent():
-    """Build and compile the initial two-node workflow."""
+        messages = [
+            SystemMessage(
+                content=(
+                    "You are the assistant for a technical AI workspace. "
+                    "Answer accurately, state uncertainty, and do not claim "
+                    "to have used tools that were not provided."
+                )
+            ),
+            HumanMessage(
+                content=(
+                    f"Detected intent: {state['intent']}\n"
+                    f"User request: {state['request']}"
+                )
+            ),
+        ]
+        result = model.invoke(messages)
+        content = getattr(result, "content", result)
+        response = content if isinstance(content, str) else str(content)
+        return {"response": response}
+
     workflow = StateGraph(AgentState)
     workflow.add_node("classify", classify_request)
-    workflow.add_node("prepare_response", prepare_response)
+    workflow.add_node("generate_response", generate_response)
     workflow.add_edge(START, "classify")
-    workflow.add_edge("classify", "prepare_response")
-    workflow.add_edge("prepare_response", END)
+    workflow.add_edge("classify", "generate_response")
+    workflow.add_edge("generate_response", END)
     return workflow.compile()
 
 
-def run_agent(request: str) -> AgentState:
+def run_agent(request: str, model=None) -> AgentState:
     """Execute the workflow for one non-empty request."""
     cleaned = request.strip()
     if not cleaned:
         raise ValueError("Request must not be empty.")
 
-    return build_agent().invoke(
+    return build_agent(model=model).invoke(
         {"request": cleaned, "intent": "", "response": ""}
     )
