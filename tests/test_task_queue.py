@@ -1,9 +1,11 @@
 """Tests for durable task queue and bounded worker execution."""
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from agent.memory_store import MemoryStore
 from agent.task_queue import TaskQueue
 from agent.task_worker import run_once
 
@@ -61,6 +63,19 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual("succeeded", result["status"])
         self.assertEqual(task["id"], result["task_id"])
         self.assertIn("python", result["result"])
+
+    def test_memory_recent_task_returns_bounded_local_memories(self):
+        memory_db = Path(self.temp.name) / "memory.sqlite3"
+        with patch.dict("os.environ", {"WORKSPACE_MEMORY_DB": str(memory_db)}):
+            store = MemoryStore()
+            store.remember("Stage 11 task queue verified")
+            store.remember("Stage 12 planning started")
+            task = self.queue.enqueue("memory_recent", {"limit": 1})
+            result = run_once(self.queue)
+        self.assertEqual("succeeded", result["status"])
+        self.assertEqual(task["id"], result["task_id"])
+        self.assertEqual(1, len(result["result"]["memories"]))
+        self.assertEqual("Stage 12 planning started", result["result"]["memories"][0]["content"])
 
     def test_rejects_invalid_limits(self):
         with self.assertRaises(ValueError):
