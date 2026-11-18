@@ -20,7 +20,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent "Research LangGraph"
 ```
 
-The test suite should report twenty-one tests and `OK`. With no model credentials, the CLI runs in offline mode.
+The test suite should report twenty-seven tests and `OK`. With no model credentials, the CLI runs in offline mode.
 
 ## 3. Optional zero-budget inference with OpenRouter
 
@@ -152,40 +152,13 @@ Without keys, tools remain discoverable but research calls return a clear config
 
 The implementation uses direct HTTPS requests and `httpx`; it does not install third-party provider servers or run remote code. URL validation rejects localhost, private/reserved IP literals, and embedded URL credentials. This is a baseline safeguard, not a substitute for provider-side security controls.
 
-## 9. Recommended build order
-
-1. **LangGraph** — workflow and orchestration; implemented and tested.
-2. **Chat-model adapter** — configurable OpenAI-compatible interface; live inference was verified with the configured free-model route.
-3. **Local MCP server and client** — implemented; local transport and tool discovery verified.
-4. **Model tool-calling loop** — implemented; the included test uses a fake model to verify tool execution without spending API requests.
-5. **Persistent memory** — local SQLite store and MCP tools implemented; semantic/vector retrieval is not included.
-6. **Research providers** — Exa/Firecrawl MCP integration implemented; provider calls still require your own free-tier API key(s).
-7. **Prompt compression** — evaluate LLMLingua only after measuring context and resource requirements.
-8. **MCP security scanning** — scan third-party servers before enabling them.
-9. **Browser automation** — add only after deciding which browser and authentication model to use.
-
-Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
-
-## 10. What this setup does not do
-
-- It does not increase ChatGPT's native context window, token allowance, or model permissions.
-- It does not connect these services to this ChatGPT conversation automatically.
-- It does not provision paid cloud resources or API subscriptions.
-- It does not store credentials in GitHub.
-- It does not guarantee a free provider's uptime, model availability, or quality.
-
-## 11. Control Codespaces costs
-
-Stop Codespaces when they are not in use. Check the Codespaces page for active instances and stop unused ones. Review your GitHub billing and included quota before leaving a Codespace running.
-
-
 ## 9. Context budgeting (Stage 7)
 
-The tool-calling agent now uses a dependency-free context manager in `agent/context_manager.py`.
+The tool-calling agent uses a dependency-free context manager in `agent/context_manager.py`.
 
-- It estimates message size from character count and message overhead. This is a heuristic, not an exact tokenizer or provider context-window measurement.
+- It estimates message size from character count and per-message overhead. This is a heuristic, not an exact tokenizer or provider context-window measurement.
 - It retains the newest conversation turns and removes older complete turns first.
-- It never splits an assistant tool-call message from its corresponding tool results.
+- It keeps assistant tool-call messages with their corresponding tool results.
 - It always preserves the latest user turn, even if that turn alone exceeds the configured history budget.
 - It prints the estimated retained-history size to stderr for visibility.
 - It does not rewrite, summarize, or semantically compress message content. Persistent project facts should be stored in the SQLite memory tools instead.
@@ -197,7 +170,7 @@ AGENT_CONTEXT_TOKEN_BUDGET=6000
 AGENT_CONTEXT_RESERVED_TOKENS=1200
 ```
 
-The first value is the approximate total working budget used by this agent; the second reserves room for system instructions and the model response. The remaining budget is used for conversation history. These are conservative local settings, not guarantees about any model provider's actual context limit. Adjust them only after checking the selected model's documented context window.
+The first value is the approximate total working budget; the second reserves room for system instructions and the model response. The remaining budget is used for conversation history. These are local estimates, not guarantees about a provider's actual context limit.
 
 Verify with:
 
@@ -209,15 +182,15 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 ## 10. Recommended build order
 
-1. **LangGraph** — workflow and orchestration; implemented and tested.
-2. **Chat-model adapter** — configurable OpenAI-compatible interface; live inference was verified with the configured free-model route.
+1. **LangGraph** — workflow and orchestration; implemented.
+2. **Chat-model adapter** — configurable OpenAI-compatible interface; live inference verified with the configured free-model route.
 3. **Local MCP server and client** — implemented; local transport and tool discovery verified.
-4. **Model tool-calling loop** — implemented; local async tool execution verified.
+4. **Model tool-calling loop** — implemented; asynchronous tool execution verified.
 5. **Persistent memory** — local SQLite store and MCP tools implemented; keyword retrieval.
-6. **Research providers** — Exa/Firecrawl integration; both live calls verified.
-7. **Context budgeting** — conservative, dependency-free history selection implemented; local tests pending.
+6. **Research providers** — Exa search and Firecrawl scraping both live-verified.
+7. **Context budgeting** — conservative, dependency-free history selection implemented; local test verification pending.
 8. **MCP security scanning** — next: inspect and scan third-party servers before enabling them.
-9. **Browser automation** — add only after deciding which browser and authentication model to use.
+9. **Browser automation** — add after deciding which browser and authentication model to use.
 
 Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
 
