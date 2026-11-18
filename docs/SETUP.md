@@ -22,16 +22,42 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 The test suite should report six tests and `OK`. With no model credentials, the CLI runs in offline mode.
 
-## 3. Configure an optional chat model
+## 3. Optional zero-budget inference with OpenRouter
 
-The agent supports OpenAI-compatible chat-completion endpoints. The adapter does not select a provider or activate a service automatically.
+The project can use OpenRouter's OpenAI-compatible API with free model routing. OpenRouter currently documents a free plan with 50 requests per day; free model variants are also limited to 20 requests per minute. Limits and model availability can change.
 
-1. Open the local `.env` file in the Codespace.
-2. Set `MODEL_API_KEY` and `MODEL_NAME` for the endpoint you have chosen.
-3. Set `MODEL_BASE_URL` only if the provider requires a custom OpenAI-compatible endpoint.
-4. Restart the CLI command.
+1. Create an OpenRouter account and generate an API key: https://openrouter.ai/keys
+2. In the Codespace, open the local `.env` file. Do not edit `.env.example` with real credentials.
+3. Add the following values:
 
-Example shape only — replace values with credentials and model identifiers from your chosen provider:
+```dotenv
+MODEL_API_KEY=your_openrouter_api_key
+MODEL_BASE_URL=https://openrouter.ai/api/v1
+MODEL_NAME=openrouter/free
+```
+
+4. Save `.env`, then run:
+
+```bash
+.venv/bin/python -m agent "Explain the difference between LangGraph nodes and edges"
+```
+
+The `openrouter/free` router selects an available free model. This is not a guaranteed model identity, fixed quality level, or unlimited service. Free model availability, context limits, and rate limits vary. Do not purchase credits or switch to a paid model for this zero-budget project.
+
+OpenRouter free-model information: https://openrouter.ai/collections/free-models/
+OpenRouter pricing and limits: https://openrouter.ai/pricing
+
+### Data and credential precautions
+
+- Requests are sent to OpenRouter and then to the selected model provider. Review the applicable provider data policies before use.
+- Do not send passwords, API keys, private source code, confidential work material, or sensitive personal information.
+- Keep the API key only in the Codespace's ignored `.env` file. Never paste it into chat, commit it, or place it in source code.
+- The current model adapter makes a request only when the CLI runs with complete model configuration.
+- If you want offline-only operation, leave all three `MODEL_*` variables blank.
+
+## 4. Generic compatible endpoint configuration
+
+Other OpenAI-compatible providers can be configured using the same variables:
 
 ```dotenv
 MODEL_API_KEY=your_provider_key
@@ -39,12 +65,12 @@ MODEL_BASE_URL=https://your-provider.example/v1
 MODEL_NAME=your-model-id
 ```
 
-Leave all three variables blank to remain in offline mode. A model request is sent only when the CLI runs with a complete configuration. Hosted inference may incur charges; verify the provider's current free-tier limits and pricing before use. Never paste credentials into chat or commit `.env` to Git.
+Verify current pricing, free-tier eligibility, rate limits, and data handling before configuring another provider. Do not attach billing or enable paid inference.
 
-## 4. Recommended build order
+## 5. Recommended build order
 
 1. **LangGraph** — workflow and orchestration; implemented and tested.
-2. **Chat-model adapter** — configurable OpenAI-compatible interface; implemented. A live provider has not been selected or connected.
+2. **Chat-model adapter** — configurable OpenAI-compatible interface; implemented. OpenRouter free routing is the documented first live-provider option, but it is not connected until you add your own key.
 3. **MCP adapters** — connect one trusted tool at a time and restrict its permissions.
 4. **Persistent memory** — choose a storage backend, retention policy, and deletion process before adding Mem0 or an alternative.
 5. **Research providers** — evaluate Exa and Firecrawl; configure keys only if needed.
@@ -54,14 +80,14 @@ Leave all three variables blank to remain in offline mode. A model request is se
 
 Do not install every repository blindly. Components can overlap, require separate services, consume significant memory, or need paid API credentials. Add and test one component at a time.
 
-## 5. What this setup does not do
+## 6. What this setup does not do
 
 - It does not increase ChatGPT's native context window, token allowance, or model permissions.
 - It does not connect these services to this ChatGPT conversation automatically.
 - It does not provision paid cloud resources or API subscriptions.
 - It does not store credentials in GitHub.
-- It does not provide free model inference by itself; a compatible endpoint is still required.
+- It does not guarantee a free provider's uptime, model availability, or quality.
 
-## 6. Control Codespaces costs
+## 7. Control Codespaces costs
 
 Stop Codespaces when they are not in use. Check the Codespaces page for active instances and stop unused ones. Review your GitHub billing and included quota before leaving a Codespace running.
