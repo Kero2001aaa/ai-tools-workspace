@@ -79,14 +79,14 @@ async def load_workspace_tools():
 def restrict_tools_for_request(tools, request: str):
     """Remove tool names explicitly listed after 'do not use' in the request."""
     prohibited_clauses = re.findall(
-        r"\\bdo not use\\b([^.!?\\n]*)", request, re.IGNORECASE
+        r"\bdo not use\b([^.!?\n]*)", request, re.IGNORECASE
     )
     prohibited_text = " ".join(prohibited_clauses)
     if not prohibited_text:
         return tools
     forbidden = {
         tool.name for tool in tools
-        if re.search(rf"\\b{re.escape(tool.name)}\\b", prohibited_text, re.IGNORECASE)
+        if re.search(rf"\b{re.escape(tool.name)}\b", prohibited_text, re.IGNORECASE)
     }
     return [tool for tool in tools if tool.name not in forbidden]
 
