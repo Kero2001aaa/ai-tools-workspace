@@ -5,11 +5,13 @@ This phase adds bounded run-until-done execution to the existing LangGraph + SQL
 ## Execution model
 
 - The existing planner remains the source of truth for plans and step state.
+- Plan state is explicit: `queued`, `running`, `checkpointed`, `paused`, or `completed`.
+- `supervise_plan` makes one bounded decision per call; it does not run an infinite supervisor loop.
 - `run_plan_until_done(plan_id, max_steps=3, max_seconds=60)` executes a foreground batch.
 - The hard limits are 1–10 steps and 1–300 seconds per invocation.
 - Each step is committed to SQLite before the next step begins.
 - A completed plan returns `completed`; reaching a budget returns `checkpointed`; a failed step returns `paused`.
-- A checkpointed plan can be resumed by invoking the tool again after inspecting its state.
+- A checkpointed plan can be resumed by invoking the tool again after inspecting its state. The persisted plan row also uses `checkpointed`, avoiding the former mismatch where the run result was checkpointed but the database still said `queued`.
 - A failed step is never retried automatically. An explicit `retry_failed_plan_step` action is required.
 - A running step with an expired ten-minute lease can be reclaimed on the next execution attempt.
 
@@ -19,7 +21,7 @@ This is not an always-on daemon. It does not keep Codespaces alive, run after th
 
 ## Cost and safety
 
-The planner's local task execution does not call an LLM. The model may incur its normal provider quota when creating, inspecting, or resuming a plan through the conversational agent. There is no paid fallback. The runner stops at its configured per-invocation budgets; it does not silently extend them. Keep the Codespaces port private and do not expose control tokens.
+The task worker dispatches through separate, strictly validated handlers for workspace status and recent-memory reads. These are deterministic workers, not autonomous LLM subagents. The planner's local task execution does not call an LLM. The model may incur its normal provider quota when creating, inspecting, or resuming a plan through the conversational agent. There is no paid fallback. The runner stops at its configured per-invocation budgets; it does not silently extend them. Keep the Codespaces port private and do not expose control tokens.
 
 ## Verification
 
