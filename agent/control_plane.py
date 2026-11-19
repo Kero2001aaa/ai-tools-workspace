@@ -1,7 +1,6 @@
-"""Read-only local control plane for the AI workspace.
+"""Local control plane with authenticated, allowlisted task actions.
 
-The dashboard binds to loopback only and exposes no state-changing endpoints.
-Keep the Codespaces forwarded port private.
+The dashboard binds to loopback only. Keep the Codespaces forwarded port private.
 """
 import argparse
 import json
@@ -60,7 +59,8 @@ def status_snapshot():
         "task_records": _safe_db_summary(task_path, "tasks"),
         "security": {
             "bind": "127.0.0.1",
-            "read_only_dashboard": True,
+            "read_only_data_endpoints": True,
+            "authenticated_task_controls": True,
             "secrets_exposed": False,
         },
     }
@@ -87,7 +87,7 @@ h2{font-size:1rem;margin:0 0 12px}.value{font-size:1.8rem;font-weight:700}
 ul{padding-left:20px;line-height:1.8}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#c6d4e4}
 button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px;cursor:pointer}
 </style></head><body>
-<h1>AI Workspace</h1><p>Local control plane · read-only monitoring · no secrets exposed</p>
+<h1>AI Workspace</h1><p>Local control plane · authenticated task controls · no secrets exposed</p>
 <div class="grid">
 <section class="card"><h2>Workspace</h2><div class="value" id="state">Loading</div><p id="runtime" class="muted"></p></section>
 <section class="card"><h2>Memory records</h2><div class="value" id="memories">—</div></section>
@@ -268,7 +268,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run the read-only AI workspace dashboard.")
+    parser = argparse.ArgumentParser(description="Run the authenticated AI workspace control dashboard.")
     parser.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "localhost"])
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
