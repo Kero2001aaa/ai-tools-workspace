@@ -9,6 +9,7 @@ The planner adds durable, resumable plans without introducing arbitrary code exe
 - `list_plans(limit)`: lists recent plans.
 - `run_next_plan_step(plan_id)`: claims and executes exactly one step.
 - `run_plan_until_done(plan_id, max_steps=3, max_seconds=60)`: runs a bounded batch, committing the result/checkpoint after each step. Valid limits are 1–10 steps and 1–300 seconds. Invoke again to resume a checkpointed plan.
+- `supervise_plan(plan_id, max_steps=3, max_seconds=60)`: inspect current state and make exactly one bounded decision: execute a batch, stop, or wait. It never spins, retries failures, or launches background work.
 - `retry_failed_plan_step(plan_id, step_id)`: explicitly requeues one failed step; it does not execute it.
 
 ## Allowed step types
@@ -21,6 +22,10 @@ Only these local read-only operations are accepted:
 Plans are limited to ten steps; titles and descriptions are bounded. Unknown task types, extra payload fields, shell commands, Python snippets, URLs, and arbitrary tool names are rejected.
 
 ## Execution and recovery
+
+Plan states are `queued` (not started), `running` (a step is claimed), `checkpointed` (completed steps are saved and pending steps remain), `paused` (a step failed), and `completed`. The persisted plan state now reports `checkpointed` after each successful non-final step, matching the run result.
+
+The task worker dispatches through separate, strictly validated handlers for `workspace_status` and `memory_recent`. These are deterministic specialist workers, not independent LLM agents.
 
 Plan metadata and step results are stored in `.data/plans.sqlite3` (override with `WORKSPACE_PLAN_DB`). `run_next_plan_step` executes exactly one step; `run_plan_until_done` may execute a bounded batch. Its time budget is checked between steps and cannot interrupt a step already in progress. A failure pauses the plan; a user must explicitly request retry before the failed step is requeued. A step left running for more than ten minutes is eligible for recovery on the next execution attempt. `run_plan_until_done` is an explicit foreground run, not a background daemon: it stops at its per-run step/time budget, records each completed step in SQLite, and can be invoked again to resume. It never retries a failed step automatically. If the Codespace stops, no worker remains running; saved plans can resume when the workspace is started again.
 
