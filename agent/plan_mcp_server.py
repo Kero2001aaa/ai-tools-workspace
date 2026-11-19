@@ -41,6 +41,12 @@ def run_plan_until_done(plan_id: str, max_steps: int = 3, max_seconds: int = 60)
 
 
 @mcp.tool()
+def supervise_plan(plan_id: str, max_steps: int = 3, max_seconds: int = 60) -> dict:
+    """Inspect plan state and make one bounded run, resume-later, wait, or stop decision."""
+    return store.supervise(plan_id, max_steps=max_steps, max_seconds=max_seconds)
+
+
+@mcp.tool()
 def retry_failed_plan_step(plan_id: str, step_id: str) -> dict:
     """Explicitly requeue one failed step; a subsequent run_next_plan_step or authorized run_plan_until_done call is required to execute it."""
     return store.retry_failed_step(plan_id, step_id)
