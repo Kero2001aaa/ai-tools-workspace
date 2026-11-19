@@ -33,14 +33,14 @@ _GITHUB_TARGET = re.compile(
 _V2EX_TARGET = re.compile(
     r"^(?:[0-9]{1,12}|https://(?:www\.)?v2ex\.com/t/[0-9]{1,12}/?)$"
 )
-_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 def _text(value: str, label: str, maximum: int = _QUERY_MAX_CHARS) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be text.")
     value = value.strip()
-    if not value or len(value) > maximum or "\x00" in value:
+    if not value or value.startswith("-") or len(value) > maximum or "\x00" in value:
         raise ValueError(f"{label} must contain 1 to {maximum} characters.")
     return value
 
