@@ -1,10 +1,16 @@
 """Tests for the asynchronous LangGraph MCP tool-calling workflow."""
+import os
+import tempfile
 import unittest
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
-from agent.tool_agent import build_tool_agent, restrict_tools_for_request
+from agent.tool_agent import (
+    build_tool_agent,
+    build_workspace_server_config,
+    restrict_tools_for_request,
+)
 
 
 @tool
@@ -57,6 +63,29 @@ async def scrape_url(url: str) -> str:
     return url
 
 class ToolAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_graphify_server_is_disabled_without_explicit_configuration(self):
+        servers = build_workspace_server_config({})
+        self.assertNotIn("graphify", servers)
+
+    def test_graphify_server_requires_both_paths(self):
+        with self.assertRaisesRegex(RuntimeError, "requires both"):
+            build_workspace_server_config({"GRAPHIFY_PYTHON": os.sys.executable})
+
+    def test_graphify_server_is_registered_only_with_valid_local_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            graph_path = os.path.join(directory, "graph.json")
+            with open(graph_path, "w", encoding="utf-8") as graph_file:
+                graph_file.write('{"nodes": [], "links": []}')
+            servers = build_workspace_server_config({
+                "GRAPHIFY_PYTHON": os.sys.executable,
+                "GRAPHIFY_GRAPH_PATH": graph_path,
+            })
+        self.assertEqual(servers["graphify"]["command"], os.sys.executable)
+        self.assertEqual(
+            servers["graphify"]["args"],
+            ["-m", "graphify.serve", graph_path],
+        )
+
     async def test_explicitly_forbidden_tools_are_removed_before_model_binding(self):
         approved = restrict_tools_for_request(
             [browser_inspect, web_search, scrape_url, text_stats],
