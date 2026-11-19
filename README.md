@@ -27,7 +27,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -m agent "Explain LangGraph"
 ```
 
-Start the read-only control dashboard with `.venv/bin/python -m agent.control_plane`; open forwarded port 8000 and keep it private. See [docs/CONTROL_PLANE.md](docs/CONTROL_PLANE.md) for its security boundaries. The dashboard is loopback-only and has no write actions.\n\nSee [docs/SUPERPOWERS_WORKFLOW.md](docs/SUPERPOWERS_WORKFLOW.md) for the engineering workflow adapted from Superpowers, [docs/SETUP.md](docs/SETUP.md) for model configuration and credential handling, [docs/AI_CAPABILITY_EXPANSION.md](docs/AI_CAPABILITY_EXPANSION.md) for the Phase 13.5 integration plan, and [docs/AUTOMATION.md](docs/AUTOMATION.md) for scheduled maintenance automation. The [task worker guide](docs/TASK_WORKER.md) covers the durable local queue and its allowlisted jobs.
+Start the control dashboard with `.venv/bin/python -m agent.control_plane`; open forwarded port 8000, keep it private, and enter the one-time token printed in the terminal to use the allowlisted task controls. See [docs/CONTROL_PLANE.md](docs/CONTROL_PLANE.md) for security boundaries.\n\nSee [docs/SUPERPOWERS_WORKFLOW.md](docs/SUPERPOWERS_WORKFLOW.md) for the engineering workflow adapted from Superpowers, [docs/SETUP.md](docs/SETUP.md) for model configuration and credential handling, [docs/AI_CAPABILITY_EXPANSION.md](docs/AI_CAPABILITY_EXPANSION.md) for the Phase 13.5 integration plan, and [docs/AUTOMATION.md](docs/AUTOMATION.md) for scheduled maintenance automation. The [task worker guide](docs/TASK_WORKER.md) covers the durable local queue and its allowlisted jobs.
 
 ## Important limitations
 
