@@ -3,6 +3,7 @@
 The dashboard binds to loopback only. Keep the Codespaces forwarded port private.
 """
 import argparse
+import asyncio
 import json
 import os
 import platform
@@ -46,7 +47,8 @@ def status_snapshot():
         "Browser": env.get("ENABLE_BROWSER_TOOLS", "").lower() in {"1", "true", "yes", "on"},
         "Exa": bool(env.get("EXA_API_KEY")),
         "Firecrawl": bool(env.get("FIRECRAWL_API_KEY")),
-        "Model endpoint": bool(env.get("MODEL_API_KEY") and env.get("MODEL_BASE_URL") and env.get("MODEL_NAME")),
+        "Model endpoint": bool(env.get("MODEL_API_KEY") and env.get("MODEL_NAME")),
+        "Dashboard Agent": env.get("ENABLE_DASHBOARD_AGENT", "").lower() in {"1", "true", "yes", "on"},
     }
     return {
         "workspace": "ai-tools-workspace",
@@ -61,6 +63,7 @@ def status_snapshot():
             "bind": "127.0.0.1",
             "read_only_data_endpoints": True,
             "authenticated_task_controls": True,
+            "dashboard_agent_opt_in": True,
             "secrets_exposed": False,
         },
     }
@@ -99,6 +102,11 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 </div>
 <section class="card"><h2>Recent tasks</h2><pre id="task-list">Loading…</pre></section>
 <section class="card"><h2>Recent memory</h2><pre id="memory-list">Loading…</pre></section>
+<section class="card"><h2>AI Agent</h2>
+<p class="muted">Runs one explicit request through the configured model and approved MCP tools. Provider charges or free-tier limits may apply. Disabled until ENABLE_DASHBOARD_AGENT=true is set in the private .env file.</p>
+<textarea id="agent-request" rows="5" maxlength="4000" placeholder="Describe the research or task for the agent" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #40536a;background:#10151d;color:#fff"></textarea>
+<button onclick="runAgent()">Run AI request</button>
+<pre id="agent-result" aria-live="polite"></pre></section>
 <section class="card"><h2>Controlled task actions</h2>
 <p class="muted">Enter the one-time access token printed in the Codespaces terminal. Enqueue and execution are separate actions.</p>
 <input id="control-token" type="password" autocomplete="off" placeholder="One-time control token" style="width:min(100%,420px);padding:10px;border-radius:8px;border:1px solid #40536a;background:#10151d;color:#fff">
@@ -127,6 +135,20 @@ async function controlPost(path,body){
  const data=await response.json();
  document.getElementById('action-result').textContent=JSON.stringify(data,null,2);
  if(response.ok) await load();
+}
+async function runAgent(){
+ const request=document.getElementById('agent-request').value.trim();
+ if(!request){document.getElementById('agent-result').textContent='Enter a request first.';return}
+ if(!confirm('Send this request to the configured model? Model/API usage may incur charges or consume free-tier quota.')) return;
+ const token=document.getElementById('control-token').value;
+ if(!token){document.getElementById('agent-result').textContent='Enter the one-time token first.';return}
+ const output=document.getElementById('agent-result');
+ output.textContent='Agent is working…';
+ try{
+  const response=await fetch('/api/agent/run',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({request})});
+  const data=await response.json();
+  output.textContent=JSON.stringify(data,null,2);
+ }catch(e){output.textContent=String(e)}
 }
 async function enqueueTask(){
  if(!confirm('Enqueue this allowlisted task?')) return;
@@ -219,7 +241,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in {"/api/tasks/enqueue", "/api/tasks/run-once"}:
+        if path not in {"/api/tasks/enqueue", "/api/tasks/run-once", "/api/agent/run"}:
             return self._send(405, '{"error":"unsupported action"}', "application/json")
         if not self._authorized():
             return
@@ -231,6 +253,25 @@ class Handler(BaseHTTPRequestHandler):
             self.server.action_times.append(now)
         try:
             body = self._read_json()
+            if path == "/api/agent/run":
+                enabled = os.environ.get("ENABLE_DASHBOARD_AGENT", "").strip().lower() in {"1", "true", "yes", "on"}
+                if not enabled:
+                    return self._send(503, '{"error":"Dashboard Agent is disabled; set ENABLE_DASHBOARD_AGENT=true to opt in"}', "application/json")
+                request_text = body.get("request")
+                if not isinstance(request_text, str) or not request_text.strip() or len(request_text) > 4000:
+                    raise ValueError("request must be a non-empty string of at most 4,000 characters")
+                if set(body) != {"request"}:
+                    raise ValueError("Only the request field is accepted")
+                from agent.tool_agent import run_request
+                answer = asyncio.run(run_request(request_text.strip()))
+                answer_text = answer if isinstance(answer, str) else str(answer)
+                truncated = len(answer_text) > 20000
+                self._audit("agent-run", "succeeded")
+                return self._send(200, json.dumps({
+                    "status": "succeeded",
+                    "answer": answer_text[:20000],
+                    "truncated": truncated,
+                }), "application/json")
             if path == "/api/tasks/enqueue":
                 task_type = body.get("task_type")
                 payload = body.get("payload", {})
@@ -260,7 +301,10 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as exc:
             return self._send(400, json.dumps({"error": str(exc)}), "application/json")
         except Exception:
-            self._audit("control-action", "failed")
+            try:
+                self._audit("control-action", "failed")
+            except Exception:
+                pass
             return self._send(500, '{"error":"action failed; inspect local server logs"}', "application/json")
 
     def log_message(self, fmt, *args):
