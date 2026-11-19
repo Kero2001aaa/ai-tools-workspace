@@ -35,6 +35,12 @@ def run_next_plan_step(plan_id: str) -> dict:
 
 
 @mcp.tool()
+def run_plan_until_done(plan_id: str, max_steps: int = 3, max_seconds: int = 60) -> dict:
+    """Run a plan autonomously up to bounded step/time budgets; each step is checkpointed and resumable."""
+    return store.run_until_done(plan_id, max_steps=max_steps, max_seconds=max_seconds)
+
+
+@mcp.tool()
 def retry_failed_plan_step(plan_id: str, step_id: str) -> dict:
     """Explicitly requeue one failed step; execution still requires run_next_plan_step."""
     return store.retry_failed_step(plan_id, step_id)
