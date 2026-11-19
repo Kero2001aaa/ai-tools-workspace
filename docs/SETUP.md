@@ -389,3 +389,7 @@ The integration deliberately does not run `agent-reach setup` or `add`, and does
 The existing Exa/Firecrawl research server remains the primary general web-search path; Agent Reach's web channel is not duplicated here. YouTube can be evaluated separately later if video transcript retrieval is needed. Do not use authenticated social channels or import browser profiles without a separate explicit decision.
 
 Upstream: https://github.com/Panniantong/Agent-Reach
+
+### Agent execution budget
+
+The model/tool loop defaults to 25 LangGraph steps per request. Set `AGENT_RECURSION_LIMIT` to an integer from 5 to 50 to override it. This only bounds the agent's reasoning/tool-call loop; planner step execution remains one step per explicit tool call.
