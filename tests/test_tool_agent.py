@@ -67,24 +67,36 @@ class ToolAgentTests(unittest.IsolatedAsyncioTestCase):
         servers = build_workspace_server_config({})
         self.assertNotIn("graphify", servers)
 
-    def test_graphify_server_requires_both_paths(self):
-        with self.assertRaisesRegex(RuntimeError, "requires both"):
-            build_workspace_server_config({"GRAPHIFY_PYTHON": os.sys.executable})
+    def test_graphify_server_requires_both_settings(self):
+        with self.assertRaisesRegex(RuntimeError, "requires GRAPHIFY_MCP_COMMAND"):
+            build_workspace_server_config({"GRAPHIFY_GRAPH_PATH": "/tmp/graph.json"})
 
-    def test_graphify_server_is_registered_only_with_valid_local_paths(self):
+    def test_graphify_server_requires_installed_executable(self):
         with tempfile.TemporaryDirectory() as directory:
             graph_path = os.path.join(directory, "graph.json")
             with open(graph_path, "w", encoding="utf-8") as graph_file:
                 graph_file.write('{"nodes": [], "links": []}')
+            with self.assertRaisesRegex(RuntimeError, "installed executable"):
+                build_workspace_server_config({
+                    "GRAPHIFY_MCP_COMMAND": "missing-graphify-mcp-binary",
+                    "GRAPHIFY_GRAPH_PATH": graph_path,
+                })
+
+    def test_graphify_server_is_registered_only_with_valid_local_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            graph_path = os.path.join(directory, "graph.json")
+            command_path = os.path.join(directory, "graphify-mcp")
+            with open(graph_path, "w", encoding="utf-8") as graph_file:
+                graph_file.write('{"nodes": [], "links": []}')
+            with open(command_path, "w", encoding="utf-8") as command_file:
+                command_file.write("#!/bin/sh\\nexit 0\\n")
+            os.chmod(command_path, 0o755)
             servers = build_workspace_server_config({
-                "GRAPHIFY_PYTHON": os.sys.executable,
+                "GRAPHIFY_MCP_COMMAND": command_path,
                 "GRAPHIFY_GRAPH_PATH": graph_path,
             })
-        self.assertEqual(servers["graphify"]["command"], os.sys.executable)
-        self.assertEqual(
-            servers["graphify"]["args"],
-            ["-m", "graphify.serve", graph_path],
-        )
+        self.assertEqual(servers["graphify"]["command"], command_path)
+        self.assertEqual(servers["graphify"]["args"], [graph_path])
 
     async def test_explicitly_forbidden_tools_are_removed_before_model_binding(self):
         approved = restrict_tools_for_request(
