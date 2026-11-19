@@ -14,3 +14,6 @@ build/
 
 # Local persistent memory database (never commit user memory)
 .data/
+
+# Generated local Graphify knowledge graph
+graphify-out/
