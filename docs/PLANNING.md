@@ -22,7 +22,7 @@ Plans are limited to ten steps; titles and descriptions are bounded. Unknown tas
 
 ## Execution and recovery
 
-Plan metadata and step results are stored in `.data/plans.sqlite3` (override with `WORKSPACE_PLAN_DB`). Each call executes at most one step. A failure pauses the plan; a user must explicitly request retry before the failed step is requeued. A step left running for more than ten minutes is eligible for recovery on the next execution attempt. `run_plan_until_done` is an explicit foreground run, not a background daemon: it stops at its per-run step/time budget, records each completed step in SQLite, and can be invoked again to resume. It never retries a failed step automatically. If the Codespace stops, no worker remains running; saved plans can resume when the workspace is started again.
+Plan metadata and step results are stored in `.data/plans.sqlite3` (override with `WORKSPACE_PLAN_DB`). `run_next_plan_step` executes exactly one step; `run_plan_until_done` may execute a bounded batch. Its time budget is checked between steps and cannot interrupt a step already in progress. A failure pauses the plan; a user must explicitly request retry before the failed step is requeued. A step left running for more than ten minutes is eligible for recovery on the next execution attempt. `run_plan_until_done` is an explicit foreground run, not a background daemon: it stops at its per-run step/time budget, records each completed step in SQLite, and can be invoked again to resume. It never retries a failed step automatically. If the Codespace stops, no worker remains running; saved plans can resume when the workspace is started again.
 
 The planner is registered as a local MCP stdio server in the same way as the task queue. No new Python package, hosted service, or API key is required. Plan steps themselves do not call the model or external research providers; the model may use its normal quota when it reasons about a request or calls planner tools.
 
@@ -33,7 +33,7 @@ The planner is registered as a local MCP stdio server in the same way as the tas
 .venv/bin/python -m agent.mcp_client
 ```
 
-Expected discovery includes five planner tools. Full suite:
+Expected discovery includes six planner tools. Full suite:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
