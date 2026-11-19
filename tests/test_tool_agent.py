@@ -67,9 +67,13 @@ class ToolAgentTests(unittest.IsolatedAsyncioTestCase):
         servers = build_workspace_server_config({})
         self.assertNotIn("graphify", servers)
 
-    def test_graphify_server_requires_both_settings(self):
-        with self.assertRaisesRegex(RuntimeError, "requires GRAPHIFY_MCP_COMMAND"):
-            build_workspace_server_config({"GRAPHIFY_GRAPH_PATH": "/tmp/graph.json"})
+    def test_graphify_server_is_disabled_without_graph_path(self):
+        servers = build_workspace_server_config({})
+        self.assertNotIn("graphify", servers)
+
+    def test_graphify_server_command_requires_graph_path(self):
+        with self.assertRaisesRegex(RuntimeError, "requires GRAPHIFY_GRAPH_PATH"):
+            build_workspace_server_config({"GRAPHIFY_MCP_COMMAND": "graphify-mcp"})
 
     def test_graphify_server_requires_installed_executable(self):
         with tempfile.TemporaryDirectory() as directory:
