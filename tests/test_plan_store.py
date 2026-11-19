@@ -123,6 +123,52 @@ class PlanStoreTests(unittest.TestCase):
         reopened = PlanStore(Path(self.temp.name) / "plans.sqlite3")
         self.assertEqual(plan["id"], reopened.get_plan(plan["id"])["id"])
 
+    def test_run_until_done_completes_within_step_budget(self):
+        plan = self.store.create_plan("Autonomous batch", [
+            {"task_type": "workspace_status"},
+            {"task_type": "workspace_status"},
+            {"task_type": "workspace_status"},
+        ])
+        result = self.store.run_until_done(plan["id"], max_steps=3, max_seconds=30)
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(3, len(result["steps_executed"]))
+        self.assertEqual(0, result["remaining_steps"])
+        self.assertEqual("completed", self.store.get_plan(plan["id"])["status"])
+
+    def test_run_until_done_checkpoints_and_resumes(self):
+        plan = self.store.create_plan("Resumable batch", [
+            {"task_type": "workspace_status"},
+            {"task_type": "workspace_status"},
+            {"task_type": "workspace_status"},
+        ])
+        first = self.store.run_until_done(plan["id"], max_steps=2, max_seconds=30)
+        self.assertEqual("checkpointed", first["status"])
+        self.assertEqual(1, first["remaining_steps"])
+        reopened = PlanStore(self.store.db_path)
+        second = reopened.run_until_done(plan["id"], max_steps=2, max_seconds=30)
+        self.assertEqual("completed", second["status"])
+        self.assertEqual(1, len(second["steps_executed"]))
+        self.assertEqual("completed", reopened.get_plan(plan["id"])["status"])
+
+    def test_run_until_done_stops_on_failure(self):
+        plan = self.store.create_plan("Stop on failure", [
+            {"task_type": "workspace_status"},
+            {"task_type": "workspace_status"},
+        ])
+        with patch("agent.task_worker.execute_task", side_effect=RuntimeError("failure")):
+            result = self.store.run_until_done(plan["id"], max_steps=2, max_seconds=30)
+        self.assertEqual("paused", result["status"])
+        self.assertEqual(0, len(result["steps_executed"]))
+        self.assertEqual(["failed", "pending"], [
+            step["status"] for step in self.store.get_plan(plan["id"])["steps"]
+        ])
+
+    def test_run_until_done_rejects_unbounded_budgets(self):
+        plan = self.store.create_plan("Budget validation", [{"task_type": "workspace_status"}])
+        for kwargs in ({"max_steps": 0}, {"max_steps": 11}, {"max_seconds": 0}, {"max_seconds": 301}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                self.store.run_until_done(plan["id"], **kwargs)
+
     def test_rejects_retry_for_non_failed_step(self):
         plan = self.store.create_plan("No retry", [{"task_type": "workspace_status"}])
         with self.assertRaises(ValueError):
