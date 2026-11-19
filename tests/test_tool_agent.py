@@ -63,6 +63,26 @@ async def scrape_url(url: str) -> str:
     return url
 
 class ToolAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_agent_reach_server_is_disabled_by_default(self):
+        self.assertNotIn("agent_reach", build_workspace_server_config({}))
+
+    def test_agent_reach_server_requires_installed_executable(self):
+        from unittest.mock import patch
+        with patch("agent.tool_agent.shutil.which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "agent-reach executable"):
+                build_workspace_server_config({"ENABLE_AGENT_REACH_TOOLS": "true"})
+
+    def test_agent_reach_server_registers_only_when_enabled(self):
+        from unittest.mock import patch
+        with patch("agent.tool_agent.shutil.which", return_value="/home/user/.local/bin/agent-reach"):
+            servers = build_workspace_server_config({
+                "ENABLE_AGENT_REACH_TOOLS": "true",
+                "AGENT_REACH_COMMAND": "agent-reach",
+            })
+        self.assertEqual(servers["agent_reach"]["command"], os.sys.executable)
+        self.assertEqual(servers["agent_reach"]["args"], ["-m", "agent.agent_reach_mcp_server"])
+        self.assertEqual(servers["agent_reach"]["env"]["AGENT_REACH_COMMAND"], "/home/user/.local/bin/agent-reach")
+
     def test_graphify_server_is_disabled_without_explicit_configuration(self):
         servers = build_workspace_server_config({})
         self.assertNotIn("graphify", servers)
