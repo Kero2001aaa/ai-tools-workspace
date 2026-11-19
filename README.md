@@ -9,6 +9,8 @@ A cloud-first, cost-conscious foundation for building an external AI agent works
 - LangGraph orchestration and MCP client dependencies
 - Optional OpenAI-compatible chat-model adapter
 - Offline mode that makes no model API calls when credentials are absent
+- Optional Graphify code knowledge graph
+- Optional public-only Agent Reach bridge for GitHub and V2EX
 - Safe environment-variable template and automated tests
 
 ## Start
