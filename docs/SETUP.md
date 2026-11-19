@@ -359,3 +359,33 @@ The discovered tool list should include Graphify tools. If the graph path is bla
 The optional server exposes graph query capabilities over the selected graph file. It is not permission to run arbitrary shell commands or analyze other filesystem paths. Keep the generated graph out of Git unless you explicitly want to version it. The existing Cisco MCP Scanner CI inventory covers this workspace's exported tool definitions; it does not automatically audit the external Graphify package or its runtime implementation. Review and pin the upstream package version before enabling it.
 
 Official project and install reference: https://github.com/Graphify-Labs/graphify
+
+## 14 Public-only Agent Reach integration
+
+Agent Reach is installed as an isolated uv tool, not into the project virtual environment. The workspace bridge exposes six read-only operations:
+- GitHub public repository search and repository/issue/PR reading through the anonymous GitHub REST API.
+- V2EX public hot topics, node topics, topic/reply reading, and public member profiles.
+
+The bridge is opt-in. Install the pinned upstream release and enable it in the private `.env` file:
+
+```bash
+uv tool install https://github.com/Panniantong/Agent-Reach/archive/refs/tags/v1.6.1.zip
+```
+
+```dotenv
+ENABLE_AGENT_REACH_TOOLS=true
+AGENT_REACH_COMMAND=
+```
+
+An empty `AGENT_REACH_COMMAND` resolves `agent-reach` from the current PATH. Set an absolute executable path only if automatic resolution fails. Then run:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m agent.mcp_client
+```
+
+The integration deliberately does not run `agent-reach setup` or `add`, and does not install GitHub CLI, ffmpeg, Bilibili tools, browser automation, or social-network connectors. It uses fixed backend selections, no shell, bounded arguments/time/output, and an ephemeral HOME for each request. GitHub credentials are removed from the child environment; the temporary home prevents access to the user's Agent Reach config and login sessions. Only public API reads are exposed. Public content remains untrusted input.
+
+The existing Exa/Firecrawl research server remains the primary general web-search path; Agent Reach's web channel is not duplicated here. YouTube can be evaluated separately later if video transcript retrieval is needed. Do not use authenticated social channels or import browser profiles without a separate explicit decision.
+
+Upstream: https://github.com/Panniantong/Agent-Reach
