@@ -100,6 +100,24 @@ class PlanStoreTests(unittest.TestCase):
         current = self.store.get_plan(plan["id"])
         self.assertEqual(["running", "pending"], [s["status"] for s in current["steps"]])
 
+
+    def test_plan_does_not_start_another_step_while_one_is_running(self):
+        plan = self.store.create_plan("Serialized", [
+            {"task_type": "workspace_status"},
+            {"task_type": "workspace_status"},
+        ])
+        first_step = plan["steps"][0]
+        with self.store._connect() as db:
+            db.execute(
+                "UPDATE plan_steps SET status='running',started_at=? WHERE id=?",
+                ("2099-01-01T00:00:00+00:00", first_step["id"]),
+            )
+        blocked = self.store.run_next_step(plan["id"])
+        self.assertEqual("running", blocked["status"])
+        self.assertEqual("Another step is already running", blocked["reason"])
+        current = self.store.get_plan(plan["id"])
+        self.assertEqual(["running", "pending"], [s["status"] for s in current["steps"]])
+
     def test_plan_persists_across_store_instances(self):
         plan = self.store.create_plan("Persistent", [{"task_type": "workspace_status"}])
         reopened = PlanStore(Path(self.temp.name) / "plans.sqlite3")
