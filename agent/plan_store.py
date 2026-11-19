@@ -235,6 +235,66 @@ class PlanStore:
         return {"status": "step_succeeded", "plan_status": status, "plan_id": plan_id,
                 "step_id": step["id"], "position": step["position"], "result": result}
 
+    def run_until_done(self, plan_id, max_steps=3, max_seconds=60):
+        """Run a bounded batch, checkpointing after every step for later resume."""
+        import time
+
+        if not isinstance(max_steps, int) or isinstance(max_steps, bool) or not 1 <= max_steps <= 10:
+            raise ValueError("max_steps must be an integer from 1 to 10")
+        if not isinstance(max_seconds, int) or isinstance(max_seconds, bool) or not 1 <= max_seconds <= 300:
+            raise ValueError("max_seconds must be an integer from 1 to 300")
+        if self.get_plan(plan_id) is None:
+            raise ValueError("Plan not found")
+
+        started = time.monotonic()
+        executed = []
+        while len(executed) < max_steps:
+            if time.monotonic() - started >= max_seconds:
+                break
+            outcome = self.run_next_step(plan_id)
+            if outcome.get("status") == "step_succeeded":
+                executed.append({
+                    "step_id": outcome["step_id"],
+                    "position": outcome["position"],
+                    "status": "succeeded",
+                })
+                if outcome.get("plan_status") == "completed":
+                    return {
+                        "status": "completed",
+                        "plan_id": plan_id,
+                        "steps_executed": executed,
+                        "remaining_steps": 0,
+                    }
+                continue
+            if outcome.get("status") in {"completed", "paused", "running"}:
+                current = self.get_plan(plan_id)
+                remaining = sum(
+                    step["status"] in {"pending", "running"}
+                    for step in current["steps"]
+                )
+                return {
+                    "status": outcome["status"],
+                    "plan_id": plan_id,
+                    "steps_executed": executed,
+                    "remaining_steps": remaining,
+                    "reason": outcome.get("reason") or outcome.get("error"),
+                }
+
+        current = self.get_plan(plan_id)
+        remaining = sum(
+            step["status"] in {"pending", "running"}
+            for step in current["steps"]
+        )
+        final_status = "completed" if current["status"] == "completed" else "checkpointed"
+        return {
+            "status": final_status,
+            "plan_id": plan_id,
+            "plan_status": current["status"],
+            "steps_executed": executed,
+            "remaining_steps": remaining,
+            "reason": "Per-run step or time budget reached; invoke again to resume" if remaining else None,
+        }
+
     def retry_failed_step(self, plan_id, step_id):
         now = _stamp(_now())
         with self._connect() as db:
