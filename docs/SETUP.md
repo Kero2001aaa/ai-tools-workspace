@@ -306,3 +306,14 @@ Do not install every repository blindly. Components can overlap, require separat
 ## 14. Control Codespaces costs
 
 Stop Codespaces when they are not in use. Check the Codespaces page for active instances and stop unused ones. Review your GitHub billing and included quota before leaving a Codespace running.
+
+
+## 15. Phase 13.5 — AI capability expansion
+
+The requested toolset is tracked in [AI_CAPABILITY_EXPANSION.md](AI_CAPABILITY_EXPANSION.md). The first low-risk integration is the existing OpenAI-compatible model adapter: it already accepts a custom `MODEL_BASE_URL`, so a verified OmniRoute deployment can be used without adding a second SDK.
+
+Do not copy the example endpoint into `.env` until you have deployed a trusted gateway and confirmed its actual URL. Configure the gateway key and model route only in the private `.env` file. Keep paid providers and paid fallback disabled. OmniRoute is not deployed automatically by this repository.
+
+The free API list is a discovery reference, not a guarantee of current free access. Verify provider limits and data policies at their official sites. Graphify, Agent-Reach, Superpowers, and RTK are evaluated in the phase plan before runtime installation. Understand Anything is deferred for comparison with Graphify; REA is deferred as a specialist reverse-engineering tool.
+
+No browser session, cookies, or credentials are imported by this phase. Authenticated Agent-Reach channels require a separate explicit security review.
