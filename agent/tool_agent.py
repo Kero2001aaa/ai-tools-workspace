@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import os
 import re
+import shutil
 import sys
 
 from dotenv import load_dotenv
@@ -34,21 +35,24 @@ def build_workspace_server_config(env=None):
             "args": ["-m", "agent.browser_mcp_server"],
         }
 
-    graphify_python = env.get("GRAPHIFY_PYTHON", "").strip()
+    graphify_command = env.get("GRAPHIFY_MCP_COMMAND", "graphify-mcp").strip()
     graphify_graph = env.get("GRAPHIFY_GRAPH_PATH", "").strip()
-    if bool(graphify_python) != bool(graphify_graph):
+    if bool(graphify_command) != bool(graphify_graph):
         raise RuntimeError(
-            "Graphify MCP requires both GRAPHIFY_PYTHON and GRAPHIFY_GRAPH_PATH."
+            "Graphify MCP requires GRAPHIFY_MCP_COMMAND and GRAPHIFY_GRAPH_PATH."
         )
-    if graphify_python and graphify_graph:
-        if not os.path.isfile(graphify_python) or not os.access(graphify_python, os.X_OK):
-            raise RuntimeError("GRAPHIFY_PYTHON must point to an executable Python interpreter.")
+    if graphify_command and graphify_graph:
+        resolved_command = shutil.which(graphify_command)
+        if not resolved_command:
+            raise RuntimeError(
+                "GRAPHIFY_MCP_COMMAND must resolve to an installed executable (for example graphify-mcp)."
+            )
         if not os.path.isfile(graphify_graph) or not graphify_graph.endswith(".json"):
             raise RuntimeError("GRAPHIFY_GRAPH_PATH must point to an existing graph JSON file.")
         servers["graphify"] = {
             "transport": "stdio",
-            "command": graphify_python,
-            "args": ["-m", "graphify.serve", graphify_graph],
+            "command": resolved_command,
+            "args": [graphify_graph],
         }
     return servers
 
