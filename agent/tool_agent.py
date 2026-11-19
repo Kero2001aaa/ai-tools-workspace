@@ -28,6 +28,8 @@ def build_workspace_server_config(env=None):
                      "args": ["-m", "agent.research_mcp_server"]},
         "tasks": {"transport": "stdio", "command": sys.executable,
                   "args": ["-m", "agent.task_mcp_server"]},
+        "planner": {"transport": "stdio", "command": sys.executable,
+                    "args": ["-m", "agent.plan_mcp_server"]},
     }
     if env.get("ENABLE_BROWSER_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}:
         servers["browser"] = {
