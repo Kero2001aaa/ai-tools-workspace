@@ -321,32 +321,30 @@ No browser session, cookies, or credentials are imported by this phase. Authenti
 
 ## 16. Optional Graphify MCP integration
 
-Graphify is an optional, local-first code knowledge graph. Its upstream project publishes the Python package as `graphifyy` (two trailing y characters) and provides an MCP stdio server. The workspace now has a guarded, opt-in server registration; it does not add Graphify to the base `.venv`.
+Graphify is an optional, local-first code knowledge graph. Its upstream project publishes the Python package as `graphifyy` (two trailing y characters) and provides an MCP stdio server. The workspace now has a guarded, opt-in registration for Graphify's official `graphify-mcp` stdio executable. It does not add Graphify to the base `.venv`.
 
-1. Install the official package with the MCP extra in the Codespace:
+1. Install the official package with the MCP extra:
 
 ```bash
 uv tool install "graphifyy[mcp]"
 ```
 
-2. Build the repository graph directly from the Codespace terminal:
+2. Build a local code-only graph without invoking an LLM:
 
 ```bash
-graphify .
+graphify extract . --code-only --no-cluster --max-workers 2
 ```
 
-Graphify's CLI accepts a project path and runs its extraction workflow. This creates `graphify-out/graph.json` and a `.graphify_python` file containing the isolated interpreter path. Graphify's code parsing is local and does not require an LLM; optional semantic extraction for documents/media can require a model.
-
-3. Read the interpreter path:
+3. Confirm the executable is on PATH:
 
 ```bash
-cat graphify-out/.graphify_python
+which graphify-mcp
 ```
 
-4. Set these two values in the private `.env` file. `GRAPHIFY_PYTHON` must be the executable path printed by the previous command; `GRAPHIFY_GRAPH_PATH` is the absolute path to this repository's `graphify-out/graph.json`.
+4. Set the following in the private `.env` file. The command defaults to `graphify-mcp`; override it only if the executable is installed under another name or location. Use the absolute path to the graph file.
 
 ```dotenv
-GRAPHIFY_PYTHON=/absolute/path/to/graphify-python
+GRAPHIFY_MCP_COMMAND=graphify-mcp
 GRAPHIFY_GRAPH_PATH=/workspaces/ai-tools-workspace/graphify-out/graph.json
 ```
 
@@ -356,7 +354,7 @@ GRAPHIFY_GRAPH_PATH=/workspaces/ai-tools-workspace/graphify-out/graph.json
 .venv/bin/python -m agent.mcp_client
 ```
 
-The discovered tool list should include Graphify tools. If either setting is missing, the workspace keeps Graphify disconnected. Invalid interpreter or graph paths fail closed during configuration. The graph file is local project data; review it before sharing or committing it.
+The discovered tool list should include Graphify tools. If the graph path is blank, the workspace keeps Graphify disconnected. An unavailable executable or invalid graph path fails closed during configuration. The graph file is local project data; review it before sharing or committing it.
 
 The optional server exposes graph query capabilities over the selected graph file. It is not permission to run arbitrary shell commands or analyze other filesystem paths. Keep the generated graph out of Git unless you explicitly want to version it. The existing Cisco MCP Scanner CI inventory covers this workspace's exported tool definitions; it does not automatically audit the external Graphify package or its runtime implementation. Review and pin the upstream package version before enabling it.
 
