@@ -32,3 +32,6 @@ Start the control dashboard with `.venv/bin/python -m agent.control_plane`; open
 ## Important limitations
 
 This project adds external tools and workflows; it cannot increase ChatGPT's native token quota, context window, or model capability. The model adapter is only a client interface: inference requires a separately available compatible endpoint. Hosted providers may charge for usage. No API keys are included.
+
+
+- Dashboard Agent (opt-in): authenticated request execution is documented in docs/CONTROL_PLANE.md. It is disabled by default and may consume model/provider quota.
