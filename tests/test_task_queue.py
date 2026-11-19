@@ -84,5 +84,17 @@ class TaskQueueTests(unittest.TestCase):
             self.queue.claim_next(lease_seconds=1)
 
 
+    def test_worker_registry_routes_only_to_specialized_allowlisted_handlers(self):
+        from agent.task_worker import WORKER_REGISTRY, execute_task
+        self.assertEqual({'workspace_status', 'memory_recent'}, set(WORKER_REGISTRY))
+        result = execute_task({'task_type': 'workspace_status', 'payload': {}})
+        self.assertIn('python', result)
+        with self.assertRaises(ValueError):
+            execute_task({'task_type': 'workspace_status', 'payload': {'command': 'whoami'}})
+        with self.assertRaises(ValueError):
+            execute_task({'task_type': 'shell', 'payload': {}})
+        with self.assertRaises(ValueError):
+            execute_task({'task_type': 'workspace_status', 'payload': {}, 'extra': True})
+
 if __name__ == "__main__":
     unittest.main()
