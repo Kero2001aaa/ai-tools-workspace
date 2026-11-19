@@ -7,7 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from http.server import ThreadingHTTPServer
 
 from agent.control_plane import Handler, status_snapshot, task_snapshot, memory_snapshot
@@ -102,6 +102,81 @@ class ControlPlaneTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=3)
+
+    def test_dashboard_agent_is_disabled_by_default(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.control_token = "test-token"
+        server.action_lock = threading.Lock()
+        server.action_times = []
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            connection.request("POST", "/api/agent/run", body=json.dumps({"request": "hello"}),
+                headers={"Content-Type": "application/json", "Authorization": "Bearer test-token"})
+            response = connection.getresponse()
+            self.assertEqual(503, response.status)
+            payload = json.loads(response.read())
+            self.assertIn("disabled", payload["error"])
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_dashboard_agent_requires_auth_and_runs_explicit_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audit_path = Path(directory) / "audit.sqlite3"
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            server.control_token = "test-token"
+            server.action_lock = threading.Lock()
+            server.action_times = []
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+                body = json.dumps({"request": "Summarize the project architecture"})
+                with patch.dict(os.environ, {"ENABLE_DASHBOARD_AGENT": "true", "CONTROL_AUDIT_DB": str(audit_path)}), \\
+                     patch("agent.tool_agent.run_request", new=AsyncMock(return_value="Architecture summary")) as run_request:
+                    connection.request("POST", "/api/agent/run", body=body,
+                        headers={"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    self.assertEqual(401, response.status)
+                    response.read()
+
+                    connection.request("POST", "/api/agent/run", body=body,
+                        headers={"Content-Type": "application/json", "Authorization": "Bearer test-token"})
+                    response = connection.getresponse()
+                    payload = json.loads(response.read())
+                    self.assertEqual(200, response.status)
+                    self.assertEqual("Architecture summary", payload["answer"])
+                    run_request.assert_awaited_once_with("Summarize the project architecture")
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=3)
+
+    def test_dashboard_agent_rejects_extra_fields(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.control_token = "test-token"
+        server.action_lock = threading.Lock()
+        server.action_times = []
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            with patch.dict(os.environ, {"ENABLE_DASHBOARD_AGENT": "true"}):
+                connection.request("POST", "/api/agent/run", body=json.dumps({"request": "hello", "tools": ["shell"]}),
+                    headers={"Content-Type": "application/json", "Authorization": "Bearer test-token"})
+                response = connection.getresponse()
+                self.assertEqual(400, response.status)
+                response.read()
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
 
     def test_task_control_rejects_unapproved_task_type(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
