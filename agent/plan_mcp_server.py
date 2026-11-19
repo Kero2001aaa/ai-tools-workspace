@@ -42,7 +42,7 @@ def run_plan_until_done(plan_id: str, max_steps: int = 3, max_seconds: int = 60)
 
 @mcp.tool()
 def retry_failed_plan_step(plan_id: str, step_id: str) -> dict:
-    """Explicitly requeue one failed step; execution still requires run_next_plan_step."""
+    """Explicitly requeue one failed step; a subsequent run_next_plan_step or authorized run_plan_until_done call is required to execute it."""
     return store.retry_failed_step(plan_id, step_id)
 
 
