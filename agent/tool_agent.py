@@ -15,9 +15,9 @@ from agent.context_manager import compact_messages, estimate_tokens
 from agent.model import load_chat_model
 
 
-async def load_workspace_tools():
-    """Start local MCP servers; browser tools are opt-in and separately installed."""
-    load_dotenv()
+def build_workspace_server_config(env=None):
+    """Build the allowlisted MCP server map from environment configuration."""
+    env = os.environ if env is None else env
     servers = {
         "workspace": {"transport": "stdio", "command": sys.executable,
                       "args": ["-m", "agent.mcp_server"]},
@@ -28,12 +28,35 @@ async def load_workspace_tools():
         "tasks": {"transport": "stdio", "command": sys.executable,
                   "args": ["-m", "agent.task_mcp_server"]},
     }
-    if os.getenv("ENABLE_BROWSER_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}:
+    if env.get("ENABLE_BROWSER_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}:
         servers["browser"] = {
             "transport": "stdio", "command": sys.executable,
             "args": ["-m", "agent.browser_mcp_server"],
         }
-    client = MultiServerMCPClient(servers)
+
+    graphify_python = env.get("GRAPHIFY_PYTHON", "").strip()
+    graphify_graph = env.get("GRAPHIFY_GRAPH_PATH", "").strip()
+    if bool(graphify_python) != bool(graphify_graph):
+        raise RuntimeError(
+            "Graphify MCP requires both GRAPHIFY_PYTHON and GRAPHIFY_GRAPH_PATH."
+        )
+    if graphify_python and graphify_graph:
+        if not os.path.isfile(graphify_python) or not os.access(graphify_python, os.X_OK):
+            raise RuntimeError("GRAPHIFY_PYTHON must point to an executable Python interpreter.")
+        if not os.path.isfile(graphify_graph) or not graphify_graph.endswith(".json"):
+            raise RuntimeError("GRAPHIFY_GRAPH_PATH must point to an existing graph JSON file.")
+        servers["graphify"] = {
+            "transport": "stdio",
+            "command": graphify_python,
+            "args": ["-m", "graphify.serve", graphify_graph],
+        }
+    return servers
+
+
+async def load_workspace_tools():
+    """Start approved local MCP servers; optional integrations require explicit configuration."""
+    load_dotenv()
+    client = MultiServerMCPClient(build_workspace_server_config())
     return await client.get_tools()
 
 
