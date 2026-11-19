@@ -39,3 +39,7 @@ Expected discovery includes five planner tools. Full suite:
 ```
 
 This is bounded planning, not unrestricted autonomous execution or a scheduler. Only add future step types with narrow schemas, source review, tests, explicit permission boundaries, and approval gates for side effects.
+
+## Multi-tool agent budget
+
+The LangGraph tool-calling loop defaults to 25 graph steps per request so a bounded multi-step plan can finish and return a final answer. Override with `AGENT_RECURSION_LIMIT` (valid range 5–50). This is a loop guard, not permission to execute more plan steps in one planner call: each `run_next_plan_step` still executes exactly one task.
