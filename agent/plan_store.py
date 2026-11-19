@@ -162,6 +162,14 @@ class PlanStore:
                 WHERE plan_id=? AND status='running' AND started_at<?""",
                 (plan_id, stale_before),
             )
+            failed_count = db.execute(
+                "SELECT COUNT(*) FROM plan_steps WHERE plan_id=? AND status='failed'", (plan_id,)
+            ).fetchone()[0]
+            if failed_count:
+                db.execute("UPDATE plans SET status='paused',updated_at=? WHERE id=?", (now_stamp, plan_id))
+                db.commit()
+                return {"status": "paused", "plan_id": plan_id, "step": None,
+                        "reason": "A failed step must be explicitly retried before continuing"}
             step = db.execute(
                 "SELECT * FROM plan_steps WHERE plan_id=? AND status='pending' ORDER BY position LIMIT 1",
                 (plan_id,),
