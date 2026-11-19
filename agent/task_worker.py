@@ -36,8 +36,8 @@ WORKER_REGISTRY = {
 
 
 def execute_task(task):
-    if not isinstance(task, dict) or set(task) != {"task_type", "payload"}:
-        raise ValueError("Task must contain only task_type and payload")
+    if not isinstance(task, dict) or "task_type" not in task or "payload" not in task:
+        raise ValueError("Task must contain task_type and payload")
     worker = WORKER_REGISTRY.get(task["task_type"])
     if worker is None:
         raise ValueError("Task type is not allowlisted")
