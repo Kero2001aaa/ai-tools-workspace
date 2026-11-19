@@ -2,6 +2,7 @@
 import http.client
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -41,6 +42,88 @@ class ControlPlaneTests(unittest.TestCase):
                  patch("agent.control_plane.TaskQueue", return_value=queue):
                 self.assertEqual(1, len(memory_snapshot(10)))
                 self.assertEqual(1, len(task_snapshot(20)))
+
+    def test_authenticated_task_controls_and_audit_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = TaskQueue(Path(directory) / "tasks.sqlite3")
+            audit_path = Path(directory) / "audit.sqlite3"
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            server.control_token = "test-one-time-token"
+            server.action_lock = threading.Lock()
+            server.action_times = []
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+                body = json.dumps({"task_type": "workspace_status", "payload": {}, "max_attempts": 1})
+                connection.request("POST", "/api/tasks/enqueue", body=body,
+                                   headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                self.assertEqual(401, response.status)
+                response.read()
+
+                connection.request("POST", "/api/tasks/enqueue", body=body, headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer test-one-time-token",
+                    "Origin": "https://attacker.example",
+                })
+                response = connection.getresponse()
+                self.assertEqual(403, response.status)
+                response.read()
+
+                with patch("agent.control_plane.TaskQueue", return_value=queue), \\
+                     patch.dict(os.environ, {"CONTROL_AUDIT_DB": str(audit_path)}):
+                    connection.request("POST", "/api/tasks/enqueue", body=body, headers={
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer test-one-time-token",
+                    })
+                    response = connection.getresponse()
+                    payload = json.loads(response.read())
+                    self.assertEqual(201, response.status)
+                    self.assertEqual("queued", payload["status"])
+                    self.assertEqual("workspace_status", payload["task_type"])
+
+                    with patch("agent.control_plane.run_once", return_value={
+                        "status": "succeeded", "task_id": "test-task",
+                    }):
+                        connection.request("POST", "/api/tasks/run-once", body="{}", headers={
+                            "Content-Type": "application/json",
+                            "Authorization": "Bearer test-one-time-token",
+                        })
+                        response = connection.getresponse()
+                        result = json.loads(response.read())
+                        self.assertEqual(200, response.status)
+                        self.assertEqual("succeeded", result["status"])
+
+                with sqlite3.connect(audit_path) as db:
+                    count = db.execute("SELECT COUNT(*) FROM control_audit").fetchone()[0]
+                self.assertEqual(2, count)
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=3)
+
+    def test_task_control_rejects_unapproved_task_type(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.control_token = "test-token"
+        server.action_lock = threading.Lock()
+        server.action_times = []
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            connection.request("POST", "/api/tasks/enqueue",
+                body=json.dumps({"task_type": "run_shell", "payload": {}}),
+                headers={"Content-Type": "application/json", "Authorization": "Bearer test-token"})
+            response = connection.getresponse()
+            self.assertEqual(400, response.status)
+            response.read()
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
 
     def test_http_dashboard_and_json_endpoints(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
