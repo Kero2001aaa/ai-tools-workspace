@@ -7,13 +7,19 @@ import argparse
 import json
 import os
 import platform
+import secrets
+import hmac
+import sqlite3
+import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 from agent.memory_store import MemoryStore
-from agent.task_queue import TaskQueue
+from agent.task_queue import ALLOWED_TASK_TYPES, TaskQueue
+from agent.task_worker import run_once
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,7 +99,13 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 </div>
 <section class="card"><h2>Recent tasks</h2><pre id="task-list">Loading…</pre></section>
 <section class="card"><h2>Recent memory</h2><pre id="memory-list">Loading…</pre></section>
-<p class="muted">Refreshes every 30 seconds. The dashboard has no enqueue, execute, delete, or configuration endpoints.</p>
+<section class="card"><h2>Controlled task actions</h2>
+<p class="muted">Enter the one-time access token printed in the Codespaces terminal. Enqueue and execution are separate actions.</p>
+<input id="control-token" type="password" autocomplete="off" placeholder="One-time control token" style="width:min(100%,420px);padding:10px;border-radius:8px;border:1px solid #40536a;background:#10151d;color:#fff">
+<select id="task-type" style="padding:10px;margin:8px"><option value="workspace_status">Workspace status</option><option value="memory_recent">Recent memories (read-only)</option></select>
+<button onclick="enqueueTask()">Enqueue task</button><button onclick="runTask()">Run one queued task</button>
+<pre id="action-result" aria-live="polite"></pre></section>
+<p class="muted">Refreshes every 30 seconds. Task execution is limited to the two allowlisted task types; no shell or arbitrary code execution.</p>
 <script>
 async function load(){
  const [s,t,m]=await Promise.all([
@@ -108,13 +120,79 @@ async function load(){
  document.getElementById('task-list').textContent=JSON.stringify(t,null,2);
  document.getElementById('memory-list').textContent=JSON.stringify(m,null,2);
 }
+async function controlPost(path,body){
+ const token=document.getElementById('control-token').value;
+ if(!token){document.getElementById('action-result').textContent='Enter the one-time token first.';return}
+ const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(body)});
+ const data=await response.json();
+ document.getElementById('action-result').textContent=JSON.stringify(data,null,2);
+ if(response.ok) await load();
+}
+async function enqueueTask(){
+ if(!confirm('Enqueue this allowlisted task?')) return;
+ const type=document.getElementById('task-type').value;
+ const payload=type==='memory_recent'?{limit:5}:{};
+ try{await controlPost('/api/tasks/enqueue',{task_type:type,payload,max_attempts:1})}
+ catch(e){document.getElementById('action-result').textContent=String(e)}
+}
+async function runTask(){
+ if(!confirm('Execute exactly one due task from the allowlist?')) return;
+ try{await controlPost('/api/tasks/run-once',{})}
+ catch(e){document.getElementById('action-result').textContent=String(e)}
+}
 load().catch(e=>{document.getElementById('state').textContent='Error';document.getElementById('task-list').textContent=String(e)});
 setInterval(()=>load().catch(()=>{}),30000);
 </script></body></html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AIWorkspaceControlPlane/1.0"
+    server_version = "AIWorkspaceControlPlane/1.1"
+
+    def _authorized(self):
+        supplied = self.headers.get("Authorization", "")
+        expected = "Bearer " + self.server.control_token
+        if not hmac.compare_digest(supplied, expected):
+            self._send(401, '{"error":"authentication required"}', "application/json")
+            return False
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host", "")
+        if origin:
+            parsed = urlparse(origin)
+            if parsed.netloc != host or parsed.scheme not in {"http", "https"}:
+                self._send(403, '{"error":"cross-origin request rejected"}', "application/json")
+                return False
+        fetch_site = self.headers.get("Sec-Fetch-Site")
+        if fetch_site and fetch_site != "same-origin":
+            self._send(403, '{"error":"cross-site request rejected"}', "application/json")
+            return False
+        return True
+
+    def _read_json(self):
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+            raise ValueError("Content-Type must be application/json")
+        raw_length = self.headers.get("Content-Length", "")
+        if not raw_length.isdigit() or not 1 <= int(raw_length) <= 8192:
+            raise ValueError("Request body must be between 1 and 8192 bytes")
+        value = json.loads(self.rfile.read(int(raw_length)))
+        if not isinstance(value, dict):
+            raise ValueError("Request body must be a JSON object")
+        return value
+
+    def _audit(self, action, status, task_id=None):
+        path = Path(os.environ.get("CONTROL_AUDIT_DB", ".data/control_audit.sqlite3")).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path, timeout=3) as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS control_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                occurred_at TEXT NOT NULL,
+                action TEXT NOT NULL,
+                status TEXT NOT NULL,
+                task_id TEXT
+            )""")
+            db.execute(
+                "INSERT INTO control_audit(occurred_at,action,status,task_id) VALUES(?,?,?,?)",
+                (datetime.now(timezone.utc).isoformat(), action, status, task_id),
+            )
 
     def _send(self, status, body, content_type):
         data = body.encode("utf-8")
@@ -140,7 +218,50 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, '{"error":"not found"}', "application/json")
 
     def do_POST(self):
-        self._send(405, '{"error":"read-only control plane"}', "application/json")
+        path = urlparse(self.path).path
+        if path not in {"/api/tasks/enqueue", "/api/tasks/run-once"}:
+            return self._send(405, '{"error":"unsupported action"}', "application/json")
+        if not self._authorized():
+            return
+        with self.server.action_lock:
+            now = time.monotonic()
+            self.server.action_times = [stamp for stamp in self.server.action_times if now - stamp < 60]
+            if len(self.server.action_times) >= 10:
+                return self._send(429, '{"error":"action rate limit exceeded"}', "application/json")
+            self.server.action_times.append(now)
+        try:
+            body = self._read_json()
+            if path == "/api/tasks/enqueue":
+                task_type = body.get("task_type")
+                payload = body.get("payload", {})
+                attempts = body.get("max_attempts", 1)
+                if task_type not in ALLOWED_TASK_TYPES:
+                    raise ValueError("Task type is not allowlisted")
+                if not isinstance(payload, dict):
+                    raise ValueError("Payload must be a JSON object")
+                if not isinstance(attempts, int) or isinstance(attempts, bool) or not 1 <= attempts <= 3:
+                    raise ValueError("max_attempts must be an integer from 1 to 3")
+                task = TaskQueue().enqueue(task_type, payload, max_attempts=attempts)
+                self._audit("enqueue:" + task_type, "succeeded", task["id"])
+                return self._send(201, json.dumps({
+                    "status": "queued", "task_id": task["id"], "task_type": task_type,
+                }), "application/json")
+            if body:
+                raise ValueError("run-once accepts an empty JSON object only")
+            result = run_once()
+            task_id = result.get("task_id")
+            status = result.get("status", "unknown")
+            self._audit("run-once", status, task_id)
+            return self._send(200, json.dumps({
+                "status": status, "task_id": task_id,
+                "attempts": result.get("attempts"),
+                "error": result.get("error"),
+            }), "application/json")
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self._send(400, json.dumps({"error": str(exc)}), "application/json")
+        except Exception:
+            self._audit("control-action", "failed")
+            return self._send(500, '{"error":"action failed; inspect local server logs"}', "application/json")
 
     def log_message(self, fmt, *args):
         print("control-plane: " + (fmt % args))
@@ -154,8 +275,12 @@ def main():
     if not 1024 <= args.port <= 65535:
         raise SystemExit("Port must be between 1024 and 65535.")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"Read-only dashboard: http://{args.host}:{args.port}")
+    server.control_token = secrets.token_urlsafe(32)
+    server.action_lock = threading.Lock()
+    server.action_times = []
+    print(f"Dashboard: http://{args.host}:{args.port}")
     print("Loopback-only listener. Keep the forwarded Codespaces port private.")
+    print("One-time control token (shown once; do not share): " + server.control_token)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
