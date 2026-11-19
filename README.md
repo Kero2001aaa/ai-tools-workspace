@@ -7,7 +7,7 @@ A cloud-first, cost-conscious foundation for building an external AI agent works
 - Minimal GitHub Codespaces development container
 - Python 3.12 with a workspace-local `.venv`
 - LangGraph orchestration and MCP client dependencies
-- Persistent bounded planner with resumable, allowlisted read-only steps
+- Persistent bounded planner with checkpointed run-until-done execution and resumable, allowlisted read-only steps
 - Optional OpenAI-compatible chat-model adapter
 - Offline mode that makes no model API calls when credentials are absent
 - Optional Graphify code knowledge graph
@@ -30,7 +30,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 Start the control dashboard with `.venv/bin/python -m agent.control_plane`; open forwarded port 8000, keep it private, and enter the one-time token printed in the terminal to use the allowlisted task controls. See [docs/CONTROL_PLANE.md](docs/CONTROL_PLANE.md) for security boundaries.
 
-See [docs/SUPERPOWERS_WORKFLOW.md](docs/SUPERPOWERS_WORKFLOW.md) for the engineering workflow adapted from Superpowers, [docs/SETUP.md](docs/SETUP.md) for model configuration and credential handling, [docs/AI_CAPABILITY_EXPANSION.md](docs/AI_CAPABILITY_EXPANSION.md) for the Phase 13.5 integration plan, and [docs/AUTOMATION.md](docs/AUTOMATION.md) for scheduled maintenance automation. The [task worker guide](docs/TASK_WORKER.md) covers the durable local queue and its allowlisted jobs. The [planning guide](docs/PLANNING.md) documents Phase 16 persistent planning and step execution.
+See [docs/SUPERPOWERS_WORKFLOW.md](docs/SUPERPOWERS_WORKFLOW.md) for the engineering workflow adapted from Superpowers, [docs/SETUP.md](docs/SETUP.md) for model configuration and credential handling, [docs/AI_CAPABILITY_EXPANSION.md](docs/AI_CAPABILITY_EXPANSION.md) for the Phase 13.5 integration plan, and [docs/AUTOMATION.md](docs/AUTOMATION.md) for scheduled maintenance automation. The [task worker guide](docs/TASK_WORKER.md) covers the durable local queue and its allowlisted jobs. The [planning guide](docs/PLANNING.md) documents Phase 16 persistent planning and bounded autonomous execution; [Session Relay](docs/SESSION_RELAY.md) explains checkpoint and resume behavior.
 
 ## Important limitations
 
