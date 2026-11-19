@@ -317,3 +317,47 @@ Do not copy the example endpoint into `.env` until you have deployed a trusted g
 The free API list is a discovery reference, not a guarantee of current free access. Verify provider limits and data policies at their official sites. Graphify, Agent-Reach, Superpowers, and RTK are evaluated in the phase plan before runtime installation. Understand Anything is deferred for comparison with Graphify; REA is deferred as a specialist reverse-engineering tool.
 
 No browser session, cookies, or credentials are imported by this phase. Authenticated Agent-Reach channels require a separate explicit security review.
+
+
+## 16. Optional Graphify MCP integration
+
+Graphify is an optional, local-first code knowledge graph. Its upstream project publishes the Python package as `graphifyy` (two trailing y characters) and provides an MCP stdio server. The workspace now has a guarded, opt-in server registration; it does not add Graphify to the base `.venv`.
+
+1. Install the official package with the MCP extra in the Codespace:
+
+```bash
+uv tool install "graphifyy[mcp]"
+```
+
+2. Build a graph for the repository using Graphify's supported assistant workflow (after its skill is installed):
+
+```bash
+graphify install --project --platform agents
+```
+
+Then ask a compatible coding assistant to run `/graphify .` in the repository. This creates `graphify-out/graph.json` and a `.graphify_python` file containing the isolated interpreter path. Graphify's code parsing is local and does not require an LLM; optional semantic extraction for documents/media can require a model.
+
+3. Read the interpreter path:
+
+```bash
+cat graphify-out/.graphify_python
+```
+
+4. Set these two values in the private `.env` file. `GRAPHIFY_PYTHON` must be the executable path printed by the previous command; `GRAPHIFY_GRAPH_PATH` is the absolute path to this repository's `graphify-out/graph.json`.
+
+```dotenv
+GRAPHIFY_PYTHON=/absolute/path/to/graphify-python
+GRAPHIFY_GRAPH_PATH=/workspaces/ai-tools-workspace/graphify-out/graph.json
+```
+
+5. Restart the agent tool process and verify discovery:
+
+```bash
+.venv/bin/python -m agent.mcp_client
+```
+
+The discovered tool list should include Graphify tools. If either setting is missing, the workspace keeps Graphify disconnected. Invalid interpreter or graph paths fail closed during configuration. The graph file is local project data; review it before sharing or committing it.
+
+The optional server exposes graph query capabilities over the selected graph file. It is not permission to run arbitrary shell commands or analyze other filesystem paths. Keep the generated graph out of Git unless you explicitly want to version it.
+
+Official project and install reference: https://github.com/Graphify-Labs/graphify
