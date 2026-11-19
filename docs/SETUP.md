@@ -358,6 +358,6 @@ GRAPHIFY_GRAPH_PATH=/workspaces/ai-tools-workspace/graphify-out/graph.json
 
 The discovered tool list should include Graphify tools. If either setting is missing, the workspace keeps Graphify disconnected. Invalid interpreter or graph paths fail closed during configuration. The graph file is local project data; review it before sharing or committing it.
 
-The optional server exposes graph query capabilities over the selected graph file. It is not permission to run arbitrary shell commands or analyze other filesystem paths. Keep the generated graph out of Git unless you explicitly want to version it.
+The optional server exposes graph query capabilities over the selected graph file. It is not permission to run arbitrary shell commands or analyze other filesystem paths. Keep the generated graph out of Git unless you explicitly want to version it. The existing Cisco MCP Scanner CI inventory covers this workspace's exported tool definitions; it does not automatically audit the external Graphify package or its runtime implementation. Review and pin the upstream package version before enabling it.
 
 Official project and install reference: https://github.com/Graphify-Labs/graphify
