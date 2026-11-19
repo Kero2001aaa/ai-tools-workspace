@@ -17,6 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from dotenv import load_dotenv
+
 from agent.memory_store import MemoryStore
 from agent.task_queue import ALLOWED_TASK_TYPES, TaskQueue
 from agent.task_worker import run_once
@@ -262,16 +264,21 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("request must be a non-empty string of at most 4,000 characters")
                 if set(body) != {"request"}:
                     raise ValueError("Only the request field is accepted")
-                from agent.tool_agent import run_request
-                answer = asyncio.run(run_request(request_text.strip()))
-                answer_text = answer if isinstance(answer, str) else str(answer)
-                truncated = len(answer_text) > 20000
-                self._audit("agent-run", "succeeded")
-                return self._send(200, json.dumps({
-                    "status": "succeeded",
-                    "answer": answer_text[:20000],
-                    "truncated": truncated,
-                }), "application/json")
+                if not self.server.agent_lock.acquire(blocking=False):
+                    return self._send(429, '{"error":"another Agent request is already running"}', "application/json")
+                try:
+                    from agent.tool_agent import run_request
+                    answer = asyncio.run(run_request(request_text.strip()))
+                    answer_text = answer if isinstance(answer, str) else str(answer)
+                    truncated = len(answer_text) > 20000
+                    self._audit("agent-run", "succeeded")
+                    return self._send(200, json.dumps({
+                        "status": "succeeded",
+                        "answer": answer_text[:20000],
+                        "truncated": truncated,
+                    }), "application/json")
+                finally:
+                    self.server.agent_lock.release()
             if path == "/api/tasks/enqueue":
                 task_type = body.get("task_type")
                 payload = body.get("payload", {})
@@ -312,6 +319,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Run the authenticated AI workspace control dashboard.")
     parser.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "localhost"])
     parser.add_argument("--port", type=int, default=8000)
@@ -322,6 +330,7 @@ def main():
     server.control_token = secrets.token_urlsafe(32)
     server.action_lock = threading.Lock()
     server.action_times = []
+    server.agent_lock = threading.Lock()
     print(f"Dashboard: http://{args.host}:{args.port}")
     print("Loopback-only listener. Keep the forwarded Codespaces port private.")
     print("One-time control token (shown once; do not share): " + server.control_token)
