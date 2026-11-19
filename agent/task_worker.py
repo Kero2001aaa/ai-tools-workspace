@@ -9,20 +9,39 @@ from agent.memory_store import MemoryStore
 from agent.task_queue import TaskQueue
 
 
+def _workspace_status_worker(payload):
+    if not isinstance(payload, dict) or payload:
+        raise ValueError("workspace_status does not accept a payload")
+    return {
+        "python": platform.python_version(),
+        "workspace": str(Path.cwd()),
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _memory_recent_worker(payload):
+    if not isinstance(payload, dict) or set(payload) - {"limit"}:
+        raise ValueError("memory_recent accepts only an optional limit")
+    limit = payload.get("limit", 5)
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
+        raise ValueError("memory_recent limit must be an integer from 1 to 20")
+    return {"memories": MemoryStore().recent(limit)}
+
+
+# Each allowlisted task is routed to its own narrowly scoped deterministic worker.
+WORKER_REGISTRY = {
+    "workspace_status": _workspace_status_worker,
+    "memory_recent": _memory_recent_worker,
+}
+
+
 def execute_task(task):
-    payload = task["payload"]
-    if task["task_type"] == "workspace_status":
-        return {
-            "python": platform.python_version(),
-            "workspace": str(Path.cwd()),
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-        }
-    if task["task_type"] == "memory_recent":
-        limit = payload.get("limit", 5)
-        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
-            raise ValueError("memory_recent limit must be an integer from 1 to 20")
-        return {"memories": MemoryStore().recent(limit)}
-    raise ValueError("Task type is not allowlisted")
+    if not isinstance(task, dict) or set(task) != {"task_type", "payload"}:
+        raise ValueError("Task must contain only task_type and payload")
+    worker = WORKER_REGISTRY.get(task["task_type"])
+    if worker is None:
+        raise ValueError("Task type is not allowlisted")
+    return worker(task["payload"])
 
 
 def run_once(queue=None):
