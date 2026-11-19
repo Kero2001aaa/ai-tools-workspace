@@ -131,6 +131,7 @@ class ControlPlaneTests(unittest.TestCase):
             server.control_token = "test-token"
             server.action_lock = threading.Lock()
             server.action_times = []
+            server.agent_lock = threading.Lock()
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
