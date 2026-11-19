@@ -28,7 +28,7 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertNotIn("do-not-leak-this", encoded)
         self.assertTrue(snapshot["integrations"]["Model endpoint"])
         self.assertTrue(snapshot["integrations"]["Agent-Reach"])
-        self.assertTrue(snapshot["security"]["read_only_dashboard"])
+        self.assertTrue(snapshot["security"]["authenticated_task_controls"])
 
     def test_memory_and_task_snapshots_are_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -71,8 +71,7 @@ class ControlPlaneTests(unittest.TestCase):
                 self.assertEqual(403, response.status)
                 response.read()
 
-                with patch("agent.control_plane.TaskQueue", return_value=queue), \\
-                     patch.dict(os.environ, {"CONTROL_AUDIT_DB": str(audit_path)}):
+                with patch("agent.control_plane.TaskQueue", return_value=queue), patch.dict(os.environ, {"CONTROL_AUDIT_DB": str(audit_path)}):
                     connection.request("POST", "/api/tasks/enqueue", body=body, headers={
                         "Content-Type": "application/json",
                         "Authorization": "Bearer test-one-time-token",
