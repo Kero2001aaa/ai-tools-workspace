@@ -94,7 +94,7 @@ class TaskQueueTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             execute_task({'task_type': 'shell', 'payload': {}})
         with self.assertRaises(ValueError):
-            execute_task({'task_type': 'workspace_status', 'payload': {}, 'extra': True})
+            execute_task({'task_type': 'workspace_status'})
 
 if __name__ == "__main__":
     unittest.main()
