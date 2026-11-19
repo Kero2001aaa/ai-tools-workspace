@@ -35,13 +35,12 @@ def build_workspace_server_config(env=None):
             "args": ["-m", "agent.browser_mcp_server"],
         }
 
-    graphify_command = env.get("GRAPHIFY_MCP_COMMAND", "graphify-mcp").strip()
+    graphify_command = env.get("GRAPHIFY_MCP_COMMAND", "").strip()
     graphify_graph = env.get("GRAPHIFY_GRAPH_PATH", "").strip()
-    if bool(graphify_command) != bool(graphify_graph):
-        raise RuntimeError(
-            "Graphify MCP requires GRAPHIFY_MCP_COMMAND and GRAPHIFY_GRAPH_PATH."
-        )
-    if graphify_command and graphify_graph:
+    if graphify_command and not graphify_graph:
+        raise RuntimeError("Graphify MCP requires GRAPHIFY_GRAPH_PATH.")
+    if graphify_graph:
+        graphify_command = graphify_command or "graphify-mcp"
         resolved_command = shutil.which(graphify_command)
         if not resolved_command:
             raise RuntimeError(
