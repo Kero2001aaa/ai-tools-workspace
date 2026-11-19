@@ -67,6 +67,21 @@ class PlanStoreTests(unittest.TestCase):
         result = self.store.run_next_step(plan["id"])
         self.assertEqual("completed", result["plan_status"])
 
+
+    def test_plan_cannot_skip_failed_step_without_explicit_retry(self):
+        plan = self.store.create_plan("Ordered failure", [
+            {"task_type": "workspace_status"},
+            {"task_type": "workspace_status"},
+        ])
+        with patch("agent.task_worker.execute_task", side_effect=RuntimeError("failure")):
+            failed = self.store.run_next_step(plan["id"])
+        self.assertEqual("paused", failed["status"])
+        blocked = self.store.run_next_step(plan["id"])
+        self.assertEqual("paused", blocked["status"])
+        self.assertIn("explicitly retried", blocked["reason"])
+        current = self.store.get_plan(plan["id"])
+        self.assertEqual(["failed", "pending"], [s["status"] for s in current["steps"]])
+
     def test_plan_persists_across_store_instances(self):
         plan = self.store.create_plan("Persistent", [{"task_type": "workspace_status"}])
         reopened = PlanStore(Path(self.temp.name) / "plans.sqlite3")
