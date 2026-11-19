@@ -162,9 +162,12 @@ async def run_request(request: str) -> str:
         raise RuntimeError("No approved tools remain after applying the request's tool restrictions.")
     print("Approved MCP tools: " + ", ".join(tool.name for tool in tools))
     agent = build_tool_agent(model, tools)
+    recursion_limit = int(os.getenv("AGENT_RECURSION_LIMIT", "25"))
+    if not 5 <= recursion_limit <= 50:
+        raise ValueError("AGENT_RECURSION_LIMIT must be between 5 and 50")
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content=request)]},
-        config={"recursion_limit": 10},
+        config={"recursion_limit": recursion_limit},
     )
     final_message = result["messages"][-1]
     content = getattr(final_message, "content", final_message)
