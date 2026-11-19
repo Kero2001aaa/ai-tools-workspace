@@ -7,7 +7,7 @@ A cloud-first, cost-conscious foundation for building an external AI agent works
 - Minimal GitHub Codespaces development container
 - Python 3.12 with a workspace-local `.venv`
 - LangGraph orchestration and MCP client dependencies
-- Persistent bounded planner with checkpointed run-until-done execution and resumable, allowlisted read-only steps
+- Persistent bounded planner with checkpointed execution, a one-decision Supervisor, and specialist allowlisted read-only task handlers
 - Optional OpenAI-compatible chat-model adapter
 - Offline mode that makes no model API calls when credentials are absent
 - Optional Graphify code knowledge graph
