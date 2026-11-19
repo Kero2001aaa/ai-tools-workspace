@@ -63,6 +63,12 @@ async def scrape_url(url: str) -> str:
     return url
 
 class ToolAgentTests(unittest.IsolatedAsyncioTestCase):
+
+    def test_planner_server_is_registered_by_default(self):
+        servers = build_workspace_server_config({})
+        self.assertEqual(servers["planner"]["command"], os.sys.executable)
+        self.assertEqual(servers["planner"]["args"], ["-m", "agent.plan_mcp_server"])
+
     def test_agent_reach_server_is_disabled_by_default(self):
         self.assertNotIn("agent_reach", build_workspace_server_config({}))
 
