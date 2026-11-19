@@ -9,6 +9,7 @@ from langchain_core.tools import tool
 from agent.tool_agent import (
     build_tool_agent,
     build_workspace_server_config,
+    get_recursion_limit,
     restrict_tools_for_request,
 )
 
@@ -63,6 +64,17 @@ async def scrape_url(url: str) -> str:
     return url
 
 class ToolAgentTests(unittest.IsolatedAsyncioTestCase):
+
+    def test_recursion_limit_defaults_to_twenty_five(self):
+        self.assertEqual(25, get_recursion_limit({}))
+
+    def test_recursion_limit_accepts_bounded_override(self):
+        self.assertEqual(40, get_recursion_limit({"AGENT_RECURSION_LIMIT": "40"}))
+
+    def test_recursion_limit_rejects_out_of_range_and_invalid_values(self):
+        for value in ("4", "51", "invalid"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                get_recursion_limit({"AGENT_RECURSION_LIMIT": value})
 
     def test_planner_server_is_registered_by_default(self):
         servers = build_workspace_server_config({})
