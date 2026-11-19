@@ -137,7 +137,7 @@ class ControlPlaneTests(unittest.TestCase):
             try:
                 connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
                 body = json.dumps({"request": "Summarize the project architecture"})
-                with patch.dict(os.environ, {"ENABLE_DASHBOARD_AGENT": "true", "CONTROL_AUDIT_DB": str(audit_path)}), \\
+                with patch.dict(os.environ, {"ENABLE_DASHBOARD_AGENT": "true", "CONTROL_AUDIT_DB": str(audit_path)}), \
                      patch("agent.tool_agent.run_request", new=AsyncMock(return_value="Architecture summary")) as run_request:
                     connection.request("POST", "/api/agent/run", body=body,
                         headers={"Content-Type": "application/json"})
