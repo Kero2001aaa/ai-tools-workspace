@@ -93,6 +93,18 @@ def restrict_tools_for_request(tools, request: str):
     return [tool for tool in tools if tool.name not in forbidden]
 
 
+def get_recursion_limit(env=None):
+    """Return a bounded LangGraph step budget for multi-tool workflows."""
+    env = os.environ if env is None else env
+    try:
+        limit = int(env.get("AGENT_RECURSION_LIMIT", "25"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("AGENT_RECURSION_LIMIT must be an integer from 5 to 50") from exc
+    if not 5 <= limit <= 50:
+        raise ValueError("AGENT_RECURSION_LIMIT must be an integer from 5 to 50")
+    return limit
+
+
 def build_tool_agent(model, tools):
     """Build a ReAct-style graph using explicitly supplied tools."""
     if model is None:
@@ -162,9 +174,7 @@ async def run_request(request: str) -> str:
         raise RuntimeError("No approved tools remain after applying the request's tool restrictions.")
     print("Approved MCP tools: " + ", ".join(tool.name for tool in tools))
     agent = build_tool_agent(model, tools)
-    recursion_limit = int(os.getenv("AGENT_RECURSION_LIMIT", "25"))
-    if not 5 <= recursion_limit <= 50:
-        raise ValueError("AGENT_RECURSION_LIMIT must be between 5 and 50")
+    recursion_limit = get_recursion_limit()
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content=request)]},
         config={"recursion_limit": recursion_limit},
