@@ -329,13 +329,13 @@ Graphify is an optional, local-first code knowledge graph. Its upstream project 
 uv tool install "graphifyy[mcp]"
 ```
 
-2. Build a graph for the repository using Graphify's supported assistant workflow (after its skill is installed):
+2. Build the repository graph directly from the Codespace terminal:
 
 ```bash
-graphify install --project --platform agents
+graphify .
 ```
 
-Then ask a compatible coding assistant to run `/graphify .` in the repository. This creates `graphify-out/graph.json` and a `.graphify_python` file containing the isolated interpreter path. Graphify's code parsing is local and does not require an LLM; optional semantic extraction for documents/media can require a model.
+Graphify's CLI accepts a project path and runs its extraction workflow. This creates `graphify-out/graph.json` and a `.graphify_python` file containing the isolated interpreter path. Graphify's code parsing is local and does not require an LLM; optional semantic extraction for documents/media can require a model.
 
 3. Read the interpreter path:
 
