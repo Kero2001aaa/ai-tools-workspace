@@ -35,3 +35,17 @@ No arbitrary shell, Python, URL, plugin, credential, memory-edit, or configurati
 - The token is generated at process startup and printed once to the terminal. Anyone with the token and access to the private forwarded endpoint can invoke the two permitted actions.
 - The audit log records action, outcome, timestamp, and task ID; it deliberately does not record credentials or task payload contents.
 - The dashboard uses the Python standard library only; no hosted service or additional runtime package is required.
+
+
+## Dashboard Agent (opt-in)
+
+The dashboard can submit one user-authored request to the existing LangGraph tool agent.
+
+- POST /api/agent/run accepts exactly one JSON field, request, with 1–4,000 characters.
+- It requires the same one-time bearer token, shares the authenticated action rate limit, and asks for browser confirmation before submission.
+- The response is capped at 20,000 characters. The audit log records only the action and outcome, never the prompt or answer.
+- It is disabled by default. To enable it, set ENABLE_DASHBOARD_AGENT=true in the private .env file and restart the dashboard.
+- Each request may call the configured model and approved MCP tools. Provider charges, free-tier quotas, and external-service usage depend on the configured provider. MODEL_READY confirms configuration only; it does not establish that the provider is free or that a request will succeed.
+- Do not enable this feature until you have verified that the configured model route is within your zero-cost budget. Keep the forwarded Codespaces port private.
+
+This endpoint does not expose arbitrary shell or code execution. It invokes the existing LangGraph agent, whose available tools are the workspace's configured MCP allowlist.
