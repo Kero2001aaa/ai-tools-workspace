@@ -48,7 +48,7 @@ class PlanStoreTests(unittest.TestCase):
         ])
         first = self.store.run_next_step(plan["id"])
         self.assertEqual("step_succeeded", first["status"])
-        self.assertEqual("queued", first["plan_status"])
+        self.assertEqual("checkpointed", first["plan_status"])
         current = self.store.get_plan(plan["id"])
         self.assertEqual(["succeeded", "pending"], [s["status"] for s in current["steps"]])
         second = self.store.run_next_step(plan["id"])
@@ -169,6 +169,33 @@ class PlanStoreTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 self.store.run_until_done(plan["id"], **kwargs)
 
+    def test_supervisor_checkpoints_and_resumes_with_one_decision_per_call(self):
+        plan = self.store.create_plan("Supervised", [
+            {"task_type": "workspace_status"},
+            {"task_type": "workspace_status"},
+            {"task_type": "workspace_status"},
+        ])
+        first = self.store.supervise(plan["id"], max_steps=2, max_seconds=30)
+        self.assertEqual("resume_later", first["decision"])
+        self.assertEqual("checkpointed", first["status"])
+        self.assertEqual("checkpointed", self.store.get_plan(plan["id"])["status"])
+        second = self.store.supervise(plan["id"], max_steps=2, max_seconds=30)
+        self.assertEqual("stop", second["decision"])
+        self.assertEqual("completed", second["status"])
+        third = self.store.supervise(plan["id"])
+        self.assertEqual("stop", third["decision"])
+        self.assertIsNone(third["run"])
+
+    def test_supervisor_stops_on_failure_without_automatic_retry(self):
+        plan = self.store.create_plan("Supervisor failure", [
+            {"task_type": "workspace_status"},
+            {"task_type": "workspace_status"},
+        ])
+        with patch("agent.task_worker.execute_task", side_effect=RuntimeError("failure")):
+            result = self.store.supervise(plan["id"], max_steps=2, max_seconds=30)
+        self.assertEqual("stop", result["decision"])
+        self.assertEqual("paused", result["status"])
+        self.assertEqual("paused", self.store.get_plan(plan["id"])["status"])
     def test_rejects_retry_for_non_failed_step(self):
         plan = self.store.create_plan("No retry", [{"task_type": "workspace_status"}])
         with self.assertRaises(ValueError):
