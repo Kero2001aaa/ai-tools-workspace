@@ -112,12 +112,13 @@ class ControlPlaneTests(unittest.TestCase):
         thread.start()
         try:
             connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
-            connection.request("POST", "/api/agent/run", body=json.dumps({"request": "hello"}),
-                headers={"Content-Type": "application/json", "Authorization": "Bearer test-token"})
-            response = connection.getresponse()
-            self.assertEqual(503, response.status)
-            payload = json.loads(response.read())
-            self.assertIn("disabled", payload["error"])
+            with patch.dict(os.environ, {"ENABLE_DASHBOARD_AGENT": ""}):
+                connection.request("POST", "/api/agent/run", body=json.dumps({"request": "hello"}),
+                    headers={"Content-Type": "application/json", "Authorization": "Bearer test-token"})
+                response = connection.getresponse()
+                self.assertEqual(503, response.status)
+                payload = json.loads(response.read())
+                self.assertIn("disabled", payload["error"])
             connection.close()
         finally:
             server.shutdown()
