@@ -230,7 +230,7 @@ class PlanStore:
             remaining = db.execute(
                 "SELECT COUNT(*) FROM plan_steps WHERE plan_id=? AND status!='succeeded'", (plan_id,)
             ).fetchone()[0]
-            status = "completed" if remaining == 0 else "queued"
+            status = "completed" if remaining == 0 else "checkpointed"
             db.execute("UPDATE plans SET status=?,updated_at=? WHERE id=?", (status, _stamp(_now()), plan_id))
         return {"status": "step_succeeded", "plan_status": status, "plan_id": plan_id,
                 "step_id": step["id"], "position": step["position"], "result": result}
@@ -294,6 +294,35 @@ class PlanStore:
             "remaining_steps": remaining,
             "reason": "Per-run step or time budget reached; invoke again to resume" if remaining else None,
         }
+
+    def supervise(self, plan_id, max_steps=3, max_seconds=60):
+        """Make one bounded execution decision; never spin or retry failed work."""
+        plan = self.get_plan(plan_id)
+        if plan is None:
+            raise ValueError("Plan not found")
+        status = plan["status"]
+        if status == "completed":
+            return {"decision": "stop", "status": status, "plan_id": plan_id,
+                    "reason": "Plan is already complete", "run": None}
+        if status == "paused":
+            return {"decision": "stop", "status": status, "plan_id": plan_id,
+                    "reason": "A failed step requires an explicit retry", "run": None}
+        if status == "running":
+            return {"decision": "wait", "status": status, "plan_id": plan_id,
+                    "reason": "A step is already running; avoid concurrent execution", "run": None}
+        if status not in {"queued", "checkpointed"}:
+            raise ValueError(f"Unsupported plan state: {status}")
+        run = self.run_until_done(plan_id, max_steps=max_steps, max_seconds=max_seconds)
+        if run["status"] == "completed":
+            decision = "stop"
+        elif run["status"] == "checkpointed":
+            decision = "resume_later"
+        elif run["status"] == "paused":
+            decision = "stop"
+        else:
+            decision = "wait"
+        return {"decision": decision, "status": run["status"], "plan_id": plan_id,
+                "reason": run.get("reason"), "run": run}
 
     def retry_failed_step(self, plan_id, step_id):
         now = _stamp(_now())
