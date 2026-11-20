@@ -105,8 +105,9 @@ Rules:
 - remember always writes to the scope's owned namespace, with visibility=internal and owner_agent fixed by the factory.
 - Callers cannot set namespace, principal, visibility, owner_agent, or sensitivity.
 - memory_type is a bounded enum: fact, strategy, outcome, lesson, preference, note, or legacy. The legacy value is reserved for migrated rows and cannot be assigned by new writes.
-- task_id is optional, bounded, and validated as an opaque identifier; it is not a filesystem path.
-- metadata must be a small JSON object of approved scalar/list fields. Reject raw prompt/content/image keys, arbitrary nested blobs, secrets, absolute paths, and values over the documented size limit.
+- task_id is optional, at most 128 characters, and validated as an opaque identifier; it is not a filesystem path.
+- Existing content/tag validation remains: content is 1–10,000 characters; at most 20 tags, each at most 64 characters. New memory writes use sensitivity=unknown unless a trusted internal classifier assigns a more restrictive value. content_hash is optional and, when populated, must be an HMAC made with a dedicated derived key; do not store a plain SHA hash of private content.
+- metadata must be a JSON object no larger than 4 KiB UTF-8 encoded, at most 3 levels deep, with no more than 32 keys per object and arrays of at most 50 scalar values. Keys must come from an application allowlist; reject raw prompt/content/image keys, arbitrary nested blobs, secrets, absolute paths, NaN/Infinity, and strings longer than 256 characters.
 - recall/recent return only records permitted by the fixed scope policy.
 - recall_owned/recent_owned return records from the scope's own namespace only.
 - recall_shareable_workspace/recent_shareable_workspace are permitted only on the Adult scope and return Workspace rows with visibility=shareable. Calls from Workspace scope fail closed.
@@ -145,6 +146,16 @@ Contract:
         def recall_shareable_workspace(self, query: str, limit: int = 5) -> list[MemoryRecord]: ...
 
 Construction is internal composition: the Adult application receives MemoryStore().adult_scope(). AdultMemory must reject a Workspace scope or feedback publisher object. It never accepts namespace or principal values and never stores raw task prompts or image bytes by default.
+
+### 3.5 Workspace memory MCP contract
+
+The existing Workspace MCP server keeps exactly these tools and argument contracts:
+
+    remember(content: str, tags: list[str] | None = None) -> dict
+    recall(query: str, limit: int = 5) -> list[dict]
+    recent_memories(limit: int = 10) -> list[dict]
+
+The server binds only the Workspace scope. It must not add namespace, principal, visibility, owner_agent, sensitivity, SQL, path, or ACL arguments. Existing tool names, descriptions, validation, and result projections remain compatible. No Adult MCP tool is registered in Stage 2.
 
 ## 4. SQLite schema and migration contract
 
@@ -201,6 +212,8 @@ Migration algorithm:
 9. After commit, re-open and verify schema, row count, legacy row mapping, database integrity, and foreign keys.
 
 The migration must be safe on a new empty database and on the existing legacy schema. Concurrent initializers serialize through BEGIN IMMEDIATE. A second initializer sees version 1 and performs validation only.
+
+Before a later, separately approved migration of the real user database, create a consistent backup with SQLite's online backup API (Connection.backup), not a raw copy of the main database file. Verify the backup opens read-only, passes integrity_check and foreign_key_check, and has matching source/backup row counts and ID ranges. Keep the backup until the migrated database passes the post-migration checks and a restore drill has been validated. This live-data procedure is documented here but is not part of Stage 2 development or CI.
 
 ### 4.3 ACL table
 
