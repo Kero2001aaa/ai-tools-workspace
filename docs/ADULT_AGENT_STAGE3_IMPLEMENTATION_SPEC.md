@@ -367,7 +367,8 @@ Migration process:
       CHECK(total_attempts <= max_total_attempts),
       CHECK(provider_calls <= max_provider_calls),
       CHECK(
-        status <> 'waiting_user' OR failed_attempts_since_approval = 5
+        status <> 'waiting_user'
+        OR (failed_attempts_since_approval = 5 AND total_attempts >= 5)
       ),
       CHECK(status <> 'cancelled' OR cancel_requested = 1),
       CHECK(cancel_requested = 0 OR status IN ('analyzing','running','evaluating','cancelled'))
@@ -738,6 +739,7 @@ All tests use temporary Adult database files. No test may use .data/adult.sqlite
 - TASK-DB-09: required task lease/user-action/budget/counter CHECK constraints and all history immutability triggers exist and reject invalid writes/deletes.
 - TASK-DB-10: event types and step operations outside their fixed allowlists are rejected before persistence.
 - TASK-DB-11: cancel_requested is accepted only on active tasks or already-cancelled tasks; cancellation cannot leave a queued/checkpointed task in a resumable state.
+- TASK-DB-14: waiting_user cannot be stored unless both the failure counter and lifetime attempt counter prove at least five failed attempts.
 - TASK-DB-12: TaskStore rejects caller-supplied StepRecord timestamps and prevents identity/operation mutation or terminal step reopening.
 - TASK-DB-13: the adult_steps update trigger rejects changes to immutable IDs/operation/assigned references and invalid status regressions.
 
