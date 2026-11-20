@@ -35,6 +35,10 @@ FEEDBACK_CATEGORIES = frozenset({
     "compatibility_issue", "strategy",
 })
 VERIFICATION_STATUSES = frozenset({"observed", "reproduced", "unverified"})
+FEEDBACK_OPERATIONS = frozenset({
+    "text.analyze", "text.generate", "text.rewrite",
+    "image.analyze", "image.generate", "image.edit",
+})
 _COMPONENT_RE = re.compile(r"^[a-z0-9][a-z0-9._:/-]{0,127}$")
 _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -762,9 +766,7 @@ class FeedbackPublisherStore:
             not isinstance(feedback.version, str) or len(feedback.version) > 64
         ):
             raise ValueError("version must be at most 64 characters.")
-        if not isinstance(feedback.operation, str) or not re.fullmatch(
-            r"^(text|image)\.(analyze|generate|rewrite|edit)$", feedback.operation
-        ):
+        if not isinstance(feedback.operation, str) or feedback.operation not in FEEDBACK_OPERATIONS:
             raise ValueError("Unsupported feedback operation.")
         if not isinstance(feedback.failure_code, str) or not re.fullmatch(
             r"^[a-z0-9][a-z0-9._-]{0,63}$", feedback.failure_code
