@@ -9,6 +9,7 @@ A cloud-first, cost-conscious foundation for building an external AI agent works
 - LangGraph orchestration and MCP client dependencies
 - Persistent bounded planner with checkpointed execution, a one-decision Supervisor, and specialist allowlisted read-only task handlers
 - Optional OpenAI-compatible chat-model adapter
+- Optional isolated LLM specialists for research, coding, and review (no tools or side effects)
 - Offline mode that makes no model API calls when credentials are absent
 - Optional Graphify code knowledge graph
 - Optional public-only Agent Reach bridge for GitHub and V2EX
