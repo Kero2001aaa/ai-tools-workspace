@@ -202,13 +202,13 @@ Version 1 is the namespace/ACL/audit migration. The ledger is the single source 
 Migration trigger and live-data gate:
 
 - MemoryStore construction must never silently migrate an existing version-0 legacy database.
-- A newly created empty database may initialize directly to schema version 1 because there is no prior user data to transform.
+- A new database path that did not exist before opening may initialize directly to schema version 1 because there is no prior user data to transform. An already-existing version-0 file containing the legacy memories table is always treated as legacy, even when its row count is zero, and requires the explicit command.
 - If an existing legacy database has no migration ledger, normal MemoryStore construction raises a typed MemoryMigrationRequired error without changing its schema, rows, journal mode, or timestamps.
 - Existing Workspace services remain unavailable against that legacy file until the operator explicitly runs the migration command.
 - The only supported live-database migration entry point is: .venv/bin/python -m agent.memory_migrations backup-and-migrate
 - The command uses WORKSPACE_MEMORY_DB (or the normal default) from the process environment. It accepts no arbitrary database path, SQL, principal, or namespace argument.
 - The command prints a dry-run summary (safe basename only, row count, ID range, schema version, journal mode) and requires an explicit --confirm flag before creating a backup or modifying the source. Without --confirm it performs read-only inspection only.
-- The confirmed command creates a collision-resistant backup under .data/backups/ using SQLite Connection.backup(), applies restrictive file permissions, validates the backup read-only, compares row count and ID range, and runs integrity_check and foreign_key_check. It refuses to migrate if backup verification fails.
+- The confirmed command creates a collision-resistant backup under .data/backups/ using SQLite Connection.backup(), creates the backup directory with mode 0700 and the backup file with mode 0600 on POSIX, validates the backup read-only, compares row count and ID range, and runs integrity_check and foreign_key_check. It refuses to migrate if backup verification fails.
 - Only after successful backup verification does it apply the additive migration to the source DB. It then verifies schema, preserved IDs/content/tags/timestamps by row-level comparison or pre-migration hashes, row count, integrity_check, foreign_key_check, and Workspace recall.
 - The backup is retained; the command never overwrites an earlier backup and never deletes the old DB or backup. Restore is a separate operation requiring explicit operator action.
 - Unit tests use temporary DBs and may call the internal migration function directly; they never invoke the live-data command against .data/memory.sqlite3.
