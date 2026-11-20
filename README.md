@@ -47,7 +47,8 @@ Phase 21 adds a local Streamable HTTP gateway over selected existing MCP STDIO
 servers. Start it with `.venv/bin/python -m agent.gateway_mcp_server`.
 The default endpoint is `http://127.0.0.1:8765/mcp`.
 
-The gateway exposes an explicit read-only tool allowlist and rejects
-non-loopback binding. It has no authentication or OAuth and must not be
-exposed remotely. See [docs/UNIVERSAL_MCP_GATEWAY.md](docs/UNIVERSAL_MCP_GATEWAY.md)
+The gateway exposes an explicit allowlist and rejects non-loopback binding.
+Read-only tools are the default; specialist workflows, bounded planner actions,
+and restricted terminal tools require separate opt-ins. It has no authentication
+or OAuth and must not be exposed remotely. See [docs/UNIVERSAL_MCP_GATEWAY.md](docs/UNIVERSAL_MCP_GATEWAY.md)
 for its tool inventory, configuration, security boundaries, and roadmap.

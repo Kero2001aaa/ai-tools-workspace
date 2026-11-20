@@ -18,8 +18,27 @@ PUBLIC_TOOLS = {
     "research": {"web_search", "scrape_url", "research_provider_status"},
     "tasks": {"list_tasks"},
     "planner": {"get_plan", "list_plans"},
+    "specialists": {"delegate_specialist", "supervise_request"},
     "browser": {"browser_inspect"},
+    "terminal": {"run_workspace_task", "read_project_file", "write_project_file"},
 }
+PLANNER_ACTION_TOOLS = {
+    "create_plan",
+    "run_next_plan_step",
+    "run_plan_until_done",
+    "supervise_plan",
+}
+
+
+def allowed_tools_for_environment(env=None):
+    """Return a fresh allowlist, enabling bounded write actions only by explicit opt-in."""
+    env = os.environ if env is None else env
+    allowed = {name: set(tools) for name, tools in PUBLIC_TOOLS.items()}
+    if env.get("ENABLE_GATEWAY_PLANNER_ACTIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        allowed["planner"].update(PLANNER_ACTION_TOOLS)
+    return allowed
+
+
 PUBLIC_SERVER_NAMES = tuple(PUBLIC_TOOLS)
 
 
@@ -52,6 +71,7 @@ class UpstreamRouter:
     async def start(self):
         load_dotenv()
         configs = build_workspace_server_config()
+        allowed_tools = allowed_tools_for_environment()
         for server_name in PUBLIC_SERVER_NAMES:
             config = configs.get(server_name)
             if config is None:
@@ -67,7 +87,7 @@ class UpstreamRouter:
             self._sessions[server_name] = session
             result = await session.list_tools()
             for tool in result.tools:
-                if tool.name not in PUBLIC_TOOLS[server_name]:
+                if tool.name not in allowed_tools[server_name]:
                     continue
                 name = public_tool_name(server_name, tool.name)
                 self._tools[name] = (server_name, tool.name, tool.model_copy(update={"name": name}))

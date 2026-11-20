@@ -81,6 +81,14 @@ class ToolAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(servers["planner"]["command"], os.sys.executable)
         self.assertEqual(servers["planner"]["args"], ["-m", "agent.plan_mcp_server"])
 
+    def test_terminal_server_is_disabled_by_default(self):
+        self.assertNotIn("terminal", build_workspace_server_config({}))
+
+    def test_terminal_server_registers_only_when_enabled(self):
+        servers = build_workspace_server_config({"ENABLE_TERMINAL_TOOLS": "true"})
+        self.assertEqual(servers["terminal"]["command"], os.sys.executable)
+        self.assertEqual(servers["terminal"]["args"], ["-m", "agent.terminal_mcp_server"])
+
     def test_specialist_server_is_disabled_by_default(self):
         self.assertNotIn("specialists", build_workspace_server_config({}))
 
