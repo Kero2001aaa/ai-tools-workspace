@@ -155,7 +155,8 @@ AdultTaskSnapshot:
 StepRecord:
 - step_id, task_id, sequence_no, operation, status.
 - Optional adapter/provider/model/tool identifiers and payload/artifact opaque IDs.
-- Optional non-secret config fingerprint and started_at/completed_at.
+- Optional non-secret config fingerprint and opaque payload/artifact references.
+- started_at/completed_at are output fields assigned by TaskStore; callers must omit them on writes and any caller-supplied timestamp is rejected.
 - No raw input/output body.
 
 CheckpointSnapshot:
@@ -182,6 +183,14 @@ TaskLease is an immutable value object with the fields above. Its constructor is
 
 CheckpointReason is one of initial, step_completed, approval_required, manual_yield, lease_recovered, needs_input, paused, or cancelled. Checkpoint reasons are fixed enum values, never caller-provided free text.
 Lease release reason is a separate fixed Literal: worker_released, yielded, cancel_observed, or budget_exhausted. Arbitrary free-form release reasons are rejected.
+
+Checkpoint:
+- checkpoint_id, task_id, revision, reason, schema_version, failed_attempts_since_approval, user_action_required, created_at.
+- It may expose the validated snapshot only to internal application code; MCP output never returns snapshot_json.
+
+TaskEvent:
+- event_id, task_id, event_type, from_status, to_status, metadata, created_at.
+- metadata is parsed from the validated bounded JSON object; no raw payload or arbitrary exception strings.
 
 TaskPage:
 - items: list of AdultTaskSnapshot.
@@ -268,6 +277,7 @@ Stage 3 may exercise transitions using tests and internal service calls. It does
 - Keep separate from .data/memory.sqlite3.
 - Create the parent directory if absent.
 - Use a 10-second connection/busy timeout.
+- Set sqlite3 isolation_level=None so the repository controls transaction boundaries explicitly.
 - Enable PRAGMA foreign_keys=ON and verify it on every connection.
 - Set a bounded busy timeout.
 - Keep journal_mode=DELETE. Do not enable WAL in Stage 3.
@@ -529,7 +539,7 @@ claim_task accepts only queued or checkpointed tasks with no live lease and no c
 Within BEGIN IMMEDIATE:
 
 1. Read current task and state_version.
-2. Reject missing, terminal, or cancelled task. If deadline_at has passed or total_attempts has reached max_total_attempts, atomically transition the task to failed, clear lease fields, append a budget_exhausted event, commit, and return a typed TaskBudgetExhausted result; do not claim it. A provider-call limit of zero may still permit a later verified local route; provider-call and cost limits are enforced by the Supervisor immediately before a provider dispatch, not guessed by TaskStore.
+2. Reject missing, terminal, or cancelled task. If deadline_at has passed or total_attempts has reached max_total_attempts, atomically transition the task to failed, clear lease fields, append a budget_exhausted event, commit, and then raise the typed TaskBudgetExhausted error; do not return a lease or claim the task. A provider-call limit of zero may still permit a later verified local route; provider-call and cost limits are enforced by the Supervisor immediately before a provider dispatch, not guessed by TaskStore.
 3. Confirm no other active task exists.
 4. Increment lease_generation and state_version.
 5. Set status=analyzing, lease_owner, and lease_expires_at.
@@ -551,7 +561,8 @@ A lease_generation is a fencing token: after lease recovery or a new claim, any 
 - sequence_no must be non-negative and unique per task.
 - operation is one of intake, text.analyze, text.generate, text.rewrite, image.analyze, image.generate, image.edit, or evaluate.
 - A new step is inserted once; an existing step may only advance through pending -> running -> succeeded/failed or pending -> skipped.
-- Terminal step statuses cannot be changed.
+- step_id, task_id, sequence_no, and operation are immutable after insertion. Route/config/payload/artifact identifiers may be set once when known and cannot be overwritten with a different value.
+- Terminal step statuses cannot be changed or reopened.
 - started_at/completed_at are server-generated UTC timestamps, not caller timestamps.
 - Increment the parent task state_version and updated_at, and append a step_created/step_transition event atomically.
 - The operation and route identifiers are metadata only; they are not executed by TaskStore.
@@ -704,6 +715,7 @@ All tests use temporary Adult database files. No test may use .data/adult.sqlite
 - TASK-DB-09: required task lease/user-action/budget/counter CHECK constraints and all history immutability triggers exist and reject invalid writes/deletes.
 - TASK-DB-10: event types and step operations outside their fixed allowlists are rejected before persistence.
 - TASK-DB-11: cancel_requested is accepted only on active tasks or already-cancelled tasks; cancellation cannot leave a queued/checkpointed task in a resumable state.
+- TASK-DB-12: TaskStore rejects caller-supplied StepRecord timestamps and prevents identity/operation mutation or terminal step reopening.
 
 ### Task creation and persistence
 
