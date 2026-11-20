@@ -157,6 +157,8 @@ class MemoryMigrationManager:
             version = _schema_version(connection)
             if version == 0 and _legacy_columns(connection) != LEGACY_COLUMNS:
                 raise UnsupportedLegacySchema("The legacy memories table does not match the supported schema.")
+            if version >= 1:
+                _validate_current_schema(connection)
             count, minimum, maximum, _ = _legacy_digest(connection)
             integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
             fk_count = len(connection.execute("PRAGMA foreign_key_check").fetchall())
