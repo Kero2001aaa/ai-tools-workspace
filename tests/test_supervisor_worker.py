@@ -36,35 +36,30 @@ class SupervisorWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "offline"):
                 supervise_request("Review this design")
 
-    def test_workflow_plans_dispatches_and_reviews_with_three_calls(self):
+    def test_workflow_plans_dispatches_and_reviews_with_bounded_calls(self):
         class Response:
-            def __init__(self, content):
-                self.content = content
+            content = '{"assignments":[{"specialist":"research","task":"Research risks"},{"specialist":"coding","task":"Review implementation"}]}'
 
         class FakeModel:
-            def __init__(self):
-                self.calls = []
             def invoke(self, messages):
-                self.calls.append(messages)
-                if len(self.calls) == 1:
-                    return Response('{"assignments":[{"specialist":"research","task":"Research risks"},{"specialist":"coding","task":"Review implementation"}]}')
-                return Response(f"analysis-{len(self.calls)}")
+                return Response()
 
-        model = FakeModel()
-        with patch("agent.supervisor_worker.load_chat_model", return_value=model), patch(
+        with patch("agent.supervisor_worker.load_chat_model", return_value=FakeModel()), patch(
             "agent.supervisor_worker.run_specialist",
             side_effect=lambda role, task, context, model: {
                 "specialist": role, "analysis": f"{role}-analysis", "truncated": False
             },
         ) as worker:
             result = supervise_request("Assess this implementation")
-        self.assertEqual(4, len(model.calls))
+
         self.assertEqual(3, worker.call_count)
         self.assertEqual(["research", "coding", "review"], [x["specialist"] for x in result["specialist_results"]])
         self.assertEqual("completed", result["status"])
         self.assertEqual(4, result["model_calls"])
+        self.assertEqual(4, result["max_model_calls"])
         self.assertIn("Final review", result["synthesis"])
-        self.assertIn("research-analysis", worker.call_args_list[2].args[3]["specialist_results"][0]["analysis"] if False else str(worker.call_args_list[2]))
+        self.assertIn("research-analysis", worker.call_args_list[2].args[2])
+        self.assertEqual("review", worker.call_args_list[2].args[0])
 
     def test_workflow_stops_on_first_specialist_failure_without_retry(self):
         class Response:
