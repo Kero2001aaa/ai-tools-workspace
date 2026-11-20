@@ -277,7 +277,7 @@ Application facade. It must not contain provider-specific HTTP or SQL logic.
         def list_tasks(self, status: str | None = None, limit: int = 20) -> list[AdultTaskSnapshot]: ...
         def get_attempts(self, task_id: str, limit: int = 20) -> list[AttemptSummary]: ...
         def resume_task(self, task_id: str, decision: Decision,
-                        replacement_payload: bytes | str | None = None) -> AdultTaskSnapshot: ...
+                        replacement_payload: bytes | str | None = None) -> SupervisorOutcome | AdultTaskSnapshot: ...
         def cancel_task(self, task_id: str) -> AdultTaskSnapshot: ...
 
 It composes policy, payload storage, task store, executor, supervisor, and artifact store. The MCP server injects a single configured instance. It never accepts a caller-supplied principal, namespace, API key, filesystem path, model endpoint, or arbitrary tool name.
@@ -530,7 +530,7 @@ Seed fixed policies:
 | feedback_publisher | workspace | 0 | 1 | 0 |
 | feedback_publisher | adult | 0 | 0 | 0 |
 
-The Adult MCP server fixes principal adult_agent; existing Workspace memory MCP fixes workspace_agent; only the internal feedback publisher can write curated shareable facts. No public method or MCP schema accepts a caller-selected principal or namespace.
+The Adult MCP server fixes principal adult_agent; existing Workspace memory MCP fixes workspace_agent; only the internal feedback publisher can write curated shareable facts. Existing MemoryStore direct callers must resolve to the fixed Workspace scope for backward compatibility; Adult code receives only its injected scoped facade. No public method or MCP schema accepts a caller-selected principal or namespace.
 
 Every MemoryStore read/write query must apply the ACL predicate in SQL and validate the requested operation. Adult workspace recall returns only visibility='shareable' rows. Feedback publication writes sanitized records only; it cannot read source Adult memory. Provide fixed internal factories such as workspace_scope(), adult_scope(), and feedback_publisher_scope() that return a ScopedMemoryStore. ScopedMemoryStore exposes remember/recall/recent without any namespace or principal argument. The existing MemoryStore MCP server receives only workspace_scope(); AdultMemory receives only adult_scope(); the feedback module receives only feedback_publisher_scope(). Do not expose a generic from-string principal factory to MCP callers.
 
@@ -597,6 +597,7 @@ The following is the logical schema. Names and fields are mandatory; implementat
       attempt_no INTEGER NOT NULL,
       approach_key TEXT NOT NULL,
       adapter_id TEXT NOT NULL,
+      adapter_version TEXT,
       provider_id TEXT,
       model_id TEXT,
       model_version TEXT,
@@ -841,7 +842,7 @@ Input:
 Rules:
 
 - Only tasks in waiting_user, checkpointed, paused (where a defined correction is allowed), or needs_input may be resumed.
-- continue is an explicit authorization for one bounded continuation segment, not unlimited execution.
+- continue is an explicit authorization for one bounded continuation segment, not unlimited execution. The AdultAgent must call AdultSupervisor.continue_after_approval and return that bounded outcome; it must not merely change a database flag and leave execution semantics implicit.
 - If state is needs_input, require the missing payload again and verify task type/MIME/size.
 - cancel transitions to cancelled; it does not call a model.
 - Never resume a completed, failed-terminal, or cancelled task.
@@ -940,7 +941,7 @@ New environment variables (document in .env.example; never put values in Git):
 | ENABLE_ADULT_AGENT | false | Register Adult MCP server |
 | ADULT_STATE_DB | .data/adult.sqlite3 | Adult operational database |
 | ADULT_PAYLOAD_DIR | .data/adult_payloads | Encrypted payload/artifact root |
-| ADULT_PAYLOAD_ENCRYPTION_KEY | empty | Local master encryption key; required only for retained inputs |
+| ADULT_PAYLOAD_ENCRYPTION_KEY | empty | Local master encryption key; required for retained inputs and persisted outputs |
 | ADULT_ALLOW_PAID | false | Paid routes disabled by default |
 | ADULT_MAX_TOTAL_ATTEMPTS | 20 | Per-task hard attempt cap |
 | ADULT_MAX_WALL_SECONDS | 600 | Per-task wall-time cap |
