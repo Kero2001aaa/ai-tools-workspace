@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 DEFAULT_DB = Path(".data") / "memory.sqlite3"
 BUSY_TIMEOUT_MS = 10_000
@@ -150,7 +151,7 @@ def _utc_now() -> str:
 def _connect_database(path: str | Path, *, readonly: bool = False) -> sqlite3.Connection:
     db_path = Path(path).expanduser().resolve()
     if readonly:
-        uri = f"file:{db_path.as_posix()}?mode=ro"
+        uri = f"file:{quote(db_path.as_posix(), safe='/')}?mode=ro"
         connection = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
     else:
         connection = sqlite3.connect(str(db_path), timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
