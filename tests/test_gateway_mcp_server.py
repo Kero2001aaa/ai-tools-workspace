@@ -18,7 +18,7 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertNotIn("enqueue_task", PUBLIC_TOOLS["tasks"])
         self.assertNotIn("remember", PUBLIC_TOOLS["memory"])
         self.assertNotIn("create_plan", PUBLIC_TOOLS["planner"])
-        self.assertEqual(PUBLIC_TOOLS["terminal"], {"run_workspace_task"})
+        self.assertEqual(PUBLIC_TOOLS["terminal"], {"run_workspace_task", "read_project_file", "write_project_file"})
 
     def test_tool_names_are_namespaced(self):
         self.assertEqual(public_tool_name("workspace", "workspace_status"),
