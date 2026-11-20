@@ -23,9 +23,9 @@ Names are prefixed with the upstream server name. The gateway uses an explicit
 allowlist. Graphify and all state-changing memory, task-queue, and planner
 tools remain excluded.
 
-The terminal server is separately opt-in and exposes only
-`terminal__run_workspace_task`. It accepts exactly one task identifier from
-this fixed catalog:
+The terminal server is separately opt-in and exposes three narrowly scoped tools:
+
+- `terminal__run_workspace_task` — accepts exactly one task identifier from this fixed catalog:
 
 | Task | Fixed operation |
 |---|---|
@@ -39,8 +39,10 @@ The terminal tool does not accept shell text, arbitrary arguments, caller
 selected working directories, or filesystem paths. It invokes subprocesses
 with `shell=False`, a fixed repository root, a 120-second timeout, bounded
 output, and a reduced environment that does not forward model/API credentials.
-It does not provide a general-purpose shell, write files, install packages,
-or perform Git mutations such as commit, push, reset, or checkout.
+It does not provide a general-purpose shell, install packages, or perform Git mutations such as commit, push, reset, or checkout.
+
+- `terminal__read_project_file` — reads UTF-8 files up to 50 KB from `agent/`, `tests/`, `docs/`, or a small approved set of root files.
+- `terminal__write_project_file` — creates or replaces UTF-8 files up to 100 KB in those same approved locations. It rejects traversal, symlinks, hidden/protected directories, `.env`, and paths outside the repository. Writes are atomic and return a SHA-256 digest. Review the resulting diff and run tests before committing.
 
 ## Security boundary — important
 
