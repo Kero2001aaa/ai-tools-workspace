@@ -473,6 +473,29 @@ Required immutability triggers:
     BEFORE DELETE ON adult_steps
     BEGIN SELECT RAISE(ABORT, 'adult step history is immutable'); END;
 
+    CREATE TRIGGER validate_adult_steps_update
+    BEFORE UPDATE ON adult_steps
+    WHEN
+      NEW.step_id IS NOT OLD.step_id
+      OR NEW.task_id IS NOT OLD.task_id
+      OR NEW.sequence_no IS NOT OLD.sequence_no
+      OR NEW.operation IS NOT OLD.operation
+      OR (OLD.adapter_id IS NOT NULL AND NEW.adapter_id IS NOT OLD.adapter_id)
+      OR (OLD.provider_id IS NOT NULL AND NEW.provider_id IS NOT OLD.provider_id)
+      OR (OLD.model_id IS NOT NULL AND NEW.model_id IS NOT OLD.model_id)
+      OR (OLD.tool_id IS NOT NULL AND NEW.tool_id IS NOT OLD.tool_id)
+      OR (OLD.input_payload_id IS NOT NULL AND NEW.input_payload_id IS NOT OLD.input_payload_id)
+      OR (OLD.output_artifact_id IS NOT NULL AND NEW.output_artifact_id IS NOT OLD.output_artifact_id)
+      OR (OLD.config_fingerprint IS NOT NULL AND NEW.config_fingerprint IS NOT OLD.config_fingerprint)
+      OR (OLD.started_at IS NOT NULL AND NEW.started_at IS NOT OLD.started_at)
+      OR (OLD.completed_at IS NOT NULL AND NEW.completed_at IS NOT OLD.completed_at)
+      OR NOT (
+        NEW.status = OLD.status
+        OR (OLD.status = 'pending' AND NEW.status IN ('running','skipped'))
+        OR (OLD.status = 'running' AND NEW.status IN ('succeeded','failed'))
+      )
+    BEGIN SELECT RAISE(ABORT, 'invalid adult step mutation'); END;
+
     CREATE TRIGGER prevent_adult_checkpoints_update
     BEFORE UPDATE ON adult_checkpoints
     BEGIN SELECT RAISE(ABORT, 'adult checkpoints are append-only'); END;
@@ -716,6 +739,7 @@ All tests use temporary Adult database files. No test may use .data/adult.sqlite
 - TASK-DB-10: event types and step operations outside their fixed allowlists are rejected before persistence.
 - TASK-DB-11: cancel_requested is accepted only on active tasks or already-cancelled tasks; cancellation cannot leave a queued/checkpointed task in a resumable state.
 - TASK-DB-12: TaskStore rejects caller-supplied StepRecord timestamps and prevents identity/operation mutation or terminal step reopening.
+- TASK-DB-13: the adult_steps update trigger rejects changes to immutable IDs/operation/assigned references and invalid status regressions.
 
 ### Task creation and persistence
 
