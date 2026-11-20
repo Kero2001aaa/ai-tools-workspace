@@ -412,6 +412,7 @@ Checkpoint requirements:
 
 Event rules:
 
+- event_type is one of task_created, task_claimed, lease_renewed, lease_released, step_created, step_transition, state_transition, checkpoint_saved, waiting_user, task_resumed, cancel_requested, task_cancelled, lease_expired_recovered, cancel_recovered, or budget_exhausted.
 - metadata_json must be a JSON object no larger than 8 KiB.
 - Only bounded identifiers, normalized error codes, counters, lease generation, and state-version metadata are allowed.
 - No raw prompt, image, content, provider body, credentials, secret, or absolute path.
@@ -506,7 +507,7 @@ claim_task accepts only queued or checkpointed tasks with no live lease and no c
 Within BEGIN IMMEDIATE:
 
 1. Read current task and state_version.
-2. Reject missing, terminal, or cancelled task. If deadline_at has passed or a hard budget is already exhausted, atomically transition the task to failed, clear lease fields, append a budget_exhausted event, commit, and return a typed TaskBudgetExhausted result; do not claim it.
+2. Reject missing, terminal, or cancelled task. If deadline_at has passed or total_attempts has reached max_total_attempts, atomically transition the task to failed, clear lease fields, append a budget_exhausted event, commit, and return a typed TaskBudgetExhausted result; do not claim it. A provider-call limit of zero may still permit a later verified local route; provider-call and cost limits are enforced by the Supervisor immediately before a provider dispatch, not guessed by TaskStore.
 3. Confirm no other active task exists.
 4. Increment lease_generation and state_version.
 5. Set status=analyzing, lease_owner, and lease_expires_at.
@@ -526,6 +527,7 @@ A lease_generation is a fencing token: after lease recovery or a new claim, any 
 - Requires a valid active lease for the task.
 - Requires the current task state to allow step work.
 - sequence_no must be non-negative and unique per task.
+- operation is one of intake, text.analyze, text.generate, text.rewrite, image.analyze, image.generate, image.edit, or evaluate.
 - A new step is inserted once; an existing step may only advance through pending -> running -> succeeded/failed or pending -> skipped.
 - Terminal step statuses cannot be changed.
 - started_at/completed_at are server-generated UTC timestamps, not caller timestamps.
