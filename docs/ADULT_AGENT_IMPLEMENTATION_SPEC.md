@@ -1038,7 +1038,12 @@ New modules:
           __init__.py
           image_operations.py
 
+    agent/
+      memory_migrations.py
+
     tests/
+      test_memory_migrations.py
+      test_memory_access_control.py
       test_adult_models.py
       test_adult_task_store.py
       test_adult_attempt_tracker.py
