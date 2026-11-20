@@ -11,13 +11,14 @@ from agent.gateway_mcp_server import (
 
 
 class GatewayPolicyTests(unittest.TestCase):
-    def test_allowlist_is_explicit_and_read_only(self):
+    def test_allowlist_is_explicit_and_sensitive_tools_are_excluded(self):
         self.assertEqual(PUBLIC_TOOLS["workspace"], {"text_stats", "workspace_status"})
         self.assertEqual(PUBLIC_TOOLS["tasks"], {"list_tasks"})
         self.assertNotIn("graphify", PUBLIC_TOOLS)
         self.assertNotIn("enqueue_task", PUBLIC_TOOLS["tasks"])
         self.assertNotIn("remember", PUBLIC_TOOLS["memory"])
         self.assertNotIn("create_plan", PUBLIC_TOOLS["planner"])
+        self.assertEqual(PUBLIC_TOOLS["terminal"], {"run_workspace_task"})
 
     def test_tool_names_are_namespaced(self):
         self.assertEqual(public_tool_name("workspace", "workspace_status"),
