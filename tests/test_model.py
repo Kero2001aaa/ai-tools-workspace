@@ -20,7 +20,8 @@ class ModelConfigurationTests(unittest.TestCase):
         self.assertEqual("https://example.invalid/v1", options["base_url"])
 
     def test_empty_model_configuration_stays_offline(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("agent.model.load_dotenv"):
             self.assertIsNone(load_chat_model())
 
 
