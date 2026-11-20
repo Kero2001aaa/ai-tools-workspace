@@ -520,6 +520,8 @@ Indexes: (namespace, created_at DESC), (namespace, memory_type, created_at DESC)
 
 Legacy rows are migrated to namespace='workspace', visibility='internal', sensitivity='unknown', memory_type='legacy'. They must not become shareable to Adult Agent automatically. Existing Workspace remember/recall/recent operations continue to work within the Workspace namespace.
 
+Legacy live-data migration is never triggered automatically on import, application startup, or MemoryStore construction. A version-0 existing database raises MemoryMigrationRequired without modification. The only supported live migration path is the explicit command .venv/bin/python -m agent.memory_migrations backup-and-migrate; it requires --confirm, creates and validates a non-overwriting SQLite online backup before migration, and verifies preserved rows/integrity afterward. The full operational contract is in ADULT_AGENT_STAGE2_IMPLEMENTATION_SPEC.md.
+
 Create memory_namespace_acl with columns:
 
 - principal TEXT NOT NULL
@@ -1104,7 +1106,7 @@ The complete execution contract is maintained in [ADULT_AGENT_STAGE2_IMPLEMENTAT
 
 Implementation order: typed records/validation; temporary-database migration; ACL/audit schema; fixed scope factories; backward-compatible Workspace wrappers/MCP; AdultMemory; migration/isolation/audit/regression tests.
 
-**Gate:** every MEM-* acceptance test, all unchanged Workspace memory tests, the full unit suite, protected-path scan, and CI pass. The live .data/memory.sqlite3 remains untouched until a separately reviewed migration operation with a verified backup/restore procedure.
+**Gate:** every MEM-* acceptance test (including MEM-MIG-11/12), all unchanged Workspace memory tests, the full unit suite, protected-path scan, and CI pass. The live .data/memory.sqlite3 remains untouched until the explicitly confirmed backup-and-migrate command is run and its verified backup/restore procedure is complete.
 
 ### Stage 3 — Adult operational schema and TaskStore
 
