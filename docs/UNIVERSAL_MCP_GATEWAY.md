@@ -16,12 +16,24 @@ Configuration:
 - `MCP_GATEWAY_HOST`: defaults to `127.0.0.1`; only localhost and loopback IPs are accepted.
 - `MCP_GATEWAY_PORT`: defaults to `8765`.
 - `ENABLE_TERMINAL_TOOLS`: defaults to `false`. Explicitly set to `true` to add the restricted terminal MCP server.
+- `ENABLE_SPECIALIST_AGENTS`: defaults to `false`. Set to `true` to add the isolated specialist MCP server; calls may consume model-provider quota.
+- `ENABLE_GATEWAY_PLANNER_ACTIONS`: defaults to `false`. Set to `true` to expose bounded plan creation and execution tools; plan steps remain restricted to approved read-only operations.
 
 ## Tool exposure
 
 Names are prefixed with the upstream server name. The gateway uses an explicit
-allowlist. Graphify and all state-changing memory, task-queue, and planner
-tools remain excluded.
+allowlist. Graphify, state-changing memory tools, task-queue mutation tools,
+and `retry_failed_plan_step` remain excluded. Specialist tools are exposed only
+when `ENABLE_SPECIALIST_AGENTS=true` and consist of `delegate_specialist` and
+`supervise_request`; the latter runs a bounded workflow of up to four model calls
+and may consume provider quota.
+
+Planner reads (`planner__get_plan`, `planner__list_plans`) are available by
+default. Set `ENABLE_GATEWAY_PLANNER_ACTIONS=true` to additionally expose
+`planner__create_plan`, `planner__run_next_plan_step`,
+`planner__run_plan_until_done`, and `planner__supervise_plan`. These actions
+persist plans and execute only the planner's existing approved read-only step
+types under explicit step/time budgets. Failed-step retry remains local-only.
 
 The terminal server is separately opt-in and exposes three narrowly scoped tools:
 
@@ -54,8 +66,9 @@ or remote-client authorization.
 Do not expose port 8765 through a public Codespaces port, reverse proxy, tunnel,
 or internet-facing host. Do not connect Claude or ChatGPT to it remotely.
 Enabling terminal tools increases the impact of a compromised local gateway;
-keep `ENABLE_TERMINAL_TOOLS=false` unless you are deliberately testing the
-local, restricted task interface.
+keep `ENABLE_TERMINAL_TOOLS=false` unless deliberately testing the restricted
+local interface. Specialist and planner-action options are also disabled by
+default; enable only the capabilities required for a specific local workflow.
 
 ## Supported remote connection paths
 
