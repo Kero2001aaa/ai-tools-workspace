@@ -5,7 +5,6 @@ feedback callers must receive one of the fixed scope factories.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -14,7 +13,6 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from uuid import UUID
 
 DEFAULT_DB = Path(".data") / "memory.sqlite3"
 BUSY_TIMEOUT_MS = 10_000
@@ -560,11 +558,6 @@ class ScopedMemoryStore:
                 connection.close()
         except sqlite3.Error:
             return
-
-    def _require_scope(self, expected: str, operation: str) -> None:
-        if self.__namespace != expected:
-            self._audit_denied(operation, "workspace")
-            raise MemoryAuthorizationError("This operation is not permitted for the fixed scope.")
 
     def remember(
         self,
