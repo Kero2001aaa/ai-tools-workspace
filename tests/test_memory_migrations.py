@@ -147,6 +147,23 @@ class MemoryMigrationTests(unittest.TestCase):
         store = MemoryStore(self.db_path)
         self.assertEqual(2, len(store.recent()))
 
+    def test_concurrent_new_database_initializers_serialize(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        path = self.root / "concurrent.sqlite3"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            stores = list(pool.map(lambda _: MemoryStore(path), range(2)))
+        self.assertEqual(2, len(stores))
+        connection = sqlite3.connect(path)
+        self.assertEqual(
+            [(1, "namespace_acl_audit_v1")],
+            connection.execute(
+                "SELECT version, name FROM memory_schema_migrations"
+            ).fetchall(),
+        )
+        self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
+        connection.close()
+
     def test_migration_is_idempotent(self):
         make_legacy_database(self.db_path)
         manager = MemoryMigrationManager()
@@ -165,7 +182,7 @@ class MemoryMigrationTests(unittest.TestCase):
 
     def test_migration_failure_rolls_back_source_and_retains_verified_backup(self):
         original = make_legacy_database(self.db_path)
-        with patch("agent.memory_migrations._apply_v1_migration", side_effect=RuntimeError("injected")):
+        with patch("agent.memory_migrations._create_indexes", side_effect=RuntimeError("injected")):
             with self.assertRaises(RuntimeError):
                 MemoryMigrationManager().backup_and_migrate_configured_database(confirmed=True)
 
