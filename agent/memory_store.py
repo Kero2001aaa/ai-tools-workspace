@@ -293,6 +293,19 @@ def _validate_current_schema(connection: sqlite3.Connection) -> None:
     ).fetchone()
     if migration is None or migration["name"] != "namespace_acl_audit_v1":
         raise UnsupportedLegacySchema("The memory migration ledger is invalid.")
+    audit_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(memory_access_audit)")
+    }
+    if not {"id", "principal", "operation", "namespace", "memory_id", "created_at"}.issubset(audit_columns):
+        raise UnsupportedLegacySchema("The memory audit table is incomplete.")
+    indexes = {
+        row["name"] for row in connection.execute("PRAGMA index_list(memories)")
+    }
+    if not {
+        "idx_memories_created_at", "idx_memories_namespace_created",
+        "idx_memories_namespace_type_created", "idx_memories_task_id",
+    }.issubset(indexes):
+        raise UnsupportedLegacySchema("The memory database is missing required indexes.")
     _validate_acl(connection)
 
 
@@ -338,7 +351,7 @@ def _validate_json_value(value: Any, depth: int = 1) -> None:
     if isinstance(value, str):
         if len(value) > MAX_METADATA_STRING_LENGTH:
             raise ValueError("Metadata strings must be 256 characters or fewer.")
-        if re.search(r"(?i)(?:^|[\s=:])(?:/home/|/root/|[a-z]:\\\\|\\\\\\\\)", value):
+        if re.search(r"(?i)(?:^|[\s=:])(?:/home/|/root/|[a-z]:\\|\\\\)", value):
             raise ValueError("Metadata must not contain absolute filesystem paths.")
         return
     if isinstance(value, list):
@@ -750,7 +763,7 @@ class FeedbackPublisherStore:
             raise ValueError("failure_code must be normalized.")
         lesson = _validate_content(feedback.lesson)
         action = _validate_content(feedback.recommended_action)
-        if len(lesson) > 1000 or len(action) > 500:
+        if len(lesson) > 1000 or len(action) > MAX_METADATA_STRING_LENGTH:
             raise ValueError("Feedback lesson/action exceeds its length limit.")
         if not isinstance(feedback.verification_status, str) or feedback.verification_status not in VERIFICATION_STATUSES:
             raise ValueError("Unsupported verification_status.")
