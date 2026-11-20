@@ -31,7 +31,7 @@ def load_chat_model():
     options = {
         "model": model_name,
         "api_key": api_key,
-        "temperature": 0,
+        "temperature": 0,\n        "timeout": 30,
     }
     if base_url:
         options["base_url"] = base_url
