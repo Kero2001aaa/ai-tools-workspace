@@ -173,6 +173,8 @@ TaskLease:
 - state_version is carried by AdultTaskSnapshot and supplied as an expected version on each state-changing method; it is not a substitute for lease_generation.
 - Do not treat a worker ID alone as proof of lease ownership.
 
+TaskLease is an immutable value object with the fields above. Its constructor is internal to AdultTaskStore; callers cannot choose lease_generation or manufacture a valid lease.
+
 TaskPage:
 - items: list of AdultTaskSnapshot.
 - next_cursor: opaque cursor or null.
@@ -190,6 +192,7 @@ Use stable typed errors (or a common base carrying stable error_code):
 - LeaseLost
 - InvalidCheckpoint
 - InvalidTaskBudget
+- TaskBudgetExhausted
 - InvalidCursor
 - TaskTerminal
 - UserApprovalRequired
