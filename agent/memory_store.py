@@ -708,7 +708,8 @@ class ScopedMemoryStore:
             where_sql = " AND ".join(predicates)
             selected = (
                 "m.id, m.content, m.tags, m.created_at, m.memory_type, m.namespace, "
-                "m.visibility, m.sensitivity, m.task_id, m.metadata_json, m.owner_agent"
+                "m.visibility, m.sensitivity, m.task_id, m.content_hash, "
+                "m.metadata_json, m.owner_agent"
             )
             order = "m.created_at DESC, m.id DESC"
             sql = f"SELECT {selected} FROM memories m WHERE {where_sql} ORDER BY {order}"
