@@ -213,10 +213,11 @@ class MemoryMigrationManager:
                 backup_dir.chmod(0o700)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             backup_path = backup_dir / f"memory-{stamp}-{uuid4().hex[:12]}.sqlite3"
-            backup_path.touch(mode=0o600, exist_ok=False)
+            backup_tmp = backup_dir / f".{backup_path.name}.partial"
+            backup_tmp.touch(mode=0o600, exist_ok=False)
             try:
                 source = _readonly_connection(path)
-                destination = sqlite3.connect(str(backup_path), timeout=10, isolation_level=None)
+                destination = sqlite3.connect(str(backup_tmp), timeout=10, isolation_level=None)
                 try:
                     source.backup(destination)
                     destination.commit()
@@ -224,8 +225,8 @@ class MemoryMigrationManager:
                     destination.close()
                     source.close()
                 if os.name == "posix":
-                    backup_path.chmod(0o600)
-                backup = _readonly_connection(backup_path)
+                    backup_tmp.chmod(0o600)
+                backup = _readonly_connection(backup_tmp)
                 try:
                     backup_digest = _legacy_digest(backup)
                     integrity = backup.execute("PRAGMA integrity_check").fetchone()[0]
@@ -238,9 +239,12 @@ class MemoryMigrationManager:
                         raise MemoryBackupVerificationFailed("Online backup validation failed.")
                 finally:
                     backup.close()
+                if backup_path.exists():
+                    raise MemoryBackupVerificationFailed("A backup with the generated name already exists.")
+                backup_tmp.rename(backup_path)
             except Exception as exc:
-                if backup_path.exists() and backup_path.stat().st_size == 0:
-                    backup_path.unlink()
+                if backup_tmp.exists():
+                    backup_tmp.unlink()
                 if isinstance(exc, MemoryBackupVerificationFailed):
                     raise
                 raise MemoryBackupVerificationFailed("Online backup could not be created or verified.") from None
