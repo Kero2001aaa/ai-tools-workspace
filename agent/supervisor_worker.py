@@ -19,8 +19,8 @@ ALLOWED_ASSIGNMENT_ROLES = {"research", "coding"}
 
 def _response_text(response):
     content = getattr(response, "content", response)
-    if not isinstance(content, str):
-        raise ValueError("Supervisor model returned a non-text plan")
+    if not isinstance(content, str) or len(content) > 8000:
+        raise ValueError("Supervisor model returned a non-text or oversized plan")
     return content.strip()
 
 
@@ -46,7 +46,7 @@ def _parse_plan(content):
         if not isinstance(item, dict) or set(item) != {"specialist", "task"}:
             raise ValueError("Each assignment must contain only specialist and task")
         role, task = item["specialist"], item["task"]
-        if role not in ALLOWED_ASSIGNMENT_ROLES or role in seen:
+        if not isinstance(role, str) or role not in ALLOWED_ASSIGNMENT_ROLES or role in seen:
             raise ValueError("Assignments may use research and coding once each")
         if not isinstance(task, str) or not task.strip() or len(task.strip()) > MAX_ASSIGNMENT_TASK:
             raise ValueError("Each specialist task must contain 1 to 1,000 characters")
