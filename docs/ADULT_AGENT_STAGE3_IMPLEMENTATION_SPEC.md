@@ -337,8 +337,11 @@ Migration process:
           AND lease_owner IS NULL AND lease_expires_at IS NULL)
       ),
       CHECK(
-        (status = 'waiting_user' AND user_action_required = 1)
-        OR (status <> 'waiting_user' AND user_action_required = 0)
+        (status IN ('waiting_user','needs_input','paused') AND user_action_required = 1)
+        OR (status NOT IN ('waiting_user','needs_input','paused') AND user_action_required = 0)
+      ),
+      CHECK(
+        status <> 'waiting_user' OR failed_attempts_since_approval = 5
       )
     );
 
