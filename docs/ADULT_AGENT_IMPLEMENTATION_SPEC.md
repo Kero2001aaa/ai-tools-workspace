@@ -236,7 +236,7 @@ A previously failed identical approach is skipped. It can be retried only if a m
 - Budget exhaustion: stop and persist paused or failed according to whether explicit user action can make progress.
 - Unknown errors: sanitize, record a stable error code, and stop or try one distinct verified route only when classified as potentially recoverable.
 
-No retry may bypass an upstream provider's safety controls. Policy rejections are terminal and do not count as retryable provider failures; only actual failed/timed-out execution attempts increment the five-failure counter.
+No retry may bypass an upstream provider's safety controls. Policy rejections are terminal and do not count as retryable provider failures. Failed, timed_out, and unknown_outcome attempts increment the five-failure counter; unknown outcomes count conservatively because the provider may have processed the request. A policy rejection is not routed around. If the total-attempt/provider-call/time/cost cap is exhausted on the fifth failure, the task becomes terminal failed rather than asking for approval that cannot authorize more work.
 
 ---
 
@@ -436,10 +436,20 @@ This is a scoped facade. It must not expose arbitrary namespace selection. Priva
         def validate_text_task(self, task_type: str, instruction: str, text: str) -> PolicyDecision: ...
         def validate_image_task(self, task_type: str, prompt: str,
                                 mime_type: str | None, image_metadata: dict | None) -> PolicyDecision: ...
+        def validate_publication(self, sanitized_feedback: dict) -> PolicyDecision: ...
 
 Policy checks are invoked before routing and again before final artifact publication. Policies are independent of provider routing and cannot be disabled by model output, user-provided parameters, or MCP arguments.
 
-### 6.12 Payload and artifact storage
+### 6.12 Feedback publication — agent/adult/adult_feedback.py
+
+    class AdultFeedback:
+        def build_proposal(self, task_id: str) -> FeedbackProposal | None: ...
+        def sanitize(self, proposal: FeedbackProposal) -> SanitizedFeedback: ...
+        def publish(self, feedback_id: str) -> PublishResult: ...
+
+build_proposal reads only the minimum task/attempt metadata needed to extract a generic lesson. sanitize removes raw task content, image data, identifying details, secrets, and local paths. publish uses only the injected feedback_publisher_scope and writes shareable Workspace facts after schema/policy validation. Provider/tool installation remains a proposal and is never part of publish.
+
+### 6.13 Payload and artifact storage
 
 PayloadCipher and AdultArtifactStore are separate from memory:
 
@@ -530,7 +540,22 @@ Seed fixed policies:
 | feedback_publisher | workspace | 0 | 1 | 0 |
 | feedback_publisher | adult | 0 | 0 | 0 |
 
-The Adult MCP server fixes principal adult_agent; existing Workspace memory MCP fixes workspace_agent; only the internal feedback publisher can write curated shareable facts. Existing MemoryStore direct callers must resolve to the fixed Workspace scope for backward compatibility; Adult code receives only its injected scoped facade. No public method or MCP schema accepts a caller-selected principal or namespace.
+The Adult MCP server fixes principal adult_agent; existing Workspace memory MCP fixes workspace_agent; only the internal feedback publisher can write curated shareable facts. Existing MemoryStore direct callers must resolve to the fixed Workspace scope for backward compatibility; Adult code receives only its injected scoped facade.
+
+Storage interfaces:
+
+    class MemoryStore:
+        def workspace_scope(self) -> ScopedMemoryStore: ...
+        def adult_scope(self) -> ScopedMemoryStore: ...
+        def feedback_publisher_scope(self) -> ScopedMemoryStore: ...
+
+    class ScopedMemoryStore:
+        def remember(self, content: str, tags: list[str] | None = None,
+                      memory_type: str = "fact", task_id: str | None = None) -> MemoryRef: ...
+        def recall(self, query: str, limit: int = 5) -> list[MemoryRecord]: ...
+        def recent(self, limit: int = 10) -> list[MemoryRecord]: ...
+
+Scope factories are internal application APIs. The MCP layer receives a pre-scoped instance; it cannot request another scope or change visibility/namespace. No public method or MCP schema accepts a caller-selected principal or namespace.
 
 Every MemoryStore read/write query must apply the ACL predicate in SQL and validate the requested operation. Adult workspace recall returns only visibility='shareable' rows. Feedback publication writes sanitized records only; it cannot read source Adult memory. Provide fixed internal factories such as workspace_scope(), adult_scope(), and feedback_publisher_scope() that return a ScopedMemoryStore. ScopedMemoryStore exposes remember/recall/recent without any namespace or principal argument. The existing MemoryStore MCP server receives only workspace_scope(); AdultMemory receives only adult_scope(); the feedback module receives only feedback_publisher_scope(). Do not expose a generic from-string principal factory to MCP callers.
 
@@ -842,7 +867,7 @@ Input:
 Rules:
 
 - Only tasks in waiting_user, checkpointed, paused (where a defined correction is allowed), or needs_input may be resumed.
-- continue is an explicit authorization for one bounded continuation segment, not unlimited execution. The AdultAgent must call AdultSupervisor.continue_after_approval and return that bounded outcome; it must not merely change a database flag and leave execution semantics implicit.
+- continue is an explicit authorization for one bounded continuation segment, not unlimited execution. The AdultAgent must call AdultSupervisor.continue_after_approval and return that bounded outcome; it must not merely change a database flag and leave execution semantics implicit. The MCP tool returns the supervisor outcome (including updated task snapshot); cancel returns the cancelled task snapshot without dispatch.
 - If state is needs_input, require the missing payload again and verify task type/MIME/size.
 - cancel transitions to cancelled; it does not call a model.
 - Never resume a completed, failed-terminal, or cancelled task.
