@@ -391,6 +391,22 @@ All migration/isolation tests use independent temporary SQLite files. Tests must
 - MEM-COMPAT-03: control_plane.memory_snapshot and task_worker.memory_recent remain Workspace-scoped.
 - MEM-REG-01: full existing unittest suite passes with no regressions.
 
+## 8. Required implementation files
+
+Existing files to update:
+
+- agent/memory_store.py — migration/version checks, fixed scope factories, ACL-enforced SQL, compatibility wrappers, audit writes.
+- agent/memory_mcp_server.py — bind only workspace_scope(); preserve all three existing MCP tool names and argument/result contracts.
+- agent/adult/adult_memory.py — new Adult-only private/shareable memory facade.
+
+New files:
+
+- agent/memory_migrations.py — explicit inspect / backup-and-migrate CLI. No migration-on-import or migration-on-startup.
+- tests/test_memory_migrations.py — migration ledger, additive DDL, backup, dry-run/confirmation, rollback and compatibility fixtures.
+- tests/test_memory_access_control.py — ACL matrix, scope isolation, SQL predicate, feedback write-only capability, and audit privacy tests.
+
+The migration CLI must not be imported by normal server startup as a side effect. The CLI is invoked explicitly by the operator after reviewing the dry-run summary and confirming the operation.
+
 ## 8. Stage 2 implementation sequence and gate
 
 Implement in this exact order:
