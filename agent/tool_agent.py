@@ -56,6 +56,12 @@ def build_workspace_server_config(env=None):
             "args": [graphify_graph],
         }
 
+    if env.get("ENABLE_SPECIALIST_AGENTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        servers["specialists"] = {
+            "transport": "stdio", "command": sys.executable,
+            "args": ["-m", "agent.specialist_mcp_server"],
+        }
+
     if env.get("ENABLE_AGENT_REACH_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}:
         reach_command = env.get("AGENT_REACH_COMMAND", "").strip() or "agent-reach"
         resolved_reach = shutil.which(reach_command)
