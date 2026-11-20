@@ -133,6 +133,8 @@ SQLite does not provide native row-level security. The MVP's storage boundary is
 
 ### 4.1 Enumerations
 
+AttemptStatus also includes unknown_outcome for a provider call whose final result cannot be established after a process/connection failure. This is not success and must not be silently replayed.
+
     TaskType = Literal[
         "text.analyze", "text.generate", "text.rewrite",
         "image.analyze", "image.generate", "image.edit",
@@ -234,7 +236,7 @@ A previously failed identical approach is skipped. It can be retried only if a m
 - Budget exhaustion: stop and persist paused or failed according to whether explicit user action can make progress.
 - Unknown errors: sanitize, record a stable error code, and stop or try one distinct verified route only when classified as potentially recoverable.
 
-No retry may bypass an upstream provider's safety controls.
+No retry may bypass an upstream provider's safety controls. Policy rejections are terminal and do not count as retryable provider failures; only actual failed/timed-out execution attempts increment the five-failure counter.
 
 ---
 
@@ -270,6 +272,7 @@ Application facade. It must not contain provider-specific HTTP or SQL logic.
             *, retain_payload: bool = False
         ) -> AdultTaskSnapshot: ...
 
+        def run_task(self, task_id: str, *, max_seconds: int = 300) -> SupervisorOutcome: ...
         def get_task(self, task_id: str) -> AdultTaskSnapshot: ...
         def list_tasks(self, status: str | None = None, limit: int = 20) -> list[AdultTaskSnapshot]: ...
         def get_attempts(self, task_id: str, limit: int = 20) -> list[AttemptSummary]: ...
@@ -444,6 +447,11 @@ PayloadCipher and AdultArtifactStore are separate from memory:
         def encrypt(self, task_id: str, payload_id: str, plaintext: bytes) -> EncryptedPayload: ...
         def decrypt(self, task_id: str, payload_id: str, ciphertext: bytes) -> bytes: ...
 
+    class TransientPayloadCache:
+        def put(self, task_id: str, payload: bytes) -> str: ...
+        def get(self, task_id: str, payload_ref: str) -> bytes | None: ...
+        def discard(self, task_id: str) -> None: ...
+
     class AdultArtifactStore:
         def save_input(self, task_id: str, data: bytes, mime_type: str,
                        *, retain_encrypted: bool) -> PayloadRef | None: ...
@@ -452,6 +460,8 @@ PayloadCipher and AdultArtifactStore are separate from memory:
                         mime_type: str) -> ArtifactRef: ...
         def read_chunk(self, artifact_id: str, offset: int, max_bytes: int = 262144) -> ArtifactChunk: ...
         def delete_expired(self) -> int: ...
+
+TransientPayloadCache holds non-retained input only in process memory. It is never serialized to SQLite or logs. A task submitted with ephemeral retention can resume while the cache survives; after process restart, a missing payload transitions to needs_input.
 
 Encryption requirements:
 
@@ -532,12 +542,12 @@ The following is the logical schema. Names and fields are mandatory; implementat
 
     CREATE TABLE adult_tasks (
       task_id TEXT PRIMARY KEY,
-      task_type TEXT NOT NULL,
-      status TEXT NOT NULL,
+      task_type TEXT NOT NULL CHECK(task_type IN ('text.analyze','text.generate','text.rewrite','image.analyze','image.generate','image.edit')),
+      status TEXT NOT NULL CHECK(status IN ('queued','analyzing','running','evaluating','checkpointed','waiting_user','needs_input','paused','completed','failed','cancelled')),
       input_fingerprint TEXT NOT NULL,
       instruction_fingerprint TEXT,
       payload_id TEXT,
-      retention_policy TEXT NOT NULL,
+      retention_policy TEXT NOT NULL CHECK(retention_policy IN ('ephemeral','encrypted')),
       current_step_id TEXT,
       selected_adapter TEXT,
       selected_provider TEXT,
@@ -593,7 +603,7 @@ The following is the logical schema. Names and fields are mandatory; implementat
       input_fingerprint TEXT NOT NULL,
       config_fingerprint TEXT NOT NULL,
       environment_fingerprint TEXT,
-      status TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','rejected','timed_out','unknown_outcome')),
       retryable INTEGER NOT NULL DEFAULT 0,
       retry_reason TEXT,
       error_code TEXT,
@@ -685,6 +695,8 @@ The following is the logical schema. Names and fields are mandatory; implementat
     );
 
     CREATE INDEX idx_adult_tasks_status_updated ON adult_tasks(status, updated_at DESC);
+    CREATE UNIQUE INDEX idx_adult_single_active_task ON adult_tasks((1))
+      WHERE status IN ('analyzing','running','evaluating');
     CREATE INDEX idx_adult_attempts_task_no ON adult_attempts(task_id, attempt_no);
     CREATE INDEX idx_adult_attempts_approach ON adult_attempts(task_id, approach_key);
     CREATE INDEX idx_adult_checkpoints_task_revision ON adult_checkpoints(task_id, revision DESC);
@@ -782,21 +794,27 @@ Validation rules:
 - Reject SVG, executable/polyglot payloads, malformed files, and dimensions/pixel counts above configured bounds.
 - Return task ID and redacted metadata, never echo the base64 payload.
 
-### 8.3 adult_get_task
+### 8.3 adult_run_task
+
+Input: task_id and max_seconds (1–300; default 300).
+
+Behavior: starts a queued task or continues a checkpointed task only when the caller has explicitly initiated that run. It invokes one bounded AdultSupervisor segment and returns the resulting task snapshot. It stops at completion, the five-failure approval point, or any configured budget. It never starts background execution. A waiting_user task cannot be run by this tool; it requires adult_resume_task with decision=continue.
+
+### 8.4 adult_get_task
 
 Input: task_id UUID.
 
 Output: task ID/type/status, timestamps, counters, current operation, selected adapter/model/tool, latest artifact IDs, safe error code, and whether user action/input is required. Must not return raw text, image bytes, private memory, secrets, or encrypted payload data.
 
-### 8.4 adult_list_tasks
+### 8.5 adult_list_tasks
 
 Input: optional status, limit (1–20), optional opaque cursor. Output: compact task summaries only. No payload content.
 
-### 8.5 adult_get_attempts
+### 8.6 adult_get_attempts
 
 Input: task_id, optional limit (1–20). Output: attempt number, adapter/model/tool identifiers, status, elapsed time, sanitized error code/summary, cost/usage when known, and whether an approach was skipped as duplicate. No raw prompt, content, image, credentials, or provider request body.
 
-### 8.6 adult_resume_task
+### 8.7 adult_resume_task
 
 Input:
 
@@ -824,21 +842,21 @@ Rules:
 - cancel transitions to cancelled; it does not call a model.
 - Never resume a completed, failed-terminal, or cancelled task.
 
-### 8.7 adult_cancel_task
+### 8.8 adult_cancel_task
 
 Input: task ID. Sets a cancellation request atomically. An in-flight provider call may not be cancellable; after it returns, the executor must discard/unpublish output when cancellation has been requested and mark the task cancelled.
 
-### 8.8 adult_get_artifact_chunk
+### 8.9 adult_get_artifact_chunk
 
 Input: artifact_id, offset (integer >= 0), max_bytes (1–262144, default 262144).
 
-Output: base64 chunk, decoded byte count, total byte count, next offset, MIME type, artifact SHA-256, and completion flag. Validate artifact ownership, expiry, and range before reading. Never accept a path from the caller. This chunk contract avoids unbounded MCP responses and allows an external host to reconstruct the artifact.
+Output: base64 chunk, decoded byte count, total byte count, next offset, MIME type, artifact SHA-256, and completion flag. It supports both text/plain output artifacts and validated image output artifacts. Validate artifact ownership, expiry, and range before reading. Never accept a path from the caller. This chunk contract avoids unbounded MCP responses and allows an external host to reconstruct the artifact.
 
-### 8.9 MCP output and error contract
+### 8.10 MCP output and error contract
 
 Every successful tool call returns bounded structured JSON with a stable status and IDs. Validation/policy failures return a clear structured error and do not create an attempt unless provider execution actually began. Provider attempts always receive durable attempt records. Never return stack traces, environment variables, secrets, local absolute paths, or raw sensitive content.
 
-Adult MCP tools are stateful through explicit IDs, not implicit MCP sessions. MCP tool input/output schemas must be strict and have additionalProperties=false where supported. The Gateway allowlist must expose only the eight named Adult tools; no generic memory, SQL, filesystem, terminal, or arbitrary provider management tool is added.
+Adult MCP tools are stateful through explicit IDs, not implicit MCP sessions. MCP tool input/output schemas must be strict and have additionalProperties=false where supported. The Gateway allowlist must expose only the nine named Adult tools: adult_submit_text_task, adult_submit_image_task, adult_run_task, adult_get_task, adult_list_tasks, adult_get_attempts, adult_resume_task, adult_cancel_task, and adult_get_artifact_chunk. No generic memory, SQL, filesystem, terminal, or arbitrary provider management tool is added.
 
 ---
 
