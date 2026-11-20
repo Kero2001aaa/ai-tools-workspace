@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock
 from mcp.types import Tool, TextContent
 from agent.gateway_mcp_server import (
     PUBLIC_TOOLS,
+    PLANNER_ACTION_TOOLS,
+    allowed_tools_for_environment,
     UpstreamRouter,
     public_tool_name,
     validate_gateway_host,
@@ -18,7 +20,21 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertNotIn("enqueue_task", PUBLIC_TOOLS["tasks"])
         self.assertNotIn("remember", PUBLIC_TOOLS["memory"])
         self.assertNotIn("create_plan", PUBLIC_TOOLS["planner"])
+        self.assertEqual(PUBLIC_TOOLS["specialists"], {"delegate_specialist", "supervise_request"})
+        self.assertFalse(PLANNER_ACTION_TOOLS.intersection(PUBLIC_TOOLS["planner"]))
         self.assertEqual(PUBLIC_TOOLS["terminal"], {"run_workspace_task", "read_project_file", "write_project_file"})
+
+    def test_planner_mutations_require_explicit_opt_in(self):
+        default = allowed_tools_for_environment({})
+        self.assertFalse(PLANNER_ACTION_TOOLS.intersection(default["planner"]))
+        enabled = allowed_tools_for_environment({"ENABLE_GATEWAY_PLANNER_ACTIONS": "true"})
+        self.assertEqual(PLANNER_ACTION_TOOLS.intersection(enabled["planner"]), PLANNER_ACTION_TOOLS)
+        self.assertNotIn("retry_failed_plan_step", enabled["planner"])
+
+    def test_specialists_are_only_available_when_server_is_configured(self):
+        from agent.tool_agent import build_workspace_server_config
+        self.assertNotIn("specialists", build_workspace_server_config({}))
+        self.assertIn("specialists", build_workspace_server_config({"ENABLE_SPECIALIST_AGENTS": "true"}))
 
     def test_tool_names_are_namespaced(self):
         self.assertEqual(public_tool_name("workspace", "workspace_status"),
