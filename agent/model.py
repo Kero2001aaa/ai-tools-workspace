@@ -9,7 +9,8 @@ def load_chat_model():
 
     The endpoint can be a hosted provider or a self-hosted OpenAI-compatible
     server. This function does not make a network request; inference happens
-    only when the compiled graph invokes the returned model.
+    only when the compiled graph invokes the returned model. Requests have
+    a 30-second HTTP timeout to bound individual inference calls.
     """
     load_dotenv()
 
@@ -31,7 +32,8 @@ def load_chat_model():
     options = {
         "model": model_name,
         "api_key": api_key,
-        "temperature": 0,\n        "timeout": 30,
+        "temperature": 0,
+        "timeout": 30,
     }
     if base_url:
         options["base_url"] = base_url
