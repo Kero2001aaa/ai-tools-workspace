@@ -31,6 +31,12 @@ def build_workspace_server_config(env=None):
         "planner": {"transport": "stdio", "command": sys.executable,
                     "args": ["-m", "agent.plan_mcp_server"]},
     }
+    if env.get("ENABLE_TERMINAL_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        servers["terminal"] = {
+            "transport": "stdio", "command": sys.executable,
+            "args": ["-m", "agent.terminal_mcp_server"],
+        }
+
     if env.get("ENABLE_BROWSER_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}:
         servers["browser"] = {
             "transport": "stdio", "command": sys.executable,
