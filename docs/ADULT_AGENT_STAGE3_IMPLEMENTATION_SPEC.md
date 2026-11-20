@@ -327,7 +327,19 @@ Migration process:
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       CHECK((max_cost_microusd = 0 AND spent_cost_microusd = 0) OR
-            (max_cost_microusd > 0 AND spent_cost_microusd <= max_cost_microusd))
+            (max_cost_microusd > 0 AND spent_cost_microusd <= max_cost_microusd)),
+      CHECK(
+        (status IN ('analyzing','running','evaluating')
+          AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL
+          AND lease_generation > 0)
+        OR
+        (status NOT IN ('analyzing','running','evaluating')
+          AND lease_owner IS NULL AND lease_expires_at IS NULL)
+      ),
+      CHECK(
+        (status = 'waiting_user' AND user_action_required = 1)
+        OR (status <> 'waiting_user' AND user_action_required = 0)
+      )
     );
 
 payload_id and latest_result_artifact_id are opaque references only in Stage 3. They have no foreign key until the Stage 4 payload/artifact schema is implemented. They must never contain paths or file contents.
@@ -418,6 +430,34 @@ Event rules:
       ON adult_task_events(task_id, created_at);
 
 The partial unique index is the final database-level guard for the one-active-task rule. TaskStore must still return a typed TaskAlreadyActive error rather than expose a raw SQLite IntegrityError.
+
+Required immutability triggers:
+
+    CREATE TRIGGER prevent_adult_tasks_delete
+    BEFORE DELETE ON adult_tasks
+    BEGIN SELECT RAISE(ABORT, 'adult task history is immutable'); END;
+
+    CREATE TRIGGER prevent_adult_steps_delete
+    BEFORE DELETE ON adult_steps
+    BEGIN SELECT RAISE(ABORT, 'adult step history is immutable'); END;
+
+    CREATE TRIGGER prevent_adult_checkpoints_update
+    BEFORE UPDATE ON adult_checkpoints
+    BEGIN SELECT RAISE(ABORT, 'adult checkpoints are append-only'); END;
+
+    CREATE TRIGGER prevent_adult_checkpoints_delete
+    BEFORE DELETE ON adult_checkpoints
+    BEGIN SELECT RAISE(ABORT, 'adult checkpoints are append-only'); END;
+
+    CREATE TRIGGER prevent_adult_task_events_update
+    BEFORE UPDATE ON adult_task_events
+    BEGIN SELECT RAISE(ABORT, 'adult task events are append-only'); END;
+
+    CREATE TRIGGER prevent_adult_task_events_delete
+    BEFORE DELETE ON adult_task_events
+    BEGIN SELECT RAISE(ABORT, 'adult task events are append-only'); END;
+
+The trigger DDL is part of Stage 3 migration version 1 and must be included in the idempotent schema validation.
 
 ### 5.8 History preservation
 
@@ -528,7 +568,7 @@ No sixth attempt can be dispatched after this state is committed. Stage 3 persis
 - cancel delegates to request_cancel and never dispatches a provider call.
 - continue from waiting_user requires user_action_required=1 and exactly five failures; transition to queued, increment approvals_granted, reset failed_attempts_since_approval=0, clear user_action_required, and write a resume event.
 - continue from checkpointed transitions to queued without incrementing approvals_granted.
-- paused may only resume through an internal call that records a validated corrective action; do not expose a generic public bypass.
+- paused is rejected by TaskStore.resume in Stage 3. A later application layer may add a specific corrective-resume contract only after defining and validating the corrective action; do not expose a generic public bypass.
 - needs_input cannot be resumed by TaskStore alone. Stage 4 must first validate and attach a replacement payload; until then, reject continue.
 - completed, failed, and cancelled are terminal.
 - resume changes durable state only. It does not claim a task lease or execute a step.
@@ -624,6 +664,7 @@ All tests use temporary Adult database files. No test may use .data/adult.sqlite
 - TASK-DB-06: journal_mode remains DELETE.
 - TASK-DB-07: CHECK constraints reject invalid task_type/status/retention/budget/boolean/counter values.
 - TASK-DB-08: no extra tables for attempts, payloads, artifacts, or model capabilities are introduced by Stage 3.
+- TASK-DB-09: required task lease/user-action CHECK constraints and all history immutability triggers exist and reject invalid writes/deletes.
 
 ### Task creation and persistence
 
