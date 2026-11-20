@@ -55,6 +55,39 @@ Enabling terminal tools increases the impact of a compromised local gateway;
 keep `ENABLE_TERMINAL_TOOLS=false` unless you are deliberately testing the
 local, restricted task interface.
 
+## Supported remote connection paths
+
+### OpenAI / ChatGPT
+
+OpenAI documents Secure MCP Tunnel as an outbound-only way to connect a
+private MCP server to supported OpenAI products without opening inbound ports
+or making the server public. The tunnel client runs beside the MCP server,
+polls the OpenAI-hosted endpoint, and forwards requests locally.
+
+Official guide:
+https://developers.openai.com/api/docs/guides/secure-mcp-tunnels
+
+This repository does not yet configure or run `tunnel-client`. Setup requires
+an OpenAI Platform tunnel ID, a runtime API key, the correct Platform
+organization and ChatGPT workspace association, and tunnel permissions.
+ChatGPT custom MCP availability is also controlled by the target account or
+workspace plan and permissions. Verify eligibility in the current ChatGPT
+workspace before spending time on tunnel setup.
+
+### Claude
+
+Claude custom connectors use remote MCP. Claude's cloud service must be able
+to reach the MCP endpoint over public HTTPS (port 443). Claude documents OAuth
+and fixed request-header authentication options. A local loopback server by
+itself is not reachable from Claude's cloud service.
+
+Official guide:
+https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp
+
+A separate public HTTPS deployment or a compatible secure relay is therefore
+still required for Claude. Do not expose the current unauthenticated gateway
+directly.
+
 ## What remains before remote ChatGPT/Claude control
 
 A secure remote integration still requires all of the following:
