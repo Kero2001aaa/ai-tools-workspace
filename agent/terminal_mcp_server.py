@@ -69,7 +69,7 @@ def _resolve_project_path(relative_path: str) -> Path:
     return resolved
 
 
-def read_project_file(relative_path: str) -> dict:
+def _read_project_file(relative_path: str) -> dict:
     """Read a bounded UTF-8 text file from agent/, tests/, docs/, or approved root files."""
     target = _resolve_project_path(relative_path)
     if not target.is_file():
@@ -81,7 +81,7 @@ def read_project_file(relative_path: str) -> dict:
     return {"path": relative_path, "content": content, "bytes": size}
 
 
-def write_project_file(relative_path: str, content: str) -> dict:
+def _write_project_file(relative_path: str, content: str) -> dict:
     """Create or replace one bounded UTF-8 file inside approved project directories."""
     if not isinstance(content, str):
         raise ValueError("content must be text")
@@ -174,7 +174,7 @@ def read_project_file(relative_path: str) -> dict:
 
     Protected paths such as .env, .git, .venv, .data, and .vscode are blocked.
     """
-    return read_project_file(relative_path)
+    return _read_project_file(relative_path)
 
 
 @mcp.tool()
@@ -184,7 +184,7 @@ def write_project_file(relative_path: str, content: str) -> dict:
     Writes are limited to 100 KB per file. Protected paths and symlink escapes
     are rejected. The caller must review the resulting diff before committing.
     """
-    return write_project_file(relative_path, content)
+    return _write_project_file(relative_path, content)
 
 
 if __name__ == "__main__":
