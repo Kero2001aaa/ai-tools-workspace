@@ -237,15 +237,17 @@ Migration trigger and live-data gate:
 - The only supported live-database migration entry point is: .venv/bin/python -m agent.memory_migrations backup-and-migrate
 - The command uses WORKSPACE_MEMORY_DB (or the normal default) from the process environment. It accepts no arbitrary database path, SQL, principal, or namespace argument.
 - The command prints a dry-run summary (safe basename only, row count, ID range, schema version, journal mode) and requires an explicit --confirm flag before creating a backup or modifying the source. Without --confirm it performs read-only inspection only.
-- The confirmed command creates a collision-resistant backup under .data/backups/ using SQLite Connection.backup(), creates the backup directory with mode 0700 and the backup file with mode 0600 on POSIX, validates the backup read-only, compares row count and ID range, and runs integrity_check and foreign_key_check. It refuses to migrate if backup verification fails.
-- Only after successful backup verification does it apply the additive migration to the source DB. It then verifies schema, preserved IDs/content/tags/timestamps by row-level comparison or pre-migration hashes, row count, integrity_check, foreign_key_check, and Workspace recall.
+- The confirmed command first acquires a SQLite writer reservation with BEGIN IMMEDIATE. It keeps that reservation for the entire backup-and-migrate critical section so concurrent Workspace writes cannot make the backup stale relative to the migrated database.
+- While the writer reservation is held, it creates a collision-resistant backup under .data/backups/ using a separate read-only source connection and SQLite Connection.backup(), creates the backup directory with mode 0700 and the backup file with mode 0600 on POSIX, validates the backup read-only, compares row count and ID range, and runs integrity_check and foreign_key_check. It refuses to migrate if backup verification fails.
+- After successful backup verification, it applies the additive migration on the reserved write connection within the same transaction and commits. It then verifies schema, preserved IDs/content/tags/timestamps by row-level comparison or pre-migration hashes, row count, integrity_check, foreign_key_check, and Workspace recall.
+- If backup creation/verification or migration fails before commit, it rolls back the source transaction. A completed backup is retained for diagnosis/restore; an incomplete temporary backup is never treated as valid. Other writers wait up to the configured busy timeout and then receive a controlled maintenance/busy error.
 - The backup is retained; the command never overwrites an earlier backup and never deletes the old DB or backup. Restore is a separate operation requiring explicit operator action.
 - Unit tests use temporary DBs and may call the internal migration function directly; they never invoke the live-data command against .data/memory.sqlite3.
 
 Migration algorithm:
 
 1. Open a connection with foreign_keys=ON and a bounded busy timeout.
-2. Start BEGIN IMMEDIATE before reading the current migration ledger.
+2. For ordinary schema initialization, start BEGIN IMMEDIATE before reading the current migration ledger. For the explicit live-data command, reuse the already-held maintenance transaction; do not attempt a nested BEGIN.
 3. If version 1 is already applied, validate the required columns, tables, indexes, and fixed ACL rows; do not reapply ALTER TABLE.
 4. For a version-0 database, inspect the known legacy schema and fail closed if required legacy columns are missing or unexpected incompatible columns are present.
 5. Add each new column with an additive ALTER TABLE ... ADD COLUMN statement and a constant SQL default.
