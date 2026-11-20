@@ -32,10 +32,10 @@ def validate_delegation(specialist, task, context=""):
     return task.strip(), context
 
 
-def run_specialist(specialist, task, context=""):
+def run_specialist(specialist, task, context="", model=None):
     """Run one isolated specialist inference; no tools or side effects are available."""
     task, context = validate_delegation(specialist, task, context)
-    model = load_chat_model()
+    model = model or load_chat_model()
     if model is None:
         raise RuntimeError("No chat model configured; specialist delegation is unavailable in offline mode.")
     role, instructions = SPECIALISTS[specialist]
