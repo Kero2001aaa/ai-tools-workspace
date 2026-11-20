@@ -116,7 +116,7 @@ Adult-content support is an explicit product capability, subject to the non-bypa
 
 - Workspace memories and Adult memories use the existing shared SQLite memory infrastructure and one repository API with enforced namespace permissions.
 - Adult task state, steps, attempts, checkpoints, events, feedback proposals, and model capability records use a separate SQLite operational database: .data/adult.sqlite3.
-- Sensitive task inputs and retained artifacts are stored as encrypted files under .data/adult_payloads/; SQLite stores only opaque identifiers and metadata.
+- Sensitive task inputs and retained artifacts are stored as encrypted files under .data/adult_payloads/; SQLite stores only opaque identifiers and metadata. For ephemeral input, the persisted reference is only a cache handle; it contains no payload bytes and becomes unresolved after process restart.
 - API keys and encryption master keys remain in the private environment/secret store. Never write them to SQLite, logs, artifacts, Git, or MCP output.
 
 This is shared infrastructure, not shared unrestricted data access.
@@ -738,7 +738,7 @@ The following is the logical schema. Names and fields are mandatory; implementat
 snapshot_json must be versioned and must preserve:
 
 - task ID, task type, status, and active step;
-- input fingerprint and encrypted payload reference (never plaintext);
+- input fingerprint and payload reference (encrypted record ID or opaque in-memory cache handle; never plaintext);
 - current plan and completed/pending step IDs;
 - last successful result/artifact reference;
 - last selected adapter, provider, model, tool, and sanitized configuration fingerprint;
@@ -819,6 +819,7 @@ Validation rules:
 
 - image.analyze and image.edit require a valid input image.
 - image.generate does not accept an input image.
+- image.generate and image.edit require a non-empty prompt; image.analyze may use an empty prompt when the caller only requests a visual description.
 - Decode base64 strictly; enforce 15 MiB decoded-size limit.
 - Verify actual file signature and successful image decoding; do not trust the declared MIME type.
 - Reject SVG, executable/polyglot payloads, malformed files, and dimensions/pixel counts above configured bounds.
