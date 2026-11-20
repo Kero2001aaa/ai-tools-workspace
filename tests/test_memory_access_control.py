@@ -115,6 +115,50 @@ class MemoryAccessControlTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             AdultMemory(self.workspace)
 
+    def test_fixed_acl_matrix_is_seeded_exactly(self):
+        connection = sqlite3.connect(self.db_path)
+        rows = connection.execute(
+            "SELECT principal, namespace, can_read, can_write, can_read_shareable "
+            "FROM memory_namespace_acl ORDER BY principal, namespace"
+        ).fetchall()
+        connection.close()
+        self.assertEqual(6, len(rows))
+        self.assertIn(("workspace_agent", "workspace", 1, 1, 0), rows)
+        self.assertIn(("workspace_agent", "adult", 0, 0, 0), rows)
+        self.assertIn(("adult_agent", "adult", 1, 1, 0), rows)
+        self.assertIn(("adult_agent", "workspace", 0, 0, 1), rows)
+        self.assertIn(("feedback_publisher", "workspace", 0, 1, 0), rows)
+        self.assertIn(("feedback_publisher", "adult", 0, 0, 0), rows)
+
+    def test_legacy_workspace_wrapper_return_shapes_are_unchanged(self):
+        saved = self.store.remember("Compatibility wrapper note", ["compat"])
+        self.assertEqual({"id", "created_at", "tags"}, set(saved))
+        recalled = self.store.recall("Compatibility wrapper")
+        self.assertEqual(
+            {"id", "content", "tags", "created_at", "matched_terms"},
+            set(recalled[0]),
+        )
+        recent = self.store.recent()
+        self.assertEqual({"id", "content", "tags", "created_at"}, set(recent[0]))
+
+    def test_feedback_publisher_acl_tampering_fails_closed_and_is_audited(self):
+        connection = sqlite3.connect(self.db_path)
+        connection.execute(
+            "UPDATE memory_namespace_acl SET can_write=0 "
+            "WHERE principal='feedback_publisher' AND namespace='workspace'"
+        )
+        connection.commit()
+        connection.close()
+        with self.assertRaises(MemoryAuthorizationError):
+            self.publisher.publish_sanitized_feedback(VALID_FEEDBACK)
+        connection = sqlite3.connect(self.db_path)
+        row = connection.execute(
+            "SELECT principal, operation, namespace, memory_id "
+            "FROM memory_access_audit ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        connection.close()
+        self.assertEqual(("feedback_publisher", "denied", "workspace", None), row)
+
     def test_workspace_scope_cannot_call_adult_shareable_reader(self):
         with self.assertRaises(MemoryAuthorizationError):
             self.workspace.recall_shareable_workspace("anything")
