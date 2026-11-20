@@ -74,7 +74,16 @@ class MemoryAccessControlTests(unittest.TestCase):
         self.publisher.publish_sanitized_feedback(VALID_FEEDBACK)
         records = self.store.recall("structured response envelope")
         self.assertEqual(1, len(records))
-        self.assertEqual("lesson", records[0]["memory_type"] if "memory_type" in records[0] else "lesson")
+        self.assertEqual(
+            "A provider adapter may return a structured response envelope.",
+            records[0]["content"],
+        )
+        connection = sqlite3.connect(self.db_path)
+        memory_type = connection.execute(
+            "SELECT memory_type FROM memories WHERE id=?", (records[0]["id"],)
+        ).fetchone()[0]
+        connection.close()
+        self.assertEqual("lesson", memory_type)
 
     def test_feedback_publisher_is_write_only_and_has_no_generic_memory_api(self):
         self.assertFalse(hasattr(self.publisher, "recall"))
