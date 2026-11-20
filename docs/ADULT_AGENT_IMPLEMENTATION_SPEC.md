@@ -1042,6 +1042,8 @@ New modules:
 
     docs/
       ADULT_AGENT_IMPLEMENTATION_SPEC.md
+      ADULT_AGENT_STAGE2_IMPLEMENTATION_SPEC.md
+      ADULT_AGENT_STAGE3_IMPLEMENTATION_SPEC.md
       ADULT_AGENT_SETUP.md
       ADULT_AGENT_TESTING.md
 
@@ -1088,21 +1090,19 @@ No stage may begin until the previous stage's review gate passes. If any test or
 
 ### Stage 2 — Memory migration and isolation
 
-- Add versioned additive migration and scoped storage methods.
-- Keep old Workspace methods backward-compatible.
-- Add ACL and access audit tables.
-- Add AdultMemory and fixed server principals.
-- Test legacy migration and cross-namespace denial.
+The complete execution contract is maintained in [ADULT_AGENT_STAGE2_IMPLEMENTATION_SPEC.md](ADULT_AGENT_STAGE2_IMPLEMENTATION_SPEC.md). It defines the MemoryStore and scoped-store interfaces, additive migration ledger, ACL matrix and SQL predicates, write-only sanitized feedback publisher, audit schema, data flows, compatibility rules, and MEM-* acceptance tests.
 
-**Gate:** migration tests, isolation tests, existing memory tests, and full unit suite green.
+Implementation order: typed records/validation; temporary-database migration; ACL/audit schema; fixed scope factories; backward-compatible Workspace wrappers/MCP; AdultMemory; migration/isolation/audit/regression tests.
+
+**Gate:** every MEM-* acceptance test, all unchanged Workspace memory tests, the full unit suite, protected-path scan, and CI pass. The live .data/memory.sqlite3 remains untouched until a separately reviewed migration operation with a verified backup/restore procedure.
 
 ### Stage 3 — Adult operational schema and TaskStore
 
-- Add Adult database migrations/tables.
-- Implement state machine, atomic transitions, leases, checkpoints, and recovery.
-- No model/provider calls yet.
+The complete execution contract is maintained in [ADULT_AGENT_STAGE3_IMPLEMENTATION_SPEC.md](ADULT_AGENT_STAGE3_IMPLEMENTATION_SPEC.md). It defines the Adult operational DB and migration ledger, exact Stage 3 tables and constraints, immutable task history, DTOs, task state machine, optimistic state versions, lease fencing, atomic checkpoints, cancellation, resume semantics, expired-lease recovery, and TASK-* acceptance tests.
 
-**Gate:** state-transition, concurrent-claim, rollback, checkpoint, restart, and full suite green.
+Implementation order: DTO validation; DB connection/migration; operational schema; create/get/list; state transitions; lease claim/renew/release; checkpoints/waiting-user/resume/cancel/recovery; concurrency/restart/privacy tests.
+
+**Gate:** every TASK-* test, all Stage 2 MEM-* tests, and the full suite pass. Stage 3 must not make model/provider calls, register Adult MCP tools, persist payload plaintext, implement AttemptTracker, or add encrypted payload/artifact storage. Those belong to later stages.
 
 ### Stage 4 — Encrypted payload and artifact storage
 
