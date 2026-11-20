@@ -301,14 +301,25 @@ def _validate_current_schema(connection: sqlite3.Connection) -> None:
     }
     if not {"id", "principal", "operation", "namespace", "memory_id", "created_at"}.issubset(audit_columns):
         raise UnsupportedLegacySchema("The memory audit table is incomplete.")
+    expected_indexes = {
+        "idx_memories_created_at": ["created_at"],
+        "idx_memories_namespace_created": ["namespace", "created_at"],
+        "idx_memories_namespace_type_created": ["namespace", "memory_type", "created_at"],
+        "idx_memories_task_id": ["task_id"],
+    }
     indexes = {
         row["name"] for row in connection.execute("PRAGMA index_list(memories)")
     }
-    if not {
-        "idx_memories_created_at", "idx_memories_namespace_created",
-        "idx_memories_namespace_type_created", "idx_memories_task_id",
-    }.issubset(indexes):
+    if not set(expected_indexes).issubset(indexes):
         raise UnsupportedLegacySchema("The memory database is missing required indexes.")
+    for index_name, expected_columns in expected_indexes.items():
+        actual_columns = [
+            row["name"] for row in connection.execute(
+                f"PRAGMA index_info({index_name})"
+            )
+        ]
+        if actual_columns != expected_columns:
+            raise UnsupportedLegacySchema("A required memory index has an invalid definition.")
     _validate_acl(connection)
 
 
@@ -464,6 +475,7 @@ class MemoryStore:
                         "An existing empty database file is not a supported new database."
                     )
                 _create_current_schema(connection)
+                _validate_current_schema(connection)
                 connection.commit()
             else:
                 if "memory_schema_migrations" not in tables:
