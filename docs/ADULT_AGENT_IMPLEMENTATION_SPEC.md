@@ -146,7 +146,7 @@ AttemptStatus also includes unknown_outcome for a provider call whose final resu
         "paused", "completed", "failed", "cancelled",
     ]
 
-    AttemptStatus = Literal["running", "succeeded", "failed", "rejected", "timed_out"]
+    AttemptStatus = Literal["running", "succeeded", "failed", "rejected", "timed_out", "unknown_outcome"]
     PayloadRetention = Literal["ephemeral", "encrypted"]
     Decision = Literal["continue", "cancel"]
     CostClass = Literal["local", "free_verified", "paid", "unknown"]
@@ -249,7 +249,7 @@ Public method signatures below are contractual. Internal helper names may change
 - AdultTaskRequest: task_type, instruction, payload_ref, input_fingerprint, retention_policy, requested_options.
 - AdultTaskSnapshot: task_id, task_type, status, created_at, updated_at, attempt_count, failed_attempts_since_approval, current_step, selected_adapter, selected_model, selected_tool, last_error_code, latest_artifact_ids, user_action_required.
 - TaskBudget: max_total_attempts, max_wall_seconds, max_provider_calls, max_cost_microusd, failure_checkpoint_interval.
-- RouteCandidate: adapter_id, provider_id, model_id, task_type, cost_class, capability_version, verified_at.
+- RouteCandidate: adapter_id, adapter_version, provider_id, model_id, model_version, tool_id, tool_version, task_type, cost_class, capability_version, verified_at.
 - AttemptResult: attempt_id, status, output_ref, error_code, sanitized_error, usage, cost_microusd, elapsed_ms.
 - EvaluationResult: accepted, score, checks, reason_codes, needs_revision.
 - CheckpointSnapshot: versioned JSON-safe state; may contain identifiers/fingerprints/references, never plaintext sensitive payloads or credentials.
@@ -474,7 +474,7 @@ Encryption requirements:
 - If encryption is enabled but the key is missing/invalid, fail before accepting a persistent task.
 - Default retain_payload=false: never persist the original sensitive input. The process may keep it transiently while executing.
 - retain_payload=true requires explicit request opt-in and a valid local master key. Retained input is encrypted at rest and removed at task completion or expiry according to the retention setting.
-- Output artifacts needed by the user are encrypted at rest and retained for a bounded default of 24 hours; longer retention must be explicit.
+- Output artifacts needed by the user are encrypted at rest and retained for a bounded default of 24 hours; longer retention must be explicit. Persisted output requires the same configured master key. When no key is configured, output bytes may be held in the transient process cache for immediate bounded artifact retrieval, but are not persisted across process restarts. Never write unencrypted output files to simulate persistence.
 - On ephemeral payload loss after restart, mark needs_input and request re-upload. Do not fabricate a resumed task.
 
 ---
@@ -532,7 +532,7 @@ Seed fixed policies:
 
 The Adult MCP server fixes principal adult_agent; existing Workspace memory MCP fixes workspace_agent; only the internal feedback publisher can write curated shareable facts. No public method or MCP schema accepts a caller-selected principal or namespace.
 
-Every MemoryStore read/write query must apply the ACL predicate in SQL and validate the requested operation. Adult workspace recall returns only visibility='shareable' rows. Feedback publication writes sanitized records only; it cannot read source Adult memory.
+Every MemoryStore read/write query must apply the ACL predicate in SQL and validate the requested operation. Adult workspace recall returns only visibility='shareable' rows. Feedback publication writes sanitized records only; it cannot read source Adult memory. Provide fixed internal factories such as workspace_scope(), adult_scope(), and feedback_publisher_scope() that return a ScopedMemoryStore. ScopedMemoryStore exposes remember/recall/recent without any namespace or principal argument. The existing MemoryStore MCP server receives only workspace_scope(); AdultMemory receives only adult_scope(); the feedback module receives only feedback_publisher_scope(). Do not expose a generic from-string principal factory to MCP callers.
 
 Add memory_access_audit(id, principal, operation, namespace, memory_id, created_at). Audit metadata must not contain content or query text.
 
@@ -599,7 +599,9 @@ The following is the logical schema. Names and fields are mandatory; implementat
       adapter_id TEXT NOT NULL,
       provider_id TEXT,
       model_id TEXT,
+      model_version TEXT,
       tool_id TEXT,
+      tool_version TEXT,
       input_fingerprint TEXT NOT NULL,
       config_fingerprint TEXT NOT NULL,
       environment_fingerprint TEXT,
@@ -609,6 +611,8 @@ The following is the logical schema. Names and fields are mandatory; implementat
       error_code TEXT,
       sanitized_error TEXT,
       output_fingerprint TEXT,
+      output_artifact_id TEXT,
+      output_summary TEXT,
       usage_json TEXT NOT NULL DEFAULT '{}',
       cost_microusd INTEGER,
       started_at TEXT NOT NULL,
@@ -942,7 +946,7 @@ New environment variables (document in .env.example; never put values in Git):
 | ADULT_MAX_WALL_SECONDS | 600 | Per-task wall-time cap |
 | ADULT_MAX_PROVIDER_CALLS | 20 | Per-task provider-call cap |
 | ADULT_MAX_COST_MICROUSD | 0 | Per-task cost cap |
-| ADULT_FAILURES_BEFORE_APPROVAL | 5 | Fixed five-failure checkpoint interval |
+| ADULT_FAILURES_BEFORE_APPROVAL | 5 | Fixed five-failure checkpoint interval; startup rejects any value other than 5 |
 | ADULT_OUTPUT_RETENTION_HOURS | 24 | Default encrypted output retention |
 | ADULT_MAX_IMAGE_INPUT_BYTES | 15728640 | Maximum decoded input image bytes |
 | ADULT_MAX_IMAGE_OUTPUT_BYTES | 20971520 | Maximum decoded output image bytes |
@@ -952,6 +956,7 @@ New environment variables (document in .env.example; never put values in Git):
 Rules:
 
 - Empty optional model configuration means offline mode, not a crash during import.
+- ADULT_PAYLOAD_ENCRYPTION_KEY is optional for non-retained ephemeral tasks; when set, it protects retained input and persisted output. If it is absent, retain_payload=true is rejected and output artifacts are memory-only.
 - Incomplete OmniRoute configuration fails closed only when an OmniRoute route is selected.
 - No key values are accepted through MCP tools.
 - No paid route may run merely because an API key is configured.
