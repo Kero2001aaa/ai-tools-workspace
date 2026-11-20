@@ -687,17 +687,19 @@ class ScopedMemoryStore:
                 "m.visibility, m.sensitivity, m.task_id, m.metadata_json, m.owner_agent"
             )
             order = "m.created_at DESC, m.id DESC"
-            rows = connection.execute(
-                f"SELECT {selected} FROM memories m WHERE {where_sql} "
-                f"ORDER BY {order} LIMIT ?",
-                [*parameters, limit],
-            ).fetchall()
+            sql = f"SELECT {selected} FROM memories m WHERE {where_sql} ORDER BY {order}"
+            query_parameters = list(parameters)
+            if query is None:
+                sql += " LIMIT ?"
+                query_parameters.append(limit)
+            rows = connection.execute(sql, query_parameters).fetchall()
             ranked: list[MemoryRecord] = []
             for row in rows:
                 score = sum(term in row["content"].casefold() for term in terms) if terms else None
                 ranked.append(_decode_row(row, matched_terms=score))
             if terms:
                 ranked.sort(key=lambda item: (-(item.matched_terms or 0), -item.id))
+                ranked = ranked[:limit]
             audit_namespace = "workspace" if shareable_workspace_only else self.__namespace
             if rows:
                 for record in ranked:
