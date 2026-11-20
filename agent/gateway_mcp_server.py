@@ -19,7 +19,7 @@ PUBLIC_TOOLS = {
     "tasks": {"list_tasks"},
     "planner": {"get_plan", "list_plans"},
     "browser": {"browser_inspect"},
-    "terminal": {"run_workspace_task"},
+    "terminal": {"run_workspace_task", "read_project_file", "write_project_file"},
 }
 PUBLIC_SERVER_NAMES = tuple(PUBLIC_TOOLS)
 
