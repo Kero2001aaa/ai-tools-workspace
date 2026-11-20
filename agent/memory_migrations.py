@@ -184,6 +184,8 @@ class MemoryMigrationManager:
             raise UnsupportedLegacySchema("The configured database is not a supported version-0 database.")
         if before.integrity_check != "ok" or before.foreign_key_violations != 0:
             raise MemoryBackupVerificationFailed("Source database failed read-only integrity checks.")
+        if before.journal_mode != "delete":
+            raise MemoryBackupVerificationFailed("Only DELETE journal mode is supported for this migration.")
         if not confirmed:
             return MigrationReport(**{
                 **before.to_dict(),
