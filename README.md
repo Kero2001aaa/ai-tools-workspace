@@ -39,3 +39,15 @@ This project adds external tools and workflows; it cannot increase ChatGPT's nat
 
 
 - Dashboard Agent (opt-in): authenticated request execution is documented in docs/CONTROL_PLANE.md. It is disabled by default and may consume model/provider quota.
+
+
+## Universal MCP Gateway
+
+Phase 21 adds a local Streamable HTTP gateway over selected existing MCP STDIO
+servers. Start it with `.venv/bin/python -m agent.gateway_mcp_server`.
+The default endpoint is `http://127.0.0.1:8765/mcp`.
+
+The gateway exposes an explicit read-only tool allowlist and rejects
+non-loopback binding. It has no authentication or OAuth and must not be
+exposed remotely. See [docs/UNIVERSAL_MCP_GATEWAY.md](docs/UNIVERSAL_MCP_GATEWAY.md)
+for its tool inventory, configuration, security boundaries, and roadmap.
