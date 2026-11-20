@@ -2,7 +2,7 @@
 from mcp.server.fastmcp import FastMCP
 
 from agent.specialist_worker import run_specialist, validate_delegation
-from agent.supervisor_worker import supervise_request
+from agent.supervisor_worker import supervise_request as run_supervised_request
 
 mcp = FastMCP("ai-tools-workspace-specialists")
 
@@ -17,14 +17,7 @@ def delegate_specialist(specialist: str, task: str, context: str = "") -> dict:
 @mcp.tool()
 def supervise_request(request: str, context: str = "") -> dict:
     """Run a bounded supervisor workflow: one plan, up to two specialists, then one final review; no retries or side effects."""
-    return supervise_request_impl(request, context)
-
-
-def supervise_request_impl(request: str, context: str = "") -> dict:
-    return supervise_request_worker(request, context)
-
-
-from agent.supervisor_worker import supervise_request as supervise_request_worker
+    return run_supervised_request(request, context)
 
 
 if __name__ == "__main__":
