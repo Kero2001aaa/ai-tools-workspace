@@ -642,12 +642,12 @@ This operation must atomically:
 1. Verify the supplied lease is current and valid.
 2. Require expected_state_version to match the current task row exactly.
 3. Verify failed_attempts_since_approval is exactly five.
-3. Verify some total execution budget remains; otherwise transition to failed instead of waiting.
-4. Write a new checkpoint with user_action_required=1.
-5. Set status=waiting_user and user_action_required=1.
-6. Clear lease owner/expiry.
-7. Append waiting_user event.
-8. Commit.
+4. Verify some total execution budget remains; otherwise transition to failed instead of waiting.
+5. Write a new checkpoint with user_action_required=1.
+6. Set status=waiting_user and user_action_required=1.
+7. Clear lease owner/expiry.
+8. Append waiting_user event.
+9. Commit.
 
 No sixth attempt can be dispatched after this state is committed. Stage 3 persists the invariant; Stage 5/9 will provide the actual attempt counting and Supervisor dispatch enforcement.
 
