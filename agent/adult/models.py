@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -51,6 +52,17 @@ _FORBIDDEN_VALUE_RE = re.compile(
 
 class AdultModelValidationError(ValueError):
     """A caller supplied a DTO value outside the Stage 3 contract."""
+
+
+def _timestamp(name: str, value: Any) -> None:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise AdultModelValidationError(f"{name} must be a normalized UTC timestamp.")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise AdultModelValidationError(f"{name} must be a valid UTC timestamp.") from exc
+    if parsed.utcoffset() is None:
+        raise AdultModelValidationError(f"{name} must include UTC timezone information.")
 
 
 def _integer(name: str, value: Any, minimum: int, maximum: int | None = None) -> None:
@@ -193,6 +205,9 @@ class AdultTaskSnapshot:
         _identifier("task_id", self.task_id)
         if self.task_type not in TASK_TYPES or self.status not in TASK_STATUSES:
             raise AdultModelValidationError("Invalid task type or status in snapshot.")
+        _timestamp("created_at", self.created_at)
+        _timestamp("updated_at", self.updated_at)
+        _timestamp("deadline_at", self.deadline_at)
         for name in ("state_version", "attempt_count", "failed_attempts_since_approval",
                      "provider_calls", "approvals_granted", "spent_cost_microusd"):
             _integer(name, getattr(self, name), 0)
@@ -209,7 +224,7 @@ class AdultTaskSnapshot:
             raise AdultModelValidationError("Snapshot flags must be booleans.")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class TaskLease:
     task_id: str
     worker_id: str
@@ -217,11 +232,26 @@ class TaskLease:
     expires_at: str
     state_version_at_grant: int
 
-    def __post_init__(self) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("TaskLease values are issued only by AdultTaskStore.")
+
+    @classmethod
+    def _from_store(cls, task_id: str, worker_id: str, lease_generation: int,
+                    expires_at: str, state_version_at_grant: int) -> "TaskLease":
+        instance = object.__new__(cls)
+        for name, value in (("task_id", task_id), ("worker_id", worker_id),
+                            ("lease_generation", lease_generation), ("expires_at", expires_at),
+                            ("state_version_at_grant", state_version_at_grant)):
+            object.__setattr__(instance, name, value)
+        instance._validate()
+        return instance
+
+    def _validate(self) -> None:
         _identifier("task_id", self.task_id)
         _identifier("worker_id", self.worker_id)
         _integer("lease_generation", self.lease_generation, 1)
         _integer("state_version_at_grant", self.state_version_at_grant, 0)
+        _timestamp("expires_at", self.expires_at)
 
 
 @dataclass(frozen=True)
@@ -251,6 +281,10 @@ class StepRecord:
                      "input_payload_id", "output_artifact_id"):
             _identifier(name, getattr(self, name), optional=True)
         _fingerprint("config_fingerprint", self.config_fingerprint, optional=True)
+        if self.started_at is not None:
+            _timestamp("started_at", self.started_at)
+        if self.completed_at is not None:
+            _timestamp("completed_at", self.completed_at)
 
 
 @dataclass(frozen=True)
@@ -375,6 +409,11 @@ class Checkpoint:
             raise AdultModelValidationError("Invalid checkpoint reason.")
         _integer("schema_version", self.schema_version, 1)
         _integer("failed_attempts_since_approval", self.failed_attempts_since_approval, 0, 5)
+        _timestamp("created_at", self.created_at)
+        if not isinstance(self.snapshot, CheckpointSnapshot) or self.snapshot.task_id != self.task_id:
+            raise AdultModelValidationError("Checkpoint snapshot must match its task.")
+        if self.snapshot.schema_version != self.schema_version:
+            raise AdultModelValidationError("Checkpoint schema version does not match its snapshot.")
         if not isinstance(self.user_action_required, bool):
             raise AdultModelValidationError("user_action_required must be boolean.")
 
@@ -392,6 +431,7 @@ class TaskEvent:
     def __post_init__(self) -> None:
         _identifier("event_id", self.event_id)
         _identifier("task_id", self.task_id)
+        _timestamp("created_at", self.created_at)
         if self.event_type not in EVENT_TYPES:
             raise AdultModelValidationError("Unsupported task event.")
         if self.from_status is not None and self.from_status not in TASK_STATUSES:
