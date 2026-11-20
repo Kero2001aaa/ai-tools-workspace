@@ -20,6 +20,7 @@ from uuid import uuid4
 from agent.memory_store import (
     DEFAULT_DB,
     MemoryBackupVerificationFailed,
+    MemoryDataIntegrityError,
     MemoryStore,
     UnsupportedLegacySchema,
     _connect_database,
@@ -252,23 +253,36 @@ class MemoryMigrationManager:
                 raise MemoryBackupVerificationFailed("Online backup could not be created or verified.") from None
 
             _apply_v1_migration(writer)
+            _validate_current_schema(writer)
+            after_digest = _legacy_digest(writer)
+            integrity = writer.execute("PRAGMA integrity_check").fetchone()[0]
+            violations = writer.execute("PRAGMA foreign_key_check").fetchall()
+            if after_digest != source_digest or integrity != "ok" or violations:
+                raise MemoryBackupVerificationFailed("In-transaction migration verification failed.")
             writer.commit()
 
             migrated = _readonly_connection(path)
             try:
                 _validate_current_schema(migrated)
-                after_digest = _legacy_digest(migrated)
-                integrity = migrated.execute("PRAGMA integrity_check").fetchone()[0]
-                violations = migrated.execute("PRAGMA foreign_key_check").fetchall()
-                journal = migrated.execute("PRAGMA journal_mode").fetchone()[0]
-                if after_digest != source_digest or integrity != "ok" or violations:
+                committed_digest = _legacy_digest(migrated)
+                committed_integrity = migrated.execute("PRAGMA integrity_check").fetchone()[0]
+                committed_violations = migrated.execute("PRAGMA foreign_key_check").fetchall()
+                if (
+                    committed_digest != source_digest
+                    or committed_integrity != "ok"
+                    or committed_violations
+                ):
                     raise MemoryBackupVerificationFailed("Post-migration verification failed.")
             finally:
                 migrated.close()
 
-            # Exercise the public Workspace path after the migration is committed.
+            # Exercise the public Workspace path. Malformed legacy JSON is preserved
+            # and must surface only as a controlled row-ID integrity error.
             workspace = MemoryStore(path).workspace_scope()
-            workspace.recent(limit=20)
+            try:
+                workspace.recent(limit=20)
+            except MemoryDataIntegrityError:
+                pass
             report = self.inspect_configured_database()
             return MigrationReport(**{
                 **report.to_dict(),
