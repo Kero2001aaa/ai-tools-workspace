@@ -542,28 +542,38 @@ Seed fixed policies:
 
 The Adult MCP server fixes principal adult_agent; existing Workspace memory MCP fixes workspace_agent; only the internal feedback publisher can write curated shareable facts. Existing MemoryStore direct callers must resolve to the fixed Workspace scope for backward compatibility; Adult code receives only its injected scoped facade.
 
-Storage interfaces:
+Storage interfaces are refined by the dedicated [Stage 2 implementation specification](ADULT_AGENT_STAGE2_IMPLEMENTATION_SPEC.md):
 
     class MemoryStore:
         def workspace_scope(self) -> ScopedMemoryStore: ...
         def adult_scope(self) -> ScopedMemoryStore: ...
-        def feedback_publisher_scope(self) -> ScopedMemoryStore: ...
+        def feedback_publisher_scope(self) -> FeedbackPublisherStore: ...
 
     class ScopedMemoryStore:
         def remember(self, content: str, tags: list[str] | None = None,
-                      memory_type: str = "fact", task_id: str | None = None) -> MemoryRef: ...
+                      memory_type: str = "fact", task_id: str | None = None,
+                      metadata: dict | None = None) -> MemoryRef: ...
         def recall(self, query: str, limit: int = 5) -> list[MemoryRecord]: ...
         def recent(self, limit: int = 10) -> list[MemoryRecord]: ...
+        def recall_owned(self, query: str, limit: int = 5) -> list[MemoryRecord]: ...
+        def recent_owned(self, limit: int = 10) -> list[MemoryRecord]: ...
+        def recall_shareable_workspace(self, query: str, limit: int = 5) -> list[MemoryRecord]: ...
+        def recent_shareable_workspace(self, limit: int = 10) -> list[MemoryRecord]: ...
+
+    class FeedbackPublisherStore:
+        def publish_sanitized_feedback(self, feedback: SanitizedFeedback) -> MemoryRef: ...
+
+FeedbackPublisherStore is a separate write-only, schema-constrained capability. It must not expose generic remember, recall, recent, or raw SQL operations. This avoids turning a general-purpose remember(content) method into an unrestricted shareable-publication path.
 
 Scope factories are internal application APIs. The MCP layer receives a pre-scoped instance; it cannot request another scope or change visibility/namespace. No public method or MCP schema accepts a caller-selected principal or namespace.
 
-Every MemoryStore read/write query must apply the ACL predicate in SQL and validate the requested operation. Adult workspace recall returns only visibility='shareable' rows. Feedback publication writes sanitized records only; it cannot read source Adult memory. Provide fixed internal factories such as workspace_scope(), adult_scope(), and feedback_publisher_scope() that return a ScopedMemoryStore. ScopedMemoryStore exposes remember/recall/recent without any namespace or principal argument. The existing MemoryStore MCP server receives only workspace_scope(); AdultMemory receives only adult_scope(); the feedback module receives only feedback_publisher_scope(). Do not expose a generic from-string principal factory to MCP callers.
+Every memory read/write query must apply the ACL predicate in SQL and validate the requested operation. Adult workspace recall returns only visibility='shareable' rows. Existing MemoryStore direct callers remain Workspace-scoped and retain their legacy return shapes. The existing Workspace memory MCP tool names and argument contracts do not change. AdultMemory receives only adult_scope(); feedback code receives only feedback_publisher_scope(). Do not expose a generic from-string principal factory to MCP callers.
 
 Add memory_access_audit(id, principal, operation, namespace, memory_id, created_at). Audit metadata must not contain content or query text.
 
 ### 7.3 Adult operational tables
 
-The following is the logical schema. Names and fields are mandatory; implementation may add non-sensitive operational columns.
+The following is the logical full-MVP schema. Names and fields are mandatory; implementation may add non-sensitive operational columns. The stage-specific DDL, additional constraints, migration ordering, and TaskStore transaction rules in [Stage 3 implementation specification](ADULT_AGENT_STAGE3_IMPLEMENTATION_SPEC.md) are normative for Stage 3. Attempt, payload, artifact, capability, and feedback tables are created only in their assigned later stages.
 
     CREATE TABLE adult_tasks (
       task_id TEXT PRIMARY KEY,
@@ -599,7 +609,7 @@ The following is the logical schema. Names and fields are mandatory; implementat
 
     CREATE TABLE adult_steps (
       step_id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
       sequence_no INTEGER NOT NULL,
       operation TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -617,7 +627,7 @@ The following is the logical schema. Names and fields are mandatory; implementat
 
     CREATE TABLE adult_attempts (
       attempt_id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
       step_id TEXT REFERENCES adult_steps(step_id),
       attempt_no INTEGER NOT NULL,
       approach_key TEXT NOT NULL,
@@ -649,7 +659,7 @@ The following is the logical schema. Names and fields are mandatory; implementat
 
     CREATE TABLE adult_checkpoints (
       checkpoint_id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
       revision INTEGER NOT NULL,
       reason TEXT NOT NULL,
       snapshot_json TEXT NOT NULL,
@@ -661,7 +671,7 @@ The following is the logical schema. Names and fields are mandatory; implementat
 
     CREATE TABLE adult_payloads (
       payload_id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
       payload_kind TEXT NOT NULL,
       storage_key TEXT NOT NULL UNIQUE,
       mime_type TEXT NOT NULL,
@@ -675,7 +685,7 @@ The following is the logical schema. Names and fields are mandatory; implementat
 
     CREATE TABLE adult_artifacts (
       artifact_id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
       attempt_id TEXT REFERENCES adult_attempts(attempt_id),
       artifact_kind TEXT NOT NULL,
       storage_key TEXT NOT NULL UNIQUE,
@@ -691,7 +701,7 @@ The following is the logical schema. Names and fields are mandatory; implementat
 
     CREATE TABLE adult_task_events (
       event_id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
       event_type TEXT NOT NULL,
       from_status TEXT,
       to_status TEXT,
@@ -701,7 +711,7 @@ The following is the logical schema. Names and fields are mandatory; implementat
 
     CREATE TABLE adult_feedback_proposals (
       feedback_id TEXT PRIMARY KEY,
-      task_id TEXT REFERENCES adult_tasks(task_id) ON DELETE SET NULL,
+      task_id TEXT REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
       feedback_type TEXT NOT NULL,
       sanitized_summary TEXT NOT NULL,
       recommendation_json TEXT NOT NULL DEFAULT '{}',
