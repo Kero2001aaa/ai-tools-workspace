@@ -1,32 +1,54 @@
-# Phase 19 — Isolated LLM Specialist Workers
+# Phase 20 — Bounded supervisor orchestration
 
-## Scope
+## What it does
 
-The optional specialist MCP server exposes one tool, `delegate_specialist`, with three fixed roles:
+The optional specialist MCP server exposes `supervise_request(request, context="")`. It runs a single sequential workflow:
 
-- `research`: evidence-calibrated analysis of supplied material; it does not browse.
-- `coding`: code/task analysis and proposed changes; it does not edit or execute code.
-- `review`: critical review, risk identification, and test/acceptance criteria.
+1. One supervisor model call creates a JSON plan with one or two distinct assignments, selected only from `research` and `coding`.
+2. The selected specialists run sequentially. Each receives only its bounded task and context and has no tools or side effects.
+3. A fixed `review` specialist runs last with the original request and the collected findings.
+4. The supervisor returns each result plus a deterministic synthesis. It does not make another model call to write the synthesis.
 
-Each delegation is a single model inference with no MCP tools, filesystem, shell, browser, or external connectors. Inputs are bounded (4,000 task characters and 8,000 context characters); returned analysis is capped at 12,000 characters. Inputs are untrusted data.
+## Hard limits
 
-## Enablement
+- At most 4 model calls: one plan, up to two analysis workers, and one review.
+- At most 3 specialist calls; no parallel dispatch.
+- One planning attempt and no automatic retries.
+- Request: 4,000 characters; context: 4,000 characters.
+- Each generated assignment: 1,000 characters.
+- Review context: 8,000 characters.
+- Workflow wall-clock budget: 150 seconds; model HTTP timeout: 30 seconds per request.
+- Invalid model plans fail closed. Only `research` and `coding` can be planned; `review` is reserved for the final step.
 
-Specialists are disabled by default. Add this to the private `.env` only when you want the main agent to be able to delegate:
+## Enable and run
 
-```dotenv
-ENABLE_SPECIALIST_AGENTS=true
+Set `ENABLE_SPECIALIST_AGENTS=true` in the private `.env` file, or enable it for a single command:
+
+```bash
+ENABLE_SPECIALIST_AGENTS=true .venv/bin/python -m agent.mcp_client
 ```
 
-Restart the agent process after changing environment configuration. The configured `MODEL_API_KEY`, `MODEL_BASE_URL`, and `MODEL_NAME` are used. A delegation invokes the configured model and can consume provider quota; no paid fallback is configured or implied. With no model configured, delegation fails closed.
+Then ask the tool-calling agent to use `supervise_request` for a task that benefits from multiple perspectives:
 
-## Boundaries
+```bash
+ENABLE_SPECIALIST_AGENTS=true .venv/bin/python -m agent.tool_agent "Use supervise_request to assess the security and maintainability of this design: store API keys in source code."
+```
 
-Specialists return analysis, not actions. They cannot create plans, mutate files, run commands, browse, or call other tools. The main agent remains responsible for validating the output and deciding whether to act. This phase does not yet add autonomous multi-agent loops, parallel delegation, or background execution.
+The workflow uses the configured model endpoint and consumes its quota. It does not guarantee that the endpoint supports every requested model feature. Keep paid routing disabled for this zero-budget project.
+
+## Safety boundaries
+
+- Specialists are tool-less and cannot browse, execute commands, read files, or modify the repository.
+- The supervisor only passes bounded text between model calls.
+- Model-generated plans are parsed and validated against a strict role/schema allowlist.
+- No files, plans, tasks, or external systems are changed.
+- A failed call stops the workflow; there is no retry or background execution.
+- The wall-clock budget is checked between calls; the provider's per-request timeout bounds an in-flight model request.
+- The synthesis is a formatted aggregation of the specialist outputs, not a separate model-generated conclusion. The review findings must be considered before acting.
 
 ## Verification
 
 ```bash
-.venv/bin/python -m unittest tests.test_specialist_worker tests.test_tool_agent -v
+.venv/bin/python -m unittest tests.test_supervisor_worker tests.test_specialist_worker -v
 .venv/bin/python -m unittest discover -s tests -v
 ```
