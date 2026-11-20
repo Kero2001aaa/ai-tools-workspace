@@ -505,13 +505,7 @@ class ScopedMemoryStore:
         return self.__namespace
 
     def _connection(self) -> sqlite3.Connection:
-        connection = self.__store._connect()
-        try:
-            _validate_acl(connection)
-        except Exception:
-            connection.close()
-            raise
-        return connection
+        return self.__store._connect()
 
     def _audit(
         self, connection: sqlite3.Connection, operation: str,
@@ -564,6 +558,7 @@ class ScopedMemoryStore:
         connection = self._connection()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            _validate_acl(connection)
             cursor = connection.execute(
                 """INSERT INTO memories
                    (content, tags, created_at, namespace, memory_type, visibility,
@@ -587,9 +582,11 @@ class ScopedMemoryStore:
             self._audit(connection, "remember", self.__namespace, memory_id)
             connection.commit()
             return MemoryRef(memory_id, created_at, clean_tags)
-        except Exception:
+        except Exception as exc:
             if connection.in_transaction:
                 connection.rollback()
+            if isinstance(exc, MemoryAuthorizationError):
+                self._audit_denied("remember", self.__namespace)
             raise
         finally:
             connection.close()
@@ -610,8 +607,6 @@ class ScopedMemoryStore:
             if not isinstance(query, str) or not query.strip():
                 raise ValueError("Recall query must not be empty.")
             terms = list(dict.fromkeys(re.findall(r"[\w-]{2,}", query.strip().casefold())))
-            if not terms:
-                return []
         if shareable_workspace_only and self.__namespace != "adult":
             self._audit_denied(operation, "workspace")
             raise MemoryAuthorizationError("Only the Adult scope may read shareable Workspace memories.")
@@ -619,6 +614,7 @@ class ScopedMemoryStore:
         connection = self._connection()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            _validate_acl(connection)
             if shareable_workspace_only:
                 predicates = [
                     "m.namespace='workspace'",
@@ -685,9 +681,13 @@ class ScopedMemoryStore:
                 self._audit(connection, operation, audit_namespace, None)
             connection.commit()
             return ranked
-        except Exception:
+        except Exception as exc:
             if connection.in_transaction:
                 connection.rollback()
+            if isinstance(exc, MemoryAuthorizationError):
+                self._audit_denied(
+                    operation, "workspace" if shareable_workspace_only else self.__namespace
+                )
             raise
         finally:
             connection.close()
@@ -727,7 +727,7 @@ class FeedbackPublisherStore:
     def _validate_feedback(feedback: SanitizedFeedback) -> SanitizedFeedback:
         if not isinstance(feedback, SanitizedFeedback):
             raise TypeError("feedback must be a SanitizedFeedback record.")
-        if feedback.category not in FEEDBACK_CATEGORIES:
+        if not isinstance(feedback.category, str) or feedback.category not in FEEDBACK_CATEGORIES:
             raise ValueError("Unsupported feedback category.")
         if not isinstance(feedback.component_id, str) or not _COMPONENT_RE.fullmatch(feedback.component_id):
             raise ValueError("component_id must be a normalized non-secret identifier.")
@@ -747,7 +747,7 @@ class FeedbackPublisherStore:
         action = _validate_content(feedback.recommended_action)
         if len(lesson) > 1000 or len(action) > 500:
             raise ValueError("Feedback lesson/action exceeds its length limit.")
-        if feedback.verification_status not in VERIFICATION_STATUSES:
+        if not isinstance(feedback.verification_status, str) or feedback.verification_status not in VERIFICATION_STATUSES:
             raise ValueError("Unsupported verification_status.")
         if not isinstance(feedback.source_fingerprint, str) or not _FINGERPRINT_RE.fullmatch(
             feedback.source_fingerprint
@@ -779,8 +779,8 @@ class FeedbackPublisherStore:
         tags = [clean.category]
         connection = self.__store._connect()
         try:
-            _validate_acl(connection)
             connection.execute("BEGIN IMMEDIATE")
+            _validate_acl(connection)
             cursor = connection.execute(
                 """INSERT INTO memories
                    (content, tags, created_at, namespace, memory_type, visibility,
