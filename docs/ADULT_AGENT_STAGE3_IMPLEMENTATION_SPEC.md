@@ -80,30 +80,30 @@ Contract:
         ) -> TaskLease: ...
 
         def release_lease(
-            self, lease: TaskLease, next_status: str = "checkpointed",
-            reason: str = "worker_released",
+            self, lease: TaskLease, expected_state_version: int,
+            next_status: str = "checkpointed", reason: str = "worker_released",
         ) -> AdultTaskSnapshot: ...
 
         def save_step(
-            self, task_id: str, step: StepRecord, lease: TaskLease
+            self, task_id: str, step: StepRecord, lease: TaskLease,
+            expected_state_version: int,
         ) -> StepRecord: ...
 
         def transition(
             self, task_id: str, expected_status: set[str], new_status: str,
-            event_type: str, metadata: dict | None = None,
-            lease: TaskLease | None = None,
-            expected_state_version: int | None = None,
+            event_type: str, expected_state_version: int,
+            metadata: dict | None = None, lease: TaskLease | None = None,
         ) -> AdultTaskSnapshot: ...
 
         def save_checkpoint(
             self, task_id: str, snapshot: CheckpointSnapshot,
-            reason: str, lease: TaskLease | None = None,
-            expected_state_version: int | None = None,
+            reason: str, expected_state_version: int,
+            lease: TaskLease | None = None,
         ) -> Checkpoint: ...
 
         def set_waiting_user(
             self, task_id: str, snapshot: CheckpointSnapshot,
-            lease: TaskLease,
+            lease: TaskLease, expected_state_version: int,
         ) -> Checkpoint: ...
 
         def resume(self, task_id: str, decision: Decision) -> AdultTaskSnapshot: ...
@@ -168,8 +168,9 @@ CheckpointSnapshot:
 - No original prompt, image bytes, unredacted provider response, credentials, absolute path, or arbitrary object graph.
 
 TaskLease:
-- task_id, worker_id, lease_generation, expires_at, state_version.
+- task_id, worker_id, lease_generation, expires_at.
 - lease_generation is a fencing counter. A stale generation can never renew, release, or mutate the task after a newer claim.
+- state_version is carried by AdultTaskSnapshot and supplied as an expected version on each state-changing method; it is not a substitute for lease_generation.
 - Do not treat a worker ID alone as proof of lease ownership.
 
 TaskPage:
@@ -245,7 +246,7 @@ Stage 3 may exercise transitions using tests and internal service calls. It does
 - waiting_user is invalid when no total attempts/provider-call/time budget remains; the task must instead be failed.
 - completed, failed, and cancelled tasks have no live lease.
 - completed/failed/cancelled cannot be resumed.
-- cancel_requested=1 prevents any transition back to queued/analyzing/running/evaluating and prevents a new provider dispatch. Later Executor/Supervisor stages must check it immediately before dispatch.
+- cancel_requested=1 permits only the transition to cancelled; it prevents transitions to queued/analyzing/running/evaluating/checkpointed/waiting_user and prevents a new provider dispatch. Later Executor/Supervisor stages must check it immediately before dispatch.
 - A new resume call never dispatches work by itself. It only updates durable state; later Supervisor code performs a bounded run after the caller explicitly invokes the run/resume application operation.
 
 ## 5. SQLite database and exact Stage 3 schema
@@ -512,11 +513,11 @@ Within BEGIN IMMEDIATE:
 4. Increment lease_generation and state_version.
 5. Set status=analyzing, lease_owner, and lease_expires_at.
 6. Append task_claimed event.
-7. Commit and return TaskLease with the new lease_generation/state_version.
+7. Commit and return TaskLease with the new lease_generation. The current state_version is returned in AdultTaskSnapshot and is required by the next mutating call.
 
 lease_seconds must be an integer from 1 through 300. Reject bool values even though bool is a Python int subclass.
 
-renew_lease requires matching task_id, worker_id, lease_generation and a non-expired lease. It may extend expiry only for the current owner/generation. A stale lease raises LeaseLost. Renewing does not alter the lease_generation.
+renew_lease requires matching task_id, worker_id, lease_generation and a non-expired lease. It may extend expiry only for the current owner/generation and must reject cancel_requested=1. A stale lease raises LeaseLost. Renewing does not alter the lease_generation.
 
 release_lease requires matching current owner/generation and a valid next status from the transition graph. It clears lease_owner/lease_expires_at and appends an event atomically. Default next_status is checkpointed. The task must have a durable checkpoint before it is released to checkpointed. If cancel_requested=1, the only permitted release destination is cancelled; it must never return to checkpointed/queued.
 
@@ -537,9 +538,9 @@ A lease_generation is a fencing token: after lease recovery or a new claim, any 
 
 - Validate new_status against the explicit state graph.
 - Validate current state is in expected_status.
-- When expected_state_version is supplied, require exact equality.
+- Require expected_state_version to be an integer and exactly equal to the current state_version; there is no unguarded state-transition mode.
 - Active-state transitions require the current valid lease unless the method is an explicitly defined cancellation/recovery path.
-- Update status, user_action_required, cancel_requested and lease fields consistently with state invariants.
+- Update status, user_action_required, cancel_requested and lease fields consistently with state invariants. If cancel_requested=1, only cancelled is an allowed destination.
 - Append an event in the same transaction.
 - Raise StaleTaskVersion or InvalidTaskTransition rather than applying a stale write.
 - No caller can force an arbitrary status by passing a set containing all states.
