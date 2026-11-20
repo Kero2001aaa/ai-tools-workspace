@@ -34,6 +34,7 @@ def load_chat_model():
         "api_key": api_key,
         "temperature": 0,
         "timeout": 30,
+        "max_retries": 0,
     }
     if base_url:
         options["base_url"] = base_url
