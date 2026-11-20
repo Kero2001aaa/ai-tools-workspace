@@ -390,6 +390,10 @@ def _validate_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 def _decode_row(row: sqlite3.Row, *, matched_terms: int | None = None) -> MemoryRecord:
     memory_id = int(row["id"])
     try:
+        if not isinstance(row["content"], str) or not 1 <= len(row["content"]) <= MAX_CONTENT_LENGTH:
+            raise ValueError("content")
+        if not isinstance(row["created_at"], str) or not row["created_at"]:
+            raise ValueError("created_at")
         tags = json.loads(row["tags"])
         metadata = json.loads(row["metadata_json"])
         if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
@@ -406,7 +410,16 @@ def _decode_row(row: sqlite3.Row, *, matched_terms: int | None = None) -> Memory
             raise ValueError("sensitivity")
         if row["memory_type"] not in MEMORY_TYPES | {"legacy"}:
             raise ValueError("memory_type")
-    except (ValueError, TypeError, json.JSONDecodeError):
+        _validate_task_id(row["task_id"])
+        if row["owner_agent"] not in {"workspace", "adult_agent", "feedback_publisher"}:
+            raise ValueError("owner_agent")
+        if row["content_hash"] is not None and not re.fullmatch(r"[0-9a-f]{64}", row["content_hash"]):
+            raise ValueError("content_hash")
+        if row["namespace"] == "adult" and row["owner_agent"] != "adult_agent":
+            raise ValueError("owner_namespace")
+        if row["namespace"] == "workspace" and row["owner_agent"] == "adult_agent":
+            raise ValueError("owner_namespace")
+    except (ValueError, TypeError, UnicodeError, json.JSONDecodeError):
         raise MemoryDataIntegrityError(memory_id, "invalid_stored_record") from None
     return MemoryRecord(
         id=memory_id,
