@@ -22,7 +22,6 @@ from agent.memory_store import (
     MemoryBackupVerificationFailed,
     MemoryStore,
     UnsupportedLegacySchema,
-    _ACL_POLICY,
     _connect_database,
     _create_acl_and_audit,
     _create_indexes,
