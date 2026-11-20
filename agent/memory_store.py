@@ -429,10 +429,18 @@ def _decode_row(row: sqlite3.Row, *, matched_terms: int | None = None) -> Memory
             raise ValueError("owner_agent")
         if row["content_hash"] is not None and not re.fullmatch(r"[0-9a-f]{64}", row["content_hash"]):
             raise ValueError("content_hash")
-        if row["namespace"] == "adult" and row["owner_agent"] != "adult_agent":
+        if row["namespace"] == "adult" and (
+            row["owner_agent"] != "adult_agent" or row["visibility"] != "internal"
+        ):
             raise ValueError("owner_namespace")
         if row["namespace"] == "workspace" and row["owner_agent"] == "adult_agent":
             raise ValueError("owner_namespace")
+        if row["owner_agent"] == "feedback_publisher" and (
+            row["namespace"] != "workspace"
+            or row["visibility"] != "shareable"
+            or row["memory_type"] != "lesson"
+        ):
+            raise ValueError("feedback_record_policy")
     except (ValueError, TypeError, UnicodeError, json.JSONDecodeError):
         raise MemoryDataIntegrityError(memory_id, "invalid_stored_record") from None
     return MemoryRecord(
@@ -775,9 +783,10 @@ class FeedbackPublisherStore:
         if not isinstance(feedback.component_id, str) or not _COMPONENT_RE.fullmatch(feedback.component_id):
             raise ValueError("component_id must be a normalized non-secret identifier.")
         if feedback.version is not None and (
-            not isinstance(feedback.version, str) or len(feedback.version) > 64
+            not isinstance(feedback.version, str)
+            or not re.fullmatch(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$", feedback.version)
         ):
-            raise ValueError("version must be at most 64 characters.")
+            raise ValueError("version must be a normalized identifier of at most 64 characters.")
         if not isinstance(feedback.operation, str) or feedback.operation not in FEEDBACK_OPERATIONS:
             raise ValueError("Unsupported feedback operation.")
         if not isinstance(feedback.failure_code, str) or not re.fullmatch(
