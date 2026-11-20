@@ -180,6 +180,7 @@ TaskLease:
 TaskLease is an immutable value object with the fields above. Its constructor is internal to AdultTaskStore; callers cannot choose lease_generation or manufacture a valid lease.
 
 CheckpointReason is one of initial, step_completed, approval_required, manual_yield, lease_recovered, needs_input, paused, or cancelled. Checkpoint reasons are fixed enum values, never caller-provided free text.
+Lease release reason is a separate fixed Literal: worker_released, yielded, cancel_observed, or budget_exhausted. Arbitrary free-form release reasons are rejected.
 
 TaskPage:
 - items: list of AdultTaskSnapshot.
@@ -705,6 +706,7 @@ All tests use temporary Adult database files. No test may use .data/adult.sqlite
 - TASK-STORE-06: task IDs and step IDs are unique opaque UUIDs.
 - TASK-STORE-07: no delete API exists; SQL delete triggers/foreign keys preserve history.
 - TASK-STORE-08: requested_options round-trips through request_options_json using only the Stage 3 empty allowlist; unknown option keys are rejected.
+- TASK-STORE-09: get_task_request recovers safe fingerprints/payload reference/options after restart and never returns original input or instruction bytes.
 
 ### State machine and concurrency
 
