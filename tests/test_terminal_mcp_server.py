@@ -28,7 +28,8 @@ class TerminalPolicyTests(unittest.TestCase):
         self.assertEqual(kwargs["cwd"], terminal.ROOT)
         self.assertEqual(kwargs["stdin"], terminal.subprocess.DEVNULL)
         self.assertNotIn("MODEL_API_KEY", kwargs["env"])
-        self.assertEqual(run.call_args.args[0], ["git", "status", "--short", "--branch"])
+        self.assertEqual(__import__("pathlib").Path(run.call_args.args[0][0]).name, "git")
+        self.assertEqual(run.call_args.args[0][1:], ["status", "--short", "--branch"])
 
     @patch("agent.terminal_mcp_server.subprocess.run")
     def test_output_is_bounded(self, run):
