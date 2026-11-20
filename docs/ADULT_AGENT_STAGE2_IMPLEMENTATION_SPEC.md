@@ -52,7 +52,7 @@ Non-negotiable boundaries:
 
 ### 3.1 MemoryStore — agent/memory_store.py
 
-MemoryStore owns the database path, connection creation, schema initialization/migration, and construction of the three fixed storage scopes. It is not a public principal factory.
+MemoryStore owns the database path, connection creation, validation of the current schema, initialization of a genuinely new database, and construction of the three fixed storage scopes. It does not auto-migrate an existing legacy database. It is not a public principal factory.
 
 Contract:
 
@@ -146,6 +146,35 @@ Contract:
         def recall_shareable_workspace(self, query: str, limit: int = 5) -> list[MemoryRecord]: ...
 
 Construction is internal composition: the Adult application receives MemoryStore().adult_scope(). AdultMemory must reject a Workspace scope or feedback publisher object. It never accepts namespace or principal values and never stores raw task prompts or image bytes by default.
+
+### 3.6 MemoryMigrationManager — agent/memory_migrations.py
+
+This separate component is the only supported entry point for inspecting and explicitly migrating an existing legacy memory database.
+
+Contract:
+
+    class MemoryMigrationManager:
+        def inspect_configured_database(self) -> MigrationReport: ...
+        def backup_and_migrate_configured_database(
+            self, confirmed: bool = False
+        ) -> MigrationReport: ...
+
+Rules:
+
+- The manager resolves WORKSPACE_MEMORY_DB (or the default path) internally. Its public CLI accepts no arbitrary database path, principal, namespace, SQL, or migration version.
+- inspect_configured_database() is read-only and returns a redacted MigrationReport containing a safe basename, file existence, schema version, row count, ID range, journal mode, integrity result, and detected legacy schema.
+- backup_and_migrate_configured_database(confirmed=False) is a dry run and performs no source or backup filesystem writes.
+- confirmed=True runs backup verification, then migration, then post-migration verification. The CLI exposes this only through the explicit --confirm flag.
+- MemoryMigrationManager must not construct MemoryStore() for a legacy v0 file, because the normal constructor deliberately raises MemoryMigrationRequired. It uses the internal connection/migration primitives without granting general callers a bypass.
+- It is not imported or run as a side effect of Workspace/Adult MCP startup.
+
+Migration errors:
+
+- MemoryMigrationRequired: the existing database is legacy version 0 and requires explicit migration.
+- MemoryBackupVerificationFailed: the online backup cannot be validated; source DB remains unchanged.
+- UnsupportedLegacySchema: the existing table layout cannot be safely migrated.
+- MemoryAuthorizationError: the fixed ACL policy is missing, changed, or denies the operation.
+- MemoryDataIntegrityError: stored tags/metadata/rows fail validation; the error exposes only a memory ID and stable error code, never content.
 
 ### 3.5 Workspace memory MCP contract
 
