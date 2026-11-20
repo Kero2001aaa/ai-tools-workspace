@@ -607,6 +607,7 @@ class ScopedMemoryStore:
             if not isinstance(query, str) or not query.strip():
                 raise ValueError("Recall query must not be empty.")
             terms = list(dict.fromkeys(re.findall(r"[\w-]{2,}", query.strip().casefold())))
+        no_search_terms = query is not None and not terms
         if shareable_workspace_only and self.__namespace != "adult":
             self._audit_denied(operation, "workspace")
             raise MemoryAuthorizationError("Only the Adult scope may read shareable Workspace memories.")
@@ -615,6 +616,10 @@ class ScopedMemoryStore:
         try:
             connection.execute("BEGIN IMMEDIATE")
             _validate_acl(connection)
+            if no_search_terms:
+                self._audit(connection, operation, "workspace" if shareable_workspace_only else self.__namespace, None)
+                connection.commit()
+                return []
             if shareable_workspace_only:
                 predicates = [
                     "m.namespace='workspace'",
