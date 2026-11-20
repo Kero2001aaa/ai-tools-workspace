@@ -816,9 +816,25 @@ class FeedbackPublisherStore:
             )
             connection.commit()
             return MemoryRef(memory_id, created_at, tags)
-        except Exception:
+        except Exception as exc:
             if connection.in_transaction:
                 connection.rollback()
+            if isinstance(exc, MemoryAuthorizationError):
+                try:
+                    denied = self.__store._connect()
+                    try:
+                        denied.execute("BEGIN IMMEDIATE")
+                        denied.execute(
+                            "INSERT INTO memory_access_audit"
+                            "(principal, operation, namespace, memory_id, created_at) "
+                            "VALUES ('feedback_publisher','denied','workspace',NULL,?)",
+                            (_utc_now(),),
+                        )
+                        denied.commit()
+                    finally:
+                        denied.close()
+                except sqlite3.Error:
+                    pass
             raise
         finally:
             connection.close()
