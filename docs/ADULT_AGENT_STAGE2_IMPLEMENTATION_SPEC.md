@@ -199,6 +199,20 @@ Create:
 
 Version 1 is the namespace/ACL/audit migration. The ledger is the single source of truth; do not maintain a second independently writable migration counter. Migration names and versions are constants in code, not caller inputs.
 
+Migration trigger and live-data gate:
+
+- MemoryStore construction must never silently migrate an existing version-0 legacy database.
+- A newly created empty database may initialize directly to schema version 1 because there is no prior user data to transform.
+- If an existing legacy database has no migration ledger, normal MemoryStore construction raises a typed MemoryMigrationRequired error without changing its schema, rows, journal mode, or timestamps.
+- Existing Workspace services remain unavailable against that legacy file until the operator explicitly runs the migration command.
+- The only supported live-database migration entry point is: .venv/bin/python -m agent.memory_migrations backup-and-migrate
+- The command uses WORKSPACE_MEMORY_DB (or the normal default) from the process environment. It accepts no arbitrary database path, SQL, principal, or namespace argument.
+- The command prints a dry-run summary (safe basename only, row count, ID range, schema version, journal mode) and requires an explicit --confirm flag before creating a backup or modifying the source. Without --confirm it performs read-only inspection only.
+- The confirmed command creates a collision-resistant backup under .data/backups/ using SQLite Connection.backup(), applies restrictive file permissions, validates the backup read-only, compares row count and ID range, and runs integrity_check and foreign_key_check. It refuses to migrate if backup verification fails.
+- Only after successful backup verification does it apply the additive migration to the source DB. It then verifies schema, preserved IDs/content/tags/timestamps by row-level comparison or pre-migration hashes, row count, integrity_check, foreign_key_check, and Workspace recall.
+- The backup is retained; the command never overwrites an earlier backup and never deletes the old DB or backup. Restore is a separate operation requiring explicit operator action.
+- Unit tests use temporary DBs and may call the internal migration function directly; they never invoke the live-data command against .data/memory.sqlite3.
+
 Migration algorithm:
 
 1. Open a connection with foreign_keys=ON and a bounded busy timeout.
@@ -213,7 +227,7 @@ Migration algorithm:
 
 The migration must be safe on a new empty database and on the existing legacy schema. Concurrent initializers serialize through BEGIN IMMEDIATE. A second initializer sees version 1 and performs validation only.
 
-Before a later, separately approved migration of the real user database, create a consistent backup with SQLite's online backup API (Connection.backup), not a raw copy of the main database file. Verify the backup opens read-only, passes integrity_check and foreign_key_check, and has matching source/backup row counts and ID ranges. Keep the backup until the migrated database passes the post-migration checks and a restore drill has been validated. This live-data procedure is documented here but is not part of Stage 2 development or CI.
+The explicit backup-and-migrate command above is the only live-data migration path. It must not run automatically from import, application startup, or MemoryStore construction. Its --confirm gate is mandatory, the backup uses Connection.backup(), and the backup remains until the source passes post-migration checks and a restore drill has been validated. The command is not executed during Stage 2 development or CI.
 
 ### 4.3 ACL table
 
@@ -347,6 +361,8 @@ All migration/isolation tests use independent temporary SQLite files. Tests must
 - MEM-MIG-08: unsupported legacy schema fails without dropping/replacing memories.
 - MEM-MIG-09: malformed legacy tags are preserved during migration and reported as a controlled read error.
 - MEM-MIG-10: integrity_check returns ok and foreign_key_check returns no rows.
+- MEM-MIG-11: normal MemoryStore construction against an existing v0 legacy database raises MemoryMigrationRequired and makes no schema/data/journal changes.
+- MEM-MIG-12: the explicit --confirm backup-and-migrate command creates and verifies a non-overwriting online backup before changing the source; missing confirmation or failed backup verification leaves the source unchanged.
 
 ### Isolation and authorization tests
 
