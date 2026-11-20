@@ -53,7 +53,8 @@ class SupervisorWorkerTests(unittest.TestCase):
             result = supervise_request("Assess this implementation")
 
         self.assertEqual(3, worker.call_count)
-        self.assertEqual(["research", "coding", "review"], [x["specialist"] for x in result["specialist_results"]])
+        self.assertEqual(["research", "coding"], [x["specialist"] for x in result["specialist_results"]])
+        self.assertEqual("review", result["review"]["specialist"])
         self.assertEqual("completed", result["status"])
         self.assertEqual(4, result["model_calls"])
         self.assertEqual(4, result["max_model_calls"])
