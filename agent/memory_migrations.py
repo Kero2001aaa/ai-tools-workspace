@@ -11,6 +11,7 @@ import json
 import os
 import sqlite3
 import sys
+from urllib.parse import quote
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,11 +60,14 @@ def _configured_path() -> Path:
 
 def _readonly_connection(path: Path) -> sqlite3.Connection:
     resolved = path.resolve()
-    uri = f"file:{resolved.as_posix()}?mode=ro"
+    uri = f"file:{quote(resolved.as_posix(), safe='/')}?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=10, isolation_level=None)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA busy_timeout=10000")
+    if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+        connection.close()
+        raise MemoryBackupVerificationFailed("SQLite foreign-key enforcement is unavailable.")
     return connection
 
 
