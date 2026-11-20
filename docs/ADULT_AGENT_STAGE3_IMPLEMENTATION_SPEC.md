@@ -172,9 +172,10 @@ CheckpointSnapshot:
 - No original prompt, image bytes, unredacted provider response, credentials, absolute path, or arbitrary object graph.
 
 TaskLease:
-- task_id, worker_id, lease_generation, expires_at.
+- task_id, worker_id, lease_generation, expires_at, state_version_at_grant.
 - lease_generation is a fencing counter. A stale generation can never renew, release, or mutate the task after a newer claim.
-- state_version is carried by AdultTaskSnapshot and supplied as an expected version on each state-changing method; it is not a substitute for lease_generation.
+- state_version_at_grant records the task version returned by claim_task; it is a convenience for the first guarded mutation, not a substitute for lease_generation.
+- Every state-changing method requires the latest expected_state_version. After a mutation increments task state_version, callers must use the returned AdultTaskSnapshot or call get_task() before the next guarded mutation.
 - Do not treat a worker ID alone as proof of lease ownership.
 
 TaskLease is an immutable value object with the fields above. Its constructor is internal to AdultTaskStore; callers cannot choose lease_generation or manufacture a valid lease.
@@ -490,6 +491,13 @@ Use ON DELETE RESTRICT, never ON DELETE CASCADE. Add database triggers that reje
 
 All methods that mutate more than one row use BEGIN IMMEDIATE and commit or roll back as one unit. All writes update updated_at and state_version where applicable and append an event in the same transaction.
 
+State-version return contract:
+- create_task, get_task, list_tasks, transition, release_lease, resume, request_cancel return snapshots containing the authoritative current state_version.
+- claim_task returns TaskLease.state_version_at_grant. The caller may use that value for its first guarded mutation.
+- renew_lease updates only lease expiry and event history; it does not increment task state_version.
+- save_step, save_checkpoint, and set_waiting_user return their resource records and increment task state_version. The caller must call get_task() before the next state-changing operation to obtain the new expected version.
+- recover_expired_leases increments state_version for every recovered task; callers must reload snapshots before further mutation.
+
 ### 6.1 create_task
 
 Input validation:
@@ -545,6 +553,7 @@ A lease_generation is a fencing token: after lease recovery or a new claim, any 
 - A new step is inserted once; an existing step may only advance through pending -> running -> succeeded/failed or pending -> skipped.
 - Terminal step statuses cannot be changed.
 - started_at/completed_at are server-generated UTC timestamps, not caller timestamps.
+- Increment the parent task state_version and updated_at, and append a step_created/step_transition event atomically.
 - The operation and route identifiers are metadata only; they are not executed by TaskStore.
 
 ### 6.4 transition
