@@ -326,13 +326,9 @@ Migration process:
       user_action_required INTEGER NOT NULL DEFAULT 0 CHECK(user_action_required IN (0,1)),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      CHECK(spent_cost_microusd <= max_cost_microusd OR max_cost_microusd = 0)
+      CHECK((max_cost_microusd = 0 AND spent_cost_microusd = 0) OR
+            (max_cost_microusd > 0 AND spent_cost_microusd <= max_cost_microusd))
     );
-
-The final cost CHECK must be interpreted consistently with the zero-cost policy: when max_cost_microusd=0, spent_cost_microusd must also remain 0. Implement it as the equivalent constraint:
-    CHECK((max_cost_microusd = 0 AND spent_cost_microusd = 0) OR
-          (max_cost_microusd > 0 AND spent_cost_microusd <= max_cost_microusd))
-Do not use the simplified expression above if it permits a positive spend under a zero budget.
 
 payload_id and latest_result_artifact_id are opaque references only in Stage 3. They have no foreign key until the Stage 4 payload/artifact schema is implemented. They must never contain paths or file contents.
 
