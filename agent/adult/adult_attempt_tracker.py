@@ -11,11 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Iterator
 
-from agent.adult.adult_task_store import (
-    ACTIVE_STATUSES,
-    AdultTaskStore,
-    AttemptBudgetExhausted if False else AdultTaskStoreError,
-)
+from agent.adult.adult_task_store import ACTIVE_STATUSES, AdultTaskStore
 from agent.adult.adult_task_store import LeaseLost, TaskNotFound
 from agent.adult.models import AdultModelValidationError, RouteCandidate
 
