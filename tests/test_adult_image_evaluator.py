@@ -114,7 +114,8 @@ class AdultImageEvaluatorTests(unittest.TestCase):
                 self.assertFalse(result.accepted)
                 self.assertIn(reason, result.reason_codes)
                 self.assertTrue(result.needs_revision)
-                if value:\n                    self.assertNotIn(value, repr(result))
+                if value:
+                    self.assertNotIn(value, repr(result))
 
     def test_analysis_accepts_tab_newline_and_carriage_return(self):
         result = self.evaluator.evaluate(
