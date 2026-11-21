@@ -163,7 +163,7 @@ class AdultImageEvaluator:
             reasons.extend(decision.reason_codes)
             retryable = True
         else:
-            reasons.append("policy_rejected")
+            reasons.extend(decision.reason_codes)
             retryable = False
 
         return _result(
@@ -243,7 +243,7 @@ class AdultImageEvaluator:
             reasons.extend(decision.reason_codes)
             retryable = True
         else:
-            reasons.append("policy_rejected")
+            reasons.extend(decision.reason_codes)
 
         return _result(
             checks, reasons, retryable=retryable,

@@ -114,7 +114,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
                 self.assertFalse(result.accepted)
                 self.assertIn(reason, result.reason_codes)
                 self.assertTrue(result.needs_revision)
-                self.assertNotIn(value, repr(result))
+                if value:\n                    self.assertNotIn(value, repr(result))
 
     def test_analysis_accepts_tab_newline_and_carriage_return(self):
         result = self.evaluator.evaluate(
@@ -176,6 +176,15 @@ class AdultImageEvaluatorTests(unittest.TestCase):
                     self.assertIn(reason, result.reason_codes)
                     self.assertEqual(reason != "route_limit_invalid", result.needs_revision)
 
+    def test_route_dimension_limit_rejects_oversized_image(self):
+        wider_image = ImageAdapterResult(_png(width=2, height=1), "image/png", {}, 0)
+        result = self.evaluator.evaluate(
+            "image.edit", wider_image, max_width=1
+        )
+        self.assertFalse(result.accepted)
+        self.assertIn("output_dimensions_exceed_route", result.reason_codes)
+        self.assertTrue(result.needs_revision)
+
     def test_policy_exceptions_and_malformed_decisions_fail_closed(self):
         for policies in (RaisingPolicies(), MalformedPolicies()):
             evaluator = AdultImageEvaluator(policies)
@@ -207,7 +216,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
             with self.subTest(task_type=task_type):
                 result = evaluator.evaluate(task_type, output)
                 self.assertFalse(result.accepted)
-                self.assertIn("policy_rejected", result.reason_codes)
+                self.assertIn("policy_blocked", result.reason_codes)
                 self.assertFalse(result.needs_revision)
 
     def test_invalid_route_mime_policy_fails_closed(self):
@@ -215,7 +224,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
             "image.generate", self.image, output_mime_types=("image/*",)
         )
         self.assertFalse(result.accepted)
-        self.assertIn("policy_rejected", result.reason_codes)
+        self.assertIn("policy_blocked", result.reason_codes)
         self.assertFalse(result.needs_revision)
 
 
