@@ -489,7 +489,12 @@ class ModelCapabilityRegistry:
 
         eligible: list[RouteCandidate] = []
         for row in rows:
-            spec = _spec_from_row(row)
+            capability = _to_capability(row)
+            if not capability.enabled or capability.verification_status != "verified":
+                continue
+            if capability.evidence is None:
+                continue
+            spec = capability.spec
             if spec.task_type != query.task_type:
                 continue
             if not set(query.input_modalities).issubset(set(spec.input_modalities)):
@@ -507,7 +512,11 @@ class ModelCapabilityRegistry:
                 if not cost_policy.allow_local:
                     continue
             elif spec.cost_class == "free_verified":
-                if cost_policy.max_provider_calls <= 0 or cost_policy.max_cost_microusd != 0:
+                if (
+                    capability.evidence.cost_is_zero is not True
+                    or cost_policy.max_provider_calls <= 0
+                    or cost_policy.max_cost_microusd != 0
+                ):
                     continue
                 if (
                     row["cost_verified_at"] is None

@@ -357,6 +357,7 @@ _CAPABILITY_SCHEMA: Final[tuple[str, ...]] = (
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         CHECK(cost_class <> 'free_verified' OR (provider_id IS NOT NULL AND model_id IS NOT NULL)),
+        CHECK(enabled = 0 OR cost_class IN ('local','free_verified')),
         CHECK(enabled = 0 OR verification_status = 'verified'),
         CHECK(verification_status <> 'verified' OR (
             capability_verified_at IS NOT NULL AND capability_expires_at IS NOT NULL

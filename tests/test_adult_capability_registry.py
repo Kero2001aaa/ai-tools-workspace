@@ -10,7 +10,7 @@ from agent.adult.adult_attempt_tracker import AdultAttemptTracker
 from agent.adult.adult_task_store import AdultTaskStore
 from agent.adult.capability_registry import (
     CapabilityConflict, CapabilityEvidenceError, CapabilityNotEligible,
-    CapabilityStateConflict, ModelCapabilityRegistry,
+    CapabilityRegistryError, CapabilityStateConflict, ModelCapabilityRegistry,
 )
 from agent.adult.models import AdultTaskRequest, CapabilityEvidence, ModelCapabilitySpec, TaskBudget, RouteCandidate
 
@@ -146,6 +146,17 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
             )
             with self.assertRaises(CapabilityNotEligible):
                 self.registry.enable(verified.capability_id, verified.state_version)
+            db = self.store._connect()
+            try:
+                with self.assertRaises(sqlite3.IntegrityError):
+                    db.execute(
+                        """UPDATE adult_model_capabilities
+                           SET enabled=1,state_version=state_version+1,updated_at=?
+                           WHERE capability_id=?""",
+                        (STAMP, verified.capability_id),
+                    )
+            finally:
+                db.close()
 
     def test_revise_changes_version_clears_evidence_and_disables(self):
         record = self.registry.register(text_spec())
@@ -188,6 +199,28 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
                 db.execute("UPDATE adult_capability_events SET event_type='disabled'")
         finally:
             db.close()
+
+    def test_list_eligible_rejects_persisted_capability_version_tampering(self):
+        spec = text_spec()
+        record = self.registry.register(spec)
+        verified = self.registry.verify(record.capability_id, provider_evidence(spec), record.state_version)
+        self.registry.enable(verified.capability_id, verified.state_version)
+        db = self.store._connect()
+        try:
+            db.execute(
+                """UPDATE adult_model_capabilities
+                   SET capability_version=?,state_version=state_version+1,updated_at=?
+                   WHERE capability_id=?""",
+                ("f" * 64, STAMP, record.capability_id),
+            )
+        finally:
+            db.close()
+        query = CapabilityQuery(
+            task_type="text.analyze", input_modalities=("text",), output_modality="text",
+            input_fingerprint=INPUT_FP, config_fingerprint=CONFIG_FP,
+        )
+        with self.assertRaises(CapabilityRegistryError):
+            self.registry.list_eligible(query, CostPolicy(max_provider_calls=1))
 
     def test_local_capability_requires_local_smoke_evidence(self):
         record = self.registry.register(local_spec())
