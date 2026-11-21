@@ -465,6 +465,169 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         store.save_step(task.task_id, next_step, lease, current.state_version)
         self.assertEqual(next_step.step_id, store.get_task(task.task_id).current_step_id)
 
+    def test_concurrent_claims_across_tasks_have_exactly_one_winner(self):
+        import threading
+        from agent.adult.adult_task_store import TaskAlreadyActive
+        store, first = self._make_task()
+        second, _ = store.create_task(
+            __import__("agent.adult.models", fromlist=["AdultTaskRequest"]).AdultTaskRequest(
+                "text.generate", "hmac-sha256:fedcba9876543210"
+            ),
+            __import__("agent.adult.models", fromlist=["TaskBudget"]).TaskBudget(),
+        )
+        barrier = threading.Barrier(2)
+        results = []
+        guard = threading.Lock()
+
+        def claim(task_id, worker):
+            try:
+                barrier.wait(timeout=3)
+                lease = store.claim_task(task_id, worker, lease_seconds=60)
+                value = ("claimed", lease.task_id)
+            except TaskAlreadyActive:
+                value = ("blocked", task_id)
+            except Exception as exc:
+                value = (type(exc).__name__, task_id)
+            with guard:
+                results.append(value)
+
+        workers = [
+            threading.Thread(target=claim, args=(first.task_id, "concurrent-1")),
+            threading.Thread(target=claim, args=(second.task_id, "concurrent-2")),
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=5)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(1, sum(value[0] == "claimed" for value in results))
+        self.assertEqual(1, sum(value[0] == "blocked" for value in results))
+        statuses = {store.get_task(task_id).status for task_id in (first.task_id, second.task_id)}
+        self.assertEqual({"queued", "analyzing"}, statuses)
+
+    def test_save_step_rolls_back_step_and_task_when_event_append_fails(self):
+        from agent.adult.models import StepRecord
+        store, task = self._make_task()
+        lease = store.claim_task(task.task_id, "step-rollback-worker", lease_seconds=300)
+        original = store._connect
+
+        class FailingConnection:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+            def __getattr__(self, name):
+                return getattr(self.wrapped, name)
+            def execute(self, sql, parameters=()):
+                if sql.lstrip().upper().startswith("INSERT INTO ADULT_TASK_EVENTS"):
+                    raise sqlite3.OperationalError("injected step event failure")
+                return self.wrapped.execute(sql, parameters)
+            def close(self):
+                self.wrapped.close()
+
+        with patch.object(store, "_connect", side_effect=lambda: FailingConnection(original())):
+            with self.assertRaises(sqlite3.OperationalError):
+                store.save_step(
+                    task.task_id,
+                    StepRecord(task.current_step_id, task.task_id, 0, "intake", "running"),
+                    lease, 1,
+                )
+        with original() as connection:
+            step = connection.execute(
+                "SELECT status,started_at FROM adult_steps WHERE step_id=?",
+                (task.current_step_id,),
+            ).fetchone()
+        self.assertEqual(("pending", None), tuple(step))
+        self.assertEqual(("analyzing", 1), (
+            store.get_task(task.task_id).status, store.get_task(task.task_id).state_version,
+        ))
+        self.assertEqual(2, len(store.list_events(task.task_id)))
+
+    def test_recovery_rolls_back_checkpoint_and_lease_when_audit_append_fails(self):
+        from datetime import datetime, timedelta, timezone
+        store, task = self._make_task()
+        store.claim_task(task.task_id, "recovery-rollback-worker", lease_seconds=1)
+        future = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(
+            timespec="microseconds"
+        ).replace("+00:00", "Z")
+        original = store._connect
+
+        class FailingConnection:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+            def __getattr__(self, name):
+                return getattr(self.wrapped, name)
+            def execute(self, sql, parameters=()):
+                if sql.lstrip().upper().startswith("INSERT INTO ADULT_TASK_EVENTS"):
+                    raise sqlite3.OperationalError("injected recovery event failure")
+                return self.wrapped.execute(sql, parameters)
+            def close(self):
+                self.wrapped.close()
+
+        with patch("agent.adult.adult_task_store._utc_now", return_value=future):
+            with patch.object(store, "_connect", side_effect=lambda: FailingConnection(original())):
+                with self.assertRaises(sqlite3.OperationalError):
+                    store.recover_expired_leases()
+        current = store.get_task(task.task_id)
+        self.assertEqual(("analyzing", 1, 1), (
+            current.status, current.state_version, current.attempt_count,
+        ))
+        with original() as connection:
+            self.assertEqual(1, connection.execute(
+                "SELECT COUNT(*) FROM adult_checkpoints WHERE task_id=?", (task.task_id,)
+            ).fetchone()[0])
+        self.assertEqual(2, len(store.list_events(task.task_id)))
+
+    def test_waiting_user_cancel_decision_does_not_grant_approval(self):
+        from agent.adult.models import TaskBudget
+        store, task = self._make_task(budget=TaskBudget(max_total_attempts=10))
+        lease = store.claim_task(task.task_id, "approval-cancel-worker", lease_seconds=300)
+        with store._connect() as connection:
+            connection.execute(
+                "UPDATE adult_tasks SET total_attempts=5,failed_attempts_since_approval=5 WHERE task_id=?",
+                (task.task_id,),
+            )
+        current = store.get_task(task.task_id)
+        snapshot = self._checkpoint_snapshot(
+            current, status="waiting_user", failed_attempts_since_approval=5,
+            total_attempts=5, pending_user_action="approval_required",
+            allowed_decisions=("continue", "cancel"),
+        )
+        store.set_waiting_user(task.task_id, snapshot, lease, current.state_version)
+        cancelled = store.resume(task.task_id, "cancel")
+        self.assertEqual(("cancelled", 0, 5), (
+            cancelled.status, cancelled.approvals_granted,
+            cancelled.failed_attempts_since_approval,
+        ))
+        self.assertEqual("task_cancelled", store.list_events(task.task_id)[-1].event_type)
+
+    def test_terminal_step_cannot_be_reopened_or_reidentified(self):
+        from agent.adult.adult_task_store import InvalidTaskTransition
+        from agent.adult.models import AdultModelValidationError, StepRecord
+        store, task = self._make_task()
+        lease = store.claim_task(task.task_id, "step-final-worker", lease_seconds=300)
+        started = store.save_step(
+            task.task_id, StepRecord(task.current_step_id, task.task_id, 0, "intake", "running"),
+            lease, 1,
+        )
+        finished = store.save_step(
+            task.task_id, StepRecord(task.current_step_id, task.task_id, 0, "intake", "succeeded"),
+            lease, store.get_task(task.task_id).state_version,
+        )
+        with self.assertRaises(InvalidTaskTransition):
+            store.save_step(
+                task.task_id,
+                StepRecord(task.current_step_id, task.task_id, 0, "intake", "running"),
+                lease, store.get_task(task.task_id).state_version,
+            )
+        with self.assertRaises(AdultModelValidationError):
+            store.save_step(
+                task.task_id,
+                StepRecord(
+                    task.current_step_id, task.task_id, 0, "text.analyze", "succeeded"
+                ),
+                lease, store.get_task(task.task_id).state_version,
+            )
+        self.assertEqual("succeeded", finished.status)
+
     def test_new_database_has_exact_stage5_tables_and_versioned_schema(self):
         store = AdultTaskStore(self.db)
         with store._connect() as connection:
