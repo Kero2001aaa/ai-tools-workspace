@@ -446,10 +446,12 @@ class AdultAttemptTracker:
                 raise AttemptBudgetExhausted("Task attempt budget is exhausted.")
 
             step = db.execute(
-                "SELECT task_id FROM adult_steps WHERE step_id=?", (step_id,)
+                "SELECT task_id,status FROM adult_steps WHERE step_id=?", (step_id,)
             ).fetchone()
             if step is None or step["task_id"] != task_id or task["current_step_id"] != step_id:
                 raise AttemptValidationError("step_id must be the current step belonging to this task.")
+            if step["status"] not in {"pending", "running"}:
+                raise AttemptNotAvailable("Attempts require a pending or running task step.")
 
             approach_key, route_family_key = self.approach_keys(
                 task["task_type"], route, input_fingerprint, config_fingerprint,
@@ -494,13 +496,17 @@ class AdultAttemptTracker:
                     """UPDATE adult_tasks
                        SET total_attempts=total_attempts+1,
                            provider_calls=provider_calls+?,
-                           updated_at=?
+                           selected_adapter=?,selected_provider=?,selected_model=?,selected_tool=?,
+                           state_version=state_version+1,updated_at=?
                        WHERE task_id=? AND total_attempts=? AND provider_calls=?
-                         AND status IN ('analyzing','running','evaluating')
+                         AND state_version=? AND lease_generation=? AND lease_owner=?
+                         AND lease_expires_at>? AND status IN ('analyzing','running','evaluating')
                          AND cancel_requested=0""",
                     (
-                        int(is_provider_call), now, task_id, task["total_attempts"],
-                        task["provider_calls"],
+                        int(is_provider_call), route.adapter_id, route.provider_id,
+                        route.model_id, route.tool_id, now, task_id,
+                        task["total_attempts"], task["provider_calls"], task["state_version"],
+                        task["lease_generation"], task["lease_owner"], now,
                     ),
                 )
                 if cursor.rowcount != 1:
@@ -569,6 +575,13 @@ class AdultAttemptTracker:
             raise AttemptNotFound("Attempt does not exist.")
         if attempt["status"] != "running":
             raise AttemptAlreadyFinalized("Attempt already has a terminal outcome.")
+        if (
+            handle.attempt_no != attempt["attempt_no"]
+            or handle.approach_key != attempt["approach_key"]
+            or handle.started_at != attempt["started_at"]
+            or handle.lease_generation != attempt["lease_generation"]
+        ):
+            raise StaleAttemptHandle("Attempt handle fields do not match the stored attempt.")
         task = db.execute(
             "SELECT * FROM adult_tasks WHERE task_id=?", (handle.task_id,)
         ).fetchone()
@@ -613,7 +626,11 @@ class AdultAttemptTracker:
         now = self._now()
         result: AttemptResult | None = None
         with self._transaction() as db:
-            attempt, _task = self._load_handle_row(db, handle, now)
+            attempt, task = self._load_handle_row(db, handle, now)
+            additional_cost = safe_cost or 0
+            new_spent_cost = task["spent_cost_microusd"] + additional_cost
+            if new_spent_cost > task["max_cost_microusd"]:
+                raise AttemptBudgetExhausted("Task cost budget is exhausted.")
             started = _parse_utc(attempt["started_at"])
             elapsed_ms = max(0, int((_parse_utc(now) - started).total_seconds() * 1000))
             encoded_usage = json.dumps(
@@ -631,6 +648,20 @@ class AdultAttemptTracker:
             )
             if cursor.rowcount != 1:
                 raise AttemptAlreadyFinalized("Attempt could not be finalized.")
+            task_cursor = db.execute(
+                """UPDATE adult_tasks
+                   SET spent_cost_microusd=?,last_error_code=NULL,
+                       state_version=state_version+1,updated_at=?
+                   WHERE task_id=? AND state_version=? AND lease_generation=?
+                     AND lease_expires_at>? AND status IN ('analyzing','running','evaluating')
+                     AND cancel_requested=0""",
+                (
+                    new_spent_cost, now, handle.task_id, task["state_version"],
+                    handle.lease_generation, now,
+                ),
+            )
+            if task_cursor.rowcount != 1:
+                raise StaleAttemptHandle("Task changed before success was committed.")
             self._event(
                 db, task_id=handle.task_id, attempt_id=handle.attempt_id,
                 event_type="attempt_succeeded", approach_key=handle.approach_key,
@@ -678,15 +709,22 @@ class AdultAttemptTracker:
             if cursor.rowcount != 1:
                 raise AttemptAlreadyFinalized("Attempt could not be finalized.")
             counts_as_failure = status in {"failed", "timed_out"}
-            if counts_as_failure:
-                db.execute(
-                    """UPDATE adult_tasks SET failed_attempts_since_approval=
-                           CASE WHEN failed_attempts_since_approval < 5
-                                THEN failed_attempts_since_approval+1 ELSE 5 END,
-                           updated_at=?
-                       WHERE task_id=?""",
-                    (now, handle.task_id),
-                )
+            task_cursor = db.execute(
+                """UPDATE adult_tasks
+                   SET failed_attempts_since_approval=CASE
+                           WHEN ?=1 AND failed_attempts_since_approval < 5
+                           THEN failed_attempts_since_approval+1
+                           ELSE failed_attempts_since_approval END,
+                       last_error_code=?,state_version=state_version+1,updated_at=?
+                   WHERE task_id=? AND state_version=? AND lease_generation=?
+                     AND lease_expires_at>? AND status IN ('analyzing','running','evaluating')""",
+                (
+                    int(counts_as_failure), error_code, now, handle.task_id,
+                    task["state_version"], handle.lease_generation, now,
+                ),
+            )
+            if task_cursor.rowcount != 1:
+                raise StaleAttemptHandle("Task changed before failure was committed.")
             event_type = {
                 "rejected": "attempt_rejected",
                 "timed_out": "attempt_timed_out",
@@ -787,14 +825,18 @@ class AdultAttemptTracker:
                 )
                 if cursor.rowcount != 1:
                     continue
-                db.execute(
-                    """UPDATE adult_tasks SET failed_attempts_since_approval=
-                           CASE WHEN failed_attempts_since_approval < 5
-                                THEN failed_attempts_since_approval+1 ELSE 5 END,
-                           updated_at=?
-                       WHERE task_id=?""",
-                    (now, attempt["task_id"]),
+                task_cursor = db.execute(
+                    """UPDATE adult_tasks
+                       SET failed_attempts_since_approval=CASE
+                               WHEN failed_attempts_since_approval < 5
+                               THEN failed_attempts_since_approval+1 ELSE 5 END,
+                           last_error_code='PROVIDER_OUTCOME_UNKNOWN',
+                           state_version=state_version+1,updated_at=?
+                       WHERE task_id=? AND state_version=?""",
+                    (now, attempt["task_id"], attempt["state_version"]),
                 )
+                if task_cursor.rowcount != 1:
+                    raise AttemptTrackerError("Task changed during uncertain-outcome recovery.")
                 self._event(
                     db, task_id=attempt["task_id"], attempt_id=attempt["attempt_id"],
                     event_type="attempt_unknown_outcome",
