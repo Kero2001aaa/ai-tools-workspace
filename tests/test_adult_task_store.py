@@ -137,7 +137,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
 
     def test_save_step_rejects_cross_task_and_stale_lease_without_partial_write(self):
         from agent.adult.adult_task_store import LeaseLost, StaleTaskVersion
-        from agent.adult.models import StepRecord
+        from agent.adult.models import StepRecord, TaskLease
         store, task = self._make_task()
         lease = store.claim_task(task.task_id, "step-worker", lease_seconds=300)
         with self.assertRaises(StaleTaskVersion):
@@ -291,7 +291,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         self.assertEqual(0, resumed.failed_attempts_since_approval)
 
     def test_resume_rejects_needs_input_and_terminal_states(self):
-        from agent.adult.adult_task_store import InvalidTaskTransition, TaskTerminal, UserApprovalRequired
+        from agent.adult.adult_task_store import TaskTerminal, UserApprovalRequired
         store, task = self._make_task()
         with store._connect() as connection:
             connection.execute(
@@ -300,8 +300,6 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             )
         with self.assertRaises(UserApprovalRequired):
             store.resume(task.task_id, "continue")
-        with self.assertRaises(InvalidTaskTransition):
-            store.resume(task.task_id, "cancel")  # cancel is supported and handled below
         cancelled = store.resume(task.task_id, "cancel")
         self.assertEqual("cancelled", cancelled.status)
         with self.assertRaises(TaskTerminal):
@@ -326,7 +324,8 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         again = active.request_cancel(active_task.task_id)
         self.assertTrue(again.cancel_requested)
         self.assertEqual(event_count, len(active.list_events(active_task.task_id)))
-        with self.assertRaises(Exception):
+        from agent.adult.adult_task_store import TaskCancelled
+        with self.assertRaises(TaskCancelled):
             active.renew_lease(active_lease, lease_seconds=30)
 
     def test_recover_expired_lease_creates_checkpoint_and_increments_fencing_generation(self):
