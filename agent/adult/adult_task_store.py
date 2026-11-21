@@ -14,7 +14,7 @@ import stat
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from agent.adult.models import (
     AdultModelValidationError, AdultTaskRequest, AdultTaskSnapshot,
@@ -494,7 +494,7 @@ class AdultTaskStore:
         lease: TaskLease,
         expected_state_version: int,
         next_status: str = "checkpointed",
-        reason: str = "worker_released",
+        reason: Literal["worker_released", "yielded", "cancel_observed", "budget_exhausted"] = "worker_released",
     ) -> AdultTaskSnapshot:
         """Release the current fenced lease and persist the resulting state atomically."""
         if not isinstance(lease, TaskLease):
