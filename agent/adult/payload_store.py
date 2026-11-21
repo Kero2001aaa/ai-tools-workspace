@@ -581,6 +581,8 @@ class AdultArtifactStore:
                 details = os.fstat(handle.fileno())
                 if not stat.S_ISREG(details.st_mode):
                     raise PayloadStorageError("Payload storage entry is not a regular file.")
+                if os.name == "posix" and stat.S_IMODE(details.st_mode) & 0o077:
+                    raise PayloadStorageError("Payload file permissions are too broad.")
                 if details.st_size > maximum:
                     raise PayloadTooLarge("Encrypted payload file exceeds its configured limit.")
                 content = handle.read(maximum + 1)
