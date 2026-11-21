@@ -331,5 +331,81 @@ class AdultArtifactStoreTests(unittest.TestCase):
             AdultArtifactStore(self.root, cipher=self.cipher)
 
 
+    def test_discard_output_removes_only_matching_persistent_attempt_artifact(self):
+        artifact = self.store.save_output(
+            "task-1", "attempt-1", b"uncommitted output", "text/plain"
+        )
+        path = self.root / (artifact.artifact_id + ".aap")
+        self.assertTrue(path.exists())
+        self.assertTrue(
+            self.store.discard_output(artifact.artifact_id, "task-1", "attempt-1")
+        )
+        self.assertFalse(path.exists())
+        with sqlite3.connect(self.store._index_path) as connection:
+            self.assertEqual(
+                0,
+                connection.execute(
+                    "SELECT COUNT(*) FROM adult_payload_records WHERE payload_id=?",
+                    (artifact.artifact_id,),
+                ).fetchone()[0],
+            )
+        self.assertFalse(
+            self.store.discard_output(artifact.artifact_id, "task-1", "attempt-1")
+        )
+
+    def test_discard_output_is_task_and_attempt_bound(self):
+        artifact = self.store.save_output(
+            "task-1", "attempt-1", b"protected output", "text/plain"
+        )
+        with self.assertRaises(PayloadNotFound):
+            self.store.discard_output(artifact.artifact_id, "task-2", "attempt-1")
+        with self.assertRaises(PayloadNotFound):
+            self.store.discard_output(artifact.artifact_id, "task-1", "attempt-2")
+        self.assertEqual(
+            b"protected output",
+            self.store.read_chunk(artifact.artifact_id, 0).data,
+        )
+
+    def test_discard_output_rejects_input_payload_reference(self):
+        reference = self.store.save_input(
+            "task-1", b"input must remain", "text/plain", retain_encrypted=True
+        )
+        with self.assertRaises(PayloadNotFound):
+            self.store.discard_output(reference.payload_id, "task-1", "attempt-1")
+        self.assertEqual(
+            b"input must remain",
+            self.store.load_input(reference.payload_id, "task-1"),
+        )
+
+    def test_discard_output_removes_matching_transient_artifact(self):
+        store = AdultArtifactStore(self.root / "transient-discard")
+        artifact = store.save_output(
+            "task-1", "attempt-1", b"temporary output", "text/plain"
+        )
+        self.assertFalse(artifact.persisted)
+        self.assertTrue(
+            store.discard_output(artifact.artifact_id, "task-1", "attempt-1")
+        )
+        with self.assertRaises(PayloadNotFound):
+            store.read_chunk(artifact.artifact_id, 0)
+        self.assertFalse(
+            store.discard_output(artifact.artifact_id, "task-1", "attempt-1")
+        )
+
+    def test_discard_output_rejects_transient_task_or_attempt_mismatch(self):
+        store = AdultArtifactStore(self.root / "transient-mismatch")
+        artifact = store.save_output(
+            "task-1", "attempt-1", b"protected transient output", "text/plain"
+        )
+        with self.assertRaises(PayloadNotFound):
+            store.discard_output(artifact.artifact_id, "task-2", "attempt-1")
+        with self.assertRaises(PayloadNotFound):
+            store.discard_output(artifact.artifact_id, "task-1", "attempt-2")
+        self.assertEqual(
+            b"protected transient output",
+            store.read_chunk(artifact.artifact_id, 0).data,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
