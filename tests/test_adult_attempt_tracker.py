@@ -433,10 +433,14 @@ class AdultAttemptTrackerTests(unittest.TestCase):
 
     def test_boolean_attempt_handle_counters_are_rejected(self):
         from agent.adult.adult_attempt_tracker import StaleAttemptHandle
-        handle = self.begin()
-        object.__setattr__(handle, "lease_generation", True)
+        first = self.begin()
+        object.__setattr__(first, "lease_generation", True)
         with self.assertRaises(StaleAttemptHandle):
-            self.tracker.succeed(handle, None, None, 0)
+            self.tracker.succeed(first, None, None, 0)
+        second = self.begin(route(adapter_id="attempt-no-check"))
+        object.__setattr__(second, "attempt_no", True)
+        with self.assertRaises(StaleAttemptHandle):
+            self.tracker.succeed(second, None, None, 0)
 
     def test_raw_prompt_and_provider_body_text_are_rejected_as_sanitized_errors(self):
         handle = self.begin()
@@ -452,6 +456,21 @@ class AdultAttemptTrackerTests(unittest.TestCase):
             "SELECT status FROM adult_attempts WHERE attempt_id=?", (handle.attempt_id,)
         )[0][0])
         self.tracker.fail(handle, "PROVIDER_ERROR", "Temporary provider error.", True)
+
+    def test_raw_prompt_text_is_rejected_and_absent_from_attempt_audit_storage(self):
+        import json
+        raw_prompt = "PRIVATE_RAW_PROMPT_SENTINEL_4f91c2"
+        handle = self.begin()
+        with self.assertRaises(AttemptValidationError):
+            self.tracker.fail(handle, "PROVIDER_ERROR", raw_prompt, True)
+        self.tracker.fail(handle, "PROVIDER_ERROR", "Temporary provider failure.", True)
+        attempts = self.query("SELECT * FROM adult_attempts")
+        events = self.query("SELECT * FROM adult_attempt_events")
+        serialized = json.dumps(
+            [[tuple(row) for row in attempts], [tuple(row) for row in events]],
+            default=str,
+        )
+        self.assertNotIn(raw_prompt, serialized)
 
     def test_tracker_issued_handle_cannot_be_constructed_by_callers(self):
         with self.assertRaises(TypeError):
