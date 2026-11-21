@@ -347,6 +347,13 @@ class TransientPayloadCache:
         with self._lock:
             return self._remove((task_id, payload_ref))
 
+    def discard(self, task_id: str) -> None:
+        _validate_task_id(task_id)
+        with self._lock:
+            keys = [key for key in self._entries if key[0] == task_id]
+            for key in keys:
+                self._remove(key)
+
     def discard_task_kind(self, task_id: str, kind: str) -> int:
         _validate_task_id(task_id)
         if kind not in {"input", "output"}:
