@@ -312,6 +312,9 @@ class AdultAttemptTrackerTests(unittest.TestCase):
         ).replace("+00:00", "Z")
         with patch("agent.adult.adult_task_store._utc_now", return_value=future):
             self.store.recover_expired_leases()
+        from agent.adult.adult_attempt_tracker import StaleAttemptHandle
+        with self.assertRaises(StaleAttemptHandle):
+            self.tracker.succeed(handle, "a" * 32, None, 0)
         self.tracker.recover_uncertain_attempts()
         with self.assertRaises(AttemptAlreadyFinalized):
             self.tracker.succeed(handle, "a" * 32, None, 0)
@@ -427,6 +430,28 @@ class AdultAttemptTrackerTests(unittest.TestCase):
         with self.assertRaises(AttemptNotAvailable):
             tracker.begin(task.task_id, task.current_step_id, route(), INPUT_FP, CONFIG_FP)
         self.assertEqual(0, tracker.total_attempts(task.task_id))
+
+    def test_boolean_attempt_handle_counters_are_rejected(self):
+        from agent.adult.adult_attempt_tracker import StaleAttemptHandle
+        handle = self.begin()
+        object.__setattr__(handle, "lease_generation", True)
+        with self.assertRaises(StaleAttemptHandle):
+            self.tracker.succeed(handle, None, None, 0)
+
+    def test_raw_prompt_and_provider_body_text_are_rejected_as_sanitized_errors(self):
+        handle = self.begin()
+        unsafe_errors = (
+            "Original prompt: PRIVATE_RAW_PROMPT",
+            "Provider response body contained the original request.",
+            "Base64 payload bytes were returned.",
+        )
+        for message in unsafe_errors:
+            with self.subTest(message=message), self.assertRaises(AttemptValidationError):
+                self.tracker.fail(handle, "PROVIDER_ERROR", message, True)
+        self.assertEqual("running", self.query(
+            "SELECT status FROM adult_attempts WHERE attempt_id=?", (handle.attempt_id,)
+        )[0][0])
+        self.tracker.fail(handle, "PROVIDER_ERROR", "Temporary provider error.", True)
 
     def test_tracker_issued_handle_cannot_be_constructed_by_callers(self):
         with self.assertRaises(TypeError):
