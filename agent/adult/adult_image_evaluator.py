@@ -10,7 +10,7 @@ from agent.adult.integrations.protocols import ImageAdapterResult, ImageAnalysis
 from agent.adult.models import EvaluationResult, PolicyDecision
 
 _SUPPORTED_TASK_TYPES = frozenset({"image.analyze", "image.generate", "image.edit"})
-_ALLOWED_CONTROLS = frozenset({"\\t", "\\n", "\\r"})
+_ALLOWED_CONTROLS = frozenset({"\t", "\n", "\r"})
 _MAX_ANALYSIS_CHARS = 20_000
 _MAX_ANALYSIS_BYTES = 80 * 1024
 _ANALYSIS_CHECK_COUNT = 8

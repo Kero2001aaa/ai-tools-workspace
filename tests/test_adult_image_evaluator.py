@@ -20,9 +20,9 @@ def _png_chunk(kind: bytes, payload: bytes) -> bytes:
 
 def _png(width: int = 1, height: int = 1) -> bytes:
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    scanline = b"\\x00" + (b"\\x00" * width * 4)
+    scanline = b"\x00" + (b"\x00" * width * 4)
     return (
-        b"\\x89PNG\\r\\n\\x1a\\n"
+        b"\x89PNG\r\n\x1a\n"
         + _png_chunk(b"IHDR", ihdr)
         + _png_chunk(b"IDAT", zlib.compress(scanline))
         + _png_chunk(b"IEND", b"")
@@ -105,8 +105,8 @@ class AdultImageEvaluatorTests(unittest.TestCase):
         cases = (
             ("", "output_empty"),
             ("x" * 20_001, "output_too_long"),
-            ("bad\\x00text", "prohibited_control_character"),
-            ("bad\\x85text", "prohibited_control_character"),
+            ("bad\x00text", "prohibited_control_character"),
+            ("bad\x85text", "prohibited_control_character"),
         )
         for value, reason in cases:
             with self.subTest(reason=reason):
@@ -118,12 +118,12 @@ class AdultImageEvaluatorTests(unittest.TestCase):
 
     def test_analysis_accepts_tab_newline_and_carriage_return(self):
         result = self.evaluator.evaluate(
-            "image.analyze", ImageAnalysisResult("line 1\\tline 2\\r\\n", {}, 0)
+            "image.analyze", ImageAnalysisResult("line 1\tline 2\r\n", {}, 0)
         )
         self.assertTrue(result.accepted)
 
     def test_analysis_rejects_invalid_utf8_surrogates_without_echoing(self):
-        private_value = "private-\\ud800"
+        private_value = "private-\ud800"
         result = self.evaluator.evaluate(
             "image.analyze", _unsafe_analysis(private_value)
         )
@@ -135,7 +135,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
     def test_corrupt_and_unsupported_image_outputs_are_retryable(self):
         for data, reason in (
             (b"not an image", "image_output_unsupported_format"),
-            (b"\\x89PNG\\r\\n\\x1a\\ntruncated", "image_output_invalid"),
+            (b"\x89PNG\r\n\x1a\ntruncated", "image_output_invalid"),
         ):
             with self.subTest(reason=reason):
                 output = ImageAdapterResult(data, "image/png", {}, 0)
