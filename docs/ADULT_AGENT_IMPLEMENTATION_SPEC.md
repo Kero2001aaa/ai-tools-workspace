@@ -194,7 +194,7 @@ Terminal states: completed, failed, cancelled.
 | Failed attempts before asking user | 5 | fixed at 5 |
 | Total attempts per task | 20 | 20 |
 | Wall time per task | 600 seconds | 600 seconds |
-| Model/provider calls per task | 20 | 20 |
+| Model/provider calls per task | 0 (default) | 20 |
 | Concurrent active Adult tasks | 1 | 1 |
 | Image input size | 15 MiB decoded | 15 MiB |
 | Image output size | 20 MiB decoded | 20 MiB |
@@ -202,13 +202,13 @@ Terminal states: completed, failed, cancelled.
 | Task list page | 20 | 50 |
 | Attempt history response | 20 records | 50 |
 
-Defaults are configurable downward. Raising hard maxima requires a new spec revision and tests.
+Defaults are configurable downward. Raising hard maxima requires a new spec revision and tests. The provider-call default is deny-by-default (0); a free_verified route requires an explicit positive per-task provider-call budget. The hard maximum remains 20.
 
 ### 5.2 Zero-cost policy
 
 - Default ADULT_ALLOW_PAID=false.
 - Default task cost budget is 0 USD micro-units.
-- Eligible routes must be local or free_verified; paid and unknown are rejected by default.
+- Eligible routes must be local or free_verified; a free_verified route additionally requires an explicit positive per-task provider-call budget. Paid and unknown are always rejected in the MVP.
 - A free-tier provider is not considered unlimited. Store the date and source of its cost/eligibility verification.
 - Never enable a payment method, purchase credits, or silently route to a paid fallback.
 - If provider cost cannot be determined or the configured route is not explicitly approved as zero-cost, stop before dispatch.
@@ -359,21 +359,23 @@ The executor performs one bounded step at a time. It does not decide to exceed b
 
 ### 6.7 AdultModelRouter and capability registry — agent/adult/adult_router.py
 
+The Stage 6 normative contract is defined in [ADULT_AGENT_STAGE6_IMPLEMENTATION_SPEC.md](ADULT_AGENT_STAGE6_IMPLEMENTATION_SPEC.md). The registry owns typed capability records and evidence lifecycle; the router only filters and orders RouteCandidate values. Registration, verification, and enablement are separate operations. Records are disabled by default.
+
     class ModelCapabilityRegistry:
-        def register(self, capability: ModelCapability) -> None: ...
-        def list_eligible(self, task_type: str, cost_policy: CostPolicy) -> list[RouteCandidate]: ...
-        def verify(self, provider_id: str, model_id: str, task_type: str,
-                   evidence: CapabilityEvidence) -> ModelCapability: ...
+        def register(self, capability: ModelCapabilitySpec) -> ModelCapability: ...
+        def verify(self, capability_id: str, evidence: CapabilityEvidence,
+                   expected_state_version: int) -> ModelCapability: ...
+        def enable(self, capability_id: str, expected_state_version: int) -> ModelCapability: ...
+        def disable(self, capability_id: str, reason_code: str,
+                    expected_state_version: int) -> ModelCapability: ...
+        def list_eligible(self, query: CapabilityQuery,
+                          cost_policy: CostPolicy) -> list[RouteCandidate]: ...
 
     class AdultModelRouter:
-        def choose_routes(self, task_type: str, input_metadata: dict,
+        def choose_routes(self, query: CapabilityQuery, cost_policy: CostPolicy,
                           excluded_approach_keys: set[str]) -> list[RouteCandidate]: ...
-        def run_text(self, candidate: RouteCandidate, request: TextRequest) -> AdapterResult: ...
-        def analyze_image(self, candidate: RouteCandidate, request: ImageAnalysisRequest) -> AdapterResult: ...
-        def generate_image(self, candidate: RouteCandidate, request: ImageGenerationRequest) -> AdapterResult: ...
-        def edit_image(self, candidate: RouteCandidate, request: ImageEditRequest) -> AdapterResult: ...
 
-A model is eligible only when its explicit capability record covers the exact operation, input/output modality, size constraints, and cost policy. A name appearing in a model catalog is not proof of capability.
+A catalog entry is discovery only, not proof. Eligibility requires exact operation/modality support, valid size/MIME limits, current evidence, explicit enablement, adapter availability, and the zero-cost policy. The Router never executes a route.
 
 ### 6.8 Adapter protocols — agent/adult/integrations/
 
@@ -983,7 +985,7 @@ New environment variables (document in .env.example; never put values in Git):
 | ADULT_ALLOW_PAID | false | Paid routes disabled by default |
 | ADULT_MAX_TOTAL_ATTEMPTS | 20 | Per-task hard attempt cap |
 | ADULT_MAX_WALL_SECONDS | 600 | Per-task wall-time cap |
-| ADULT_MAX_PROVIDER_CALLS | 20 | Per-task provider-call cap |
+| ADULT_MAX_PROVIDER_CALLS | 0 | Offline default; positive per-task budget is explicit opt-in, hard maximum 20 |
 | ADULT_MAX_COST_MICROUSD | 0 | Per-task cost cap |
 | ADULT_FAILURES_BEFORE_APPROVAL | 5 | Fixed five-failure checkpoint interval; startup rejects any value other than 5 |
 | ADULT_OUTPUT_RETENTION_HOURS | 24 | Default encrypted output retention |
@@ -991,6 +993,7 @@ New environment variables (document in .env.example; never put values in Git):
 | ADULT_MAX_IMAGE_OUTPUT_BYTES | 20971520 | Maximum decoded output image bytes |
 | ADULT_OMNIROUTE_BASE_URL | empty | Verified OmniRoute API root ending in /v1 |
 | ADULT_OMNIROUTE_API_KEY | empty | Server-side OmniRoute key; do not expose to tools |
+| ADULT_MAX_PROVIDER_CALLS | 0 | Default offline; explicit positive per-task opt-in for free_verified routes only |
 
 Rules:
 
@@ -1050,6 +1053,7 @@ New modules:
       test_adult_supervisor.py
       test_adult_executor.py
       test_adult_memory.py
+      test_adult_capability_registry.py
       test_adult_router.py
       test_adult_omniroute_adapters.py
       test_adult_payload_store.py
@@ -1139,12 +1143,16 @@ Implementation order: DTO validation; DB connection/migration; operational schem
 
 ### Stage 6 — Capability registry and Model Router
 
-- Add explicit capability records and cost classes.
-- Add OmniRoute chat adapter reuse and separately typed image adapter interfaces.
-- Add fake/mock provider tests; no paid live route.
+The normative Stage 6 execution contract is [ADULT_AGENT_STAGE6_IMPLEMENTATION_SPEC.md](ADULT_AGENT_STAGE6_IMPLEMENTATION_SPEC.md).
+
+- Add typed capability records, independent capability/zero-cost evidence, explicit lifecycle transitions, append-only audit, and schema v2→v3.
+- Add exact modality/operation/size-aware eligibility and deterministic route ordering.
+- Preserve the zero-cost boundary: provider-call default 0, max cost 0, paid/unknown always rejected.
+- Add Adult-specific OmniRoute configuration and an explicit-config chat factory without inheriting Workspace MODEL_* values.
+- Define typed text/image adapter protocols; use mocks only and make no live provider calls.
 - Model discovery does not auto-enable capability.
 
-**Gate:** unsupported modalities and paid/unknown routes are rejected; valid mock/local/verified routes pass; full suite green.
+**Gate:** disabled/unverified/expired/unsupported routes and paid/unknown routes are rejected; current verified local/free mock routes pass; previous-stage and full suites plus CI/security checks are green.
 
 ### Stage 7 — Text pipeline and evaluator
 
@@ -1228,6 +1236,9 @@ Implementation order: DTO validation; DB connection/migration; operational schem
 | ROUTE-02 | Image task to text-only model | Rejected before dispatch |
 | ROUTE-03 | Paid/unknown model with zero cost budget | Rejected |
 | ROUTE-04 | Model listed but capability unverified | Not eligible |
+| ROUTE-05 | free_verified with zero provider-call budget | Not eligible |
+| ROUTE-06 | Expired capability or zero-cost evidence | Not eligible |
+| ROUTE-07 | Capability registered but not explicitly enabled | Not eligible |
 | TXT-01 | Valid text output | Evaluated and completed |
 | TXT-02 | Empty/oversized text output | Rejected or retried within policy |
 | IMG-01 | PNG/JPEG/WebP valid input | Accepted within limits |
