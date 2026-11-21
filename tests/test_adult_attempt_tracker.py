@@ -141,7 +141,7 @@ class AdultAttemptTrackerTests(unittest.TestCase):
         self.assertEqual(("failed", "transient", True), (result.status, result.failure_class, result.retryable))
         self.assertEqual(1, self.tracker.failures_since_approval(self.task.task_id))
         task = self.store.get_task(self.task.task_id)
-        self.assertEqual((3, "PROVIDER_ERROR"), (task.state_version, task.last_error_code))
+        self.assertEqual((3, "provider_error"), (task.state_version, task.last_error_code))
         second = self.begin(route(adapter_id="different-adapter"))
         self.assertEqual(2, second.attempt_no)
 
