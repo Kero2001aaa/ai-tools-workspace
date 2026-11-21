@@ -251,5 +251,163 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         self.assertEqual("initial", reopened.get_latest_checkpoint(created.task_id).reason)
 
 
+    def test_transition_updates_state_and_appends_event_atomically(self):
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        updated = store.transition(
+            task.task_id, {"queued"}, "cancelled", "state_transition", 0,
+            metadata={"reason_code": "user_cancelled"},
+        )
+        self.assertEqual("cancelled", updated.status)
+        self.assertTrue(updated.cancel_requested)
+        self.assertFalse(updated.user_action_required)
+        self.assertEqual(1, updated.state_version)
+        events = store.list_events(task.task_id)
+        self.assertEqual(2, len(events))
+        self.assertEqual(("state_transition", "queued", "cancelled"), (
+            events[-1].event_type, events[-1].from_status, events[-1].to_status,
+        ))
+        self.assertEqual({"reason_code": "user_cancelled"}, events[-1].metadata)
+        with self.assertRaises(Exception):
+            store.transition(task.task_id, {"queued"}, "failed", "state_transition", 0)
+
+    def test_transition_rejects_stale_status_or_version_without_partial_write(self):
+        from agent.adult.adult_task_store import StaleTaskVersion
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        for expected_status, expected_version in (({"running"}, 0), ({"queued"}, 1)):
+            with self.subTest(expected_status=expected_status, expected_version=expected_version):
+                with self.assertRaises(StaleTaskVersion):
+                    store.transition(
+                        task.task_id, expected_status, "failed",
+                        "state_transition", expected_version,
+                    )
+                current = store.get_task(task.task_id)
+                self.assertEqual(("queued", 0), (current.status, current.state_version))
+                self.assertEqual(1, len(store.list_events(task.task_id)))
+
+    def test_transition_rejects_disallowed_and_terminal_state_changes(self):
+        from agent.adult.adult_task_store import InvalidTaskTransition, TaskTerminal
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        with self.assertRaises(InvalidTaskTransition):
+            store.transition(task.task_id, {"queued"}, "completed", "state_transition", 0)
+        failed = store.transition(task.task_id, {"queued"}, "failed", "state_transition", 0)
+        with self.assertRaises(TaskTerminal):
+            store.transition(task.task_id, {"failed"}, "cancelled", "state_transition", failed.state_version)
+        self.assertEqual(2, len(store.list_events(task.task_id)))
+
+    def test_active_transition_requires_current_unexpired_fenced_lease(self):
+        from datetime import datetime, timedelta, timezone
+        from agent.adult.models import AdultTaskRequest, TaskBudget, TaskLease
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        future = (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(
+            timespec="microseconds"
+        ).replace("+00:00", "Z")
+        with store._connect() as connection:
+            connection.execute(
+                """UPDATE adult_tasks SET status='running',lease_owner='worker-1',
+                   lease_expires_at=?,lease_generation=1,state_version=1
+                   WHERE task_id=?""",
+                (future, task.task_id),
+            )
+        valid = TaskLease._from_store(task.task_id, "worker-1", 1, future, 1)
+        checkpointed = store.transition(
+            task.task_id, {"running"}, "checkpointed", "state_transition", 1,
+            lease=valid,
+        )
+        self.assertEqual("checkpointed", checkpointed.status)
+        self.assertEqual(2, checkpointed.state_version)
+        with store._connect() as connection:
+            row = connection.execute(
+                "SELECT lease_owner,lease_expires_at FROM adult_tasks WHERE task_id=?",
+                (task.task_id,),
+            ).fetchone()
+        self.assertEqual((None, None), tuple(row))
+
+    def test_active_transition_rejects_expired_or_stale_lease_without_writes(self):
+        from datetime import datetime, timedelta, timezone
+        from agent.adult.adult_task_store import LeaseLost
+        from agent.adult.models import AdultTaskRequest, TaskBudget, TaskLease
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(
+            timespec="microseconds"
+        ).replace("+00:00", "Z")
+        with store._connect() as connection:
+            connection.execute(
+                """UPDATE adult_tasks SET status='running',lease_owner='worker-1',
+                   lease_expires_at=?,lease_generation=2,state_version=1
+                   WHERE task_id=?""",
+                (expired, task.task_id),
+            )
+        stale = TaskLease._from_store(task.task_id, "worker-1", 1, expired, 1)
+        with self.assertRaises(LeaseLost):
+            store.transition(
+                task.task_id, {"running"}, "checkpointed", "state_transition", 1,
+                lease=stale,
+            )
+        current = store.get_task(task.task_id)
+        self.assertEqual(("running", 1), (current.status, current.state_version))
+        self.assertEqual(1, len(store.list_events(task.task_id)))
+
+    def test_generic_transition_cannot_bypass_resume_or_waiting_user_gates(self):
+        from agent.adult.adult_task_store import UserApprovalRequired
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        with self.assertRaises(UserApprovalRequired):
+            store.transition(task.task_id, {"queued"}, "waiting_user", "state_transition", 0)
+        with store._connect() as connection:
+            connection.execute(
+                """UPDATE adult_tasks SET status='checkpointed',state_version=1
+                   WHERE task_id=?""",
+                (task.task_id,),
+            )
+        with self.assertRaises(UserApprovalRequired):
+            store.transition(task.task_id, {"checkpointed"}, "queued", "state_transition", 1)
+
+    def test_transition_rejects_empty_expected_status_and_unsafe_event_metadata(self):
+        from agent.adult.models import AdultModelValidationError, AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        with self.assertRaises(AdultModelValidationError):
+            store.transition(task.task_id, set(), "failed", "state_transition", 0)
+        with self.assertRaises(AdultModelValidationError):
+            store.transition(
+                task.task_id, {"queued"}, "failed", "state_transition", 0,
+                metadata={"note": "https://example.com"},
+            )
+        self.assertEqual(("queued", 0), (
+            store.get_task(task.task_id).status, store.get_task(task.task_id).state_version,
+        ))
+        self.assertEqual(1, len(store.list_events(task.task_id)))
+
+
 if __name__ == "__main__":
     unittest.main()
