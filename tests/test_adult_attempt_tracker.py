@@ -63,6 +63,17 @@ class AdultAttemptTrackerTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def _isolated_task(self, name, budget):
+        db_path = Path(self.temp.name) / f"{name}.sqlite3"
+        store = AdultTaskStore(db_path)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", f"hmac-sha256:{name}0123456789abcdef"),
+            budget,
+        )
+        lease = store.claim_task(task.task_id, f"worker-{name}", lease_seconds=300)
+        tracker = AdultAttemptTracker(store)
+        return store, task, lease, tracker
+
     def begin(self, selected_route=None, *, input_fp=INPUT_FP, config_fp=CONFIG_FP, retry_reason=None):
         return self.tracker.begin(
             self.task.task_id, self.task.current_step_id, selected_route or route(),
@@ -190,77 +201,71 @@ class AdultAttemptTrackerTests(unittest.TestCase):
         self.assertEqual([], self.query("SELECT * FROM adult_attempts"))
 
     def test_local_route_does_not_consume_provider_call_budget(self):
-        local_task = self.store.create_task(
-            AdultTaskRequest("text.analyze", "hmac-sha256:local0123456789abcdef"),
-            TaskBudget(max_total_attempts=2, max_provider_calls=0),
+        store, local_task, _lease, tracker = self._isolated_task(
+            "local-route", TaskBudget(max_total_attempts=2, max_provider_calls=0)
         )
-        self.store.claim_task(local_task.task_id, "worker-local", lease_seconds=300)
         local_route = route(adapter_id="local-adapter", provider_id=None, cost_class="local")
-        handle = self.tracker.begin(
+        handle = tracker.begin(
             local_task.task_id, local_task.current_step_id, local_route, INPUT_FP, CONFIG_FP
         )
-        task = self.query(
-            "SELECT total_attempts,provider_calls FROM adult_tasks WHERE task_id=?",
-            (local_task.task_id,),
-        )[0]
+        with store._connect() as connection:
+            task = connection.execute(
+                "SELECT total_attempts,provider_calls FROM adult_tasks WHERE task_id=?",
+                (local_task.task_id,),
+            ).fetchone()
         self.assertEqual((1, 0), tuple(task))
-        self.tracker.succeed(handle, None, None, 0)
+        tracker.succeed(handle, None, None, 0)
 
     def test_total_attempt_budget_fails_before_a_new_attempt_row(self):
-        budget_task = self.store.create_task(
-            AdultTaskRequest("text.analyze", "hmac-sha256:budget0123456789abc"),
-            TaskBudget(max_total_attempts=1, max_provider_calls=5),
+        store, budget_task, _lease, tracker = self._isolated_task(
+            "attempt-budget", TaskBudget(max_total_attempts=1, max_provider_calls=5)
         )
-        self.store.claim_task(budget_task.task_id, "worker-budget", lease_seconds=300)
-        self.tracker.begin(
+        tracker.begin(
             budget_task.task_id, budget_task.current_step_id, route(), INPUT_FP, CONFIG_FP
         )
         with self.assertRaises(AttemptBudgetExhausted):
-            self.tracker.begin(
+            tracker.begin(
                 budget_task.task_id, budget_task.current_step_id,
                 route(adapter_id="different"), INPUT_FP, CONFIG_FP,
             )
-        count = self.query(
-            "SELECT COUNT(*) FROM adult_attempts WHERE task_id=?", (budget_task.task_id,)
-        )[0][0]
+        with store._connect() as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM adult_attempts WHERE task_id=?", (budget_task.task_id,)
+            ).fetchone()[0]
         self.assertEqual(1, count)
 
     def test_provider_call_budget_fails_before_a_new_provider_attempt(self):
-        budget_task = self.store.create_task(
-            AdultTaskRequest("text.analyze", "hmac-sha256:providerbudget012345"),
-            TaskBudget(max_total_attempts=5, max_provider_calls=1),
+        _store, budget_task, _lease, tracker = self._isolated_task(
+            "provider-budget", TaskBudget(max_total_attempts=5, max_provider_calls=1)
         )
-        self.store.claim_task(budget_task.task_id, "worker-provider", lease_seconds=300)
-        first = self.tracker.begin(
+        first = tracker.begin(
             budget_task.task_id, budget_task.current_step_id, route(), INPUT_FP, CONFIG_FP
         )
-        self.tracker.fail(first, "PROVIDER_ERROR", "Temporary provider failure.", True)
+        tracker.fail(first, "PROVIDER_ERROR", "Temporary provider failure.", True)
         with self.assertRaises(AttemptBudgetExhausted):
-            self.tracker.begin(
+            tracker.begin(
                 budget_task.task_id, budget_task.current_step_id,
                 route(adapter_id="different"), INPUT_FP, CONFIG_FP,
             )
 
     def test_five_failures_block_the_sixth_attempt_until_approval(self):
-        task = self.store.create_task(
-            AdultTaskRequest("text.analyze", "hmac-sha256:fivefailures012345678"),
-            TaskBudget(max_total_attempts=20, max_provider_calls=20),
+        _store, task, _lease, tracker = self._isolated_task(
+            "five-failures", TaskBudget(max_total_attempts=20, max_provider_calls=20)
         )
-        self.store.claim_task(task.task_id, "worker-five", lease_seconds=300)
         for index in range(5):
             selected = route(adapter_id=f"adapter-{index}")
-            handle = self.tracker.begin(
+            handle = tracker.begin(
                 task.task_id, task.current_step_id, selected,
                 INPUT_FP, CONFIG_FP,
             )
-            self.tracker.fail(handle, "PROVIDER_ERROR", "Transient backend failure.", True)
-        self.assertEqual(5, self.tracker.failures_since_approval(task.task_id))
+            tracker.fail(handle, "PROVIDER_ERROR", "Transient backend failure.", True)
+        self.assertEqual(5, tracker.failures_since_approval(task.task_id))
         with self.assertRaises(AttemptApprovalRequired):
-            self.tracker.begin(
+            tracker.begin(
                 task.task_id, task.current_step_id, route(adapter_id="sixth-adapter"),
                 INPUT_FP, CONFIG_FP,
             )
-        self.assertEqual(5, self.tracker.total_attempts(task.task_id))
+        self.assertEqual(5, tracker.total_attempts(task.task_id))
 
     def test_crash_after_begin_is_recovered_as_unknown_only_after_lease_recovery(self):
         handle = self.begin()
