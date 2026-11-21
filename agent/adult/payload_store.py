@@ -395,7 +395,7 @@ class AdultArtifactStore:
         self.cache = cache if cache is not None else TransientPayloadCache()
         self._clock = clock
         self._lock = threading.RLock()
-        self._transient_artifacts: OrderedDict[str, tuple[str, str, int]] = OrderedDict()
+        self._transient_artifacts: OrderedDict[str, tuple[str, str, int, str]] = OrderedDict()
 
         configured_root = root if root is not None else os.environ.get("ADULT_PAYLOAD_DIR", "")
         candidate = Path(configured_root).expanduser() if configured_root else _DEFAULT_ROOT
@@ -745,7 +745,7 @@ class AdultArtifactStore:
                 self.cache._put_reference(task_id, artifact_id, data, kind="output")
                 while len(self._transient_artifacts) >= self.cache._max_entries:
                     self._transient_artifacts.popitem(last=False)
-                self._transient_artifacts[artifact_id] = (task_id, mime_type, len(data))
+                self._transient_artifacts[artifact_id] = (task_id, mime_type, len(data), attempt_id)
                 return ArtifactRef(artifact_id, task_id, mime_type, len(data), False, None)
             expiry = self._persist_encrypted(
                 payload_id=artifact_id, task_id=task_id, kind="output",
@@ -769,7 +769,7 @@ class AdultArtifactStore:
                 if transient_info is None:
                     raise PayloadNotFound("Artifact is unavailable.")
                 self._transient_artifacts.move_to_end(artifact_id)
-                task_id, mime_type, expected_size = transient_info
+                task_id, mime_type, expected_size, _attempt_id = transient_info
                 data = self.cache.get(task_id, artifact_id)
                 if data is None:
                     self._transient_artifacts.pop(artifact_id, None)
@@ -799,6 +799,41 @@ class AdultArtifactStore:
                 artifact_id, offset, chunk, len(data), mime_type,
                 next_offset, next_offset >= len(data),
             )
+
+    def discard_output(self, artifact_id: str, task_id: str, attempt_id: str) -> bool:
+        """Discard one uncommitted output owned by the exact task and attempt.
+
+        Returns False when the artifact is already absent. Ownership mismatches
+        fail closed; callers never provide or influence a filesystem path.
+        """
+        _validate_payload_id(artifact_id)
+        _validate_task_id(task_id)
+        _validate_task_id(attempt_id)
+        with self._lock:
+            record = self._get_record(artifact_id)
+            if record is not None:
+                if (
+                    record["task_id"] != task_id
+                    or record["kind"] != "output"
+                    or record["source_attempt_id"] != attempt_id
+                ):
+                    raise PayloadNotFound("Artifact does not belong to this task attempt.")
+                try:
+                    self._payload_path(artifact_id).unlink(missing_ok=True)
+                except OSError as exc:
+                    raise PayloadStorageError("Uncommitted artifact could not be discarded safely.") from exc
+                self._remove_records([artifact_id])
+                return True
+
+            transient_info = self._transient_artifacts.get(artifact_id)
+            if transient_info is None:
+                return False
+            stored_task_id, _mime_type, _size, stored_attempt_id = transient_info
+            if stored_task_id != task_id or stored_attempt_id != attempt_id:
+                raise PayloadNotFound("Artifact does not belong to this task attempt.")
+            self.cache.discard_ref(task_id, artifact_id)
+            self._transient_artifacts.pop(artifact_id, None)
+            return True
 
     def delete_task_inputs(self, task_id: str) -> int:
         """Delete retained and transient inputs after task completion or cancellation."""
