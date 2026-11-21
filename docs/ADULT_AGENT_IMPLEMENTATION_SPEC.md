@@ -1155,11 +1155,16 @@ The normative Stage 6 execution contract is [ADULT_AGENT_STAGE6_IMPLEMENTATION_S
 
 ### Stage 7 — Text pipeline and evaluator
 
-- Implement analyze/generate/rewrite operations with policy gate and bounded output.
-- Implement deterministic text checks.
-- Test offline behavior and model failures.
+The normative Stage 7 execution contract is [ADULT_AGENT_STAGE7_IMPLEMENTATION_SPEC.md](ADULT_AGENT_STAGE7_IMPLEMENTATION_SPEC.md).
 
-**Gate:** complete text workflow with mock adapters; full suite green.
+- Implement one bounded analyze/generate/rewrite attempt per pipeline invocation.
+- Enforce deterministic input/output policy gates and output limits.
+- Keep model text ephemeral until evaluation and output policy both accept it.
+- Publish text/plain artifacts only after acceptance; record all dispatched attempts through Stage 5 AttemptTracker.
+- Test offline behavior, route/cost restrictions, adapter failures, output rejection, and artifact cleanup with fake adapters only.
+- Do not implement retries, Supervisor/Executor, image workflows, or MCP/Gateway integration in this stage.
+
+**Gate:** complete one-attempt text path passes with fake adapters; deterministic checks and policy gates pass; no raw text reaches durable metadata/logs; all previous-stage tests and the full suite plus CI/security checks are green.
 
 ### Stage 8 — Image pipeline and evaluator
 
