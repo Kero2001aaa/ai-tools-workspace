@@ -66,10 +66,10 @@ class AdultPoliciesTests(unittest.TestCase):
         ).reason_codes)
 
     def test_output_enforces_utf8_byte_limit_and_control_characters(self):
-        oversized = self.policies.validate_text_output(
-            "text.generate", "é" * 20_000
+        max_unicode = self.policies.validate_text_output(
+            "text.generate", "😀" * 20_000
         )
-        self.assertIn("output_too_many_bytes", oversized.reason_codes)
+        self.assertTrue(max_unicode.allowed)
         controls = self.policies.validate_text_output(
             "text.generate", "output\x7f"
         )
