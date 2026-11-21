@@ -379,12 +379,15 @@ class AdultTaskStore:
                 raise TaskTerminal("Terminal tasks cannot transition.")
             if current not in expected_status or row["state_version"] != expected_state_version:
                 raise StaleTaskVersion("Task status or state version changed.")
-            if new_status not in _ALLOWED_TRANSITIONS[current]:
-                raise InvalidTaskTransition("Requested task transition is not allowed.")
+            # Guard dedicated control-flow paths before checking the generic graph,
+            # so callers receive the actionable policy error rather than a generic
+            # invalid-transition error.
             if current in {"waiting_user", "needs_input", "paused"} and new_status == "queued":
                 raise UserApprovalRequired("Use the dedicated resume operation for this transition.")
             if new_status == "waiting_user":
                 raise UserApprovalRequired("Use set_waiting_user to enforce the five-failure approval gate.")
+            if new_status not in _ALLOWED_TRANSITIONS[current]:
+                raise InvalidTaskTransition("Requested task transition is not allowed.")
             if new_status in ACTIVE_STATUSES and current not in ACTIVE_STATUSES:
                 raise LeaseNotAvailable("Active states can only be entered by claim_task.")
             if row["cancel_requested"] and new_status != "cancelled":
