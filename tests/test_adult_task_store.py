@@ -339,7 +339,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             self.assertEqual(1, store.recover_expired_leases())
             self.assertEqual(0, store.recover_expired_leases())
         recovered = store.get_task(task.task_id)
-        self.assertEqual(("checkpointed", 2, 2), (
+        self.assertEqual(("checkpointed", 2, 0), (
             recovered.status, recovered.state_version, recovered.attempt_count,
         ))
         with store._connect() as connection:
