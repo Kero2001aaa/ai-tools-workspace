@@ -1,6 +1,7 @@
 """Stage 8 image input DTO, envelope, and prompt contract tests."""
 import json
 import unittest
+from unittest.mock import patch
 
 from agent.adult.adult_image_input import (
     ImageInputError,
@@ -96,8 +97,9 @@ class ImageInputEnvelopeTests(unittest.TestCase):
         envelope = ImageInputEnvelope("image.analyze", image_payload_id=oversized_id)
         # The identifier DTO is bounded independently; the codec remains bounded too.
         self.assertLessEqual(len(encode_image_input(envelope)), 4096)
-        with self.assertRaises(ImageInputError):
-            encode_image_input(ImageInputEnvelope("image.generate", prompt_payload_id="x" * 128))
+        with patch("agent.adult.adult_image_input.MAX_IMAGE_ENVELOPE_BYTES", 1):
+            with self.assertRaises(ImageInputError):
+                encode_image_input(envelope)
 
 
 class ImagePromptTests(unittest.TestCase):

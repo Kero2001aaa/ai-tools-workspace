@@ -92,7 +92,7 @@ class ImageAdapterResult:
         if not isinstance(self.image_bytes, bytes):
             raise AdultModelValidationError("Image adapter output must be bytes.")
         _integer("image_bytes", len(self.image_bytes), 1, 20 * 1024 * 1024)
-        if self.mime_type not in {"image/png", "image/jpeg", "image/webp"}:
+        if not isinstance(self.mime_type, str) or self.mime_type not in {"image/png", "image/jpeg", "image/webp"}:
             raise AdultModelValidationError("Image adapter output MIME type is unsupported.")
         _validate_image_result_usage(self.usage, self.cost_microusd)
 

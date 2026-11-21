@@ -70,7 +70,7 @@ def decode_image_input(data: bytes, expected_task_type: str) -> ImageInputEnvelo
         raise ImageInputError("invalid_envelope")
     if len(data) > MAX_IMAGE_ENVELOPE_BYTES:
         raise ImageInputError("input_too_large")
-    if expected_task_type not in _IMAGE_TASK_TYPES:
+    if not isinstance(expected_task_type, str) or expected_task_type not in _IMAGE_TASK_TYPES:
         raise ImageInputError("invalid_envelope")
     try:
         decoded = data.decode("utf-8", "strict")

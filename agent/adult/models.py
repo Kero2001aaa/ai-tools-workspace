@@ -177,7 +177,7 @@ class ImageInputEnvelope:
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != 1:
             raise AdultModelValidationError("Image input schema_version must equal integer 1.")
-        if self.task_type not in {"image.analyze", "image.generate", "image.edit"}:
+        if not isinstance(self.task_type, str) or self.task_type not in {"image.analyze", "image.generate", "image.edit"}:
             raise AdultModelValidationError("Image input task_type is unsupported.")
         if self.task_type == "image.analyze":
             _identifier("image_payload_id", self.image_payload_id)
@@ -216,7 +216,7 @@ class ValidatedImage:
     sha256: str
 
     def __post_init__(self) -> None:
-        if self.mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+        if not isinstance(self.mime_type, str) or self.mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
             raise AdultModelValidationError("Validated image MIME type is unsupported.")
         _integer("byte_count", self.byte_count, 1, MAX_IMAGE_OUTPUT_BYTES)
         _integer("width", self.width, 1, MAX_IMAGE_DIMENSION)
