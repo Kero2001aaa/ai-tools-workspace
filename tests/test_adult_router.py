@@ -18,10 +18,10 @@ INPUT_FP = "hmac-sha256:0123456789abcdef0123456789abcdef"
 CONFIG_FP = "hmac-sha256:abcdef0123456789abcdef0123456789"
 
 
-def free_text_spec(adapter_id, provider_id, model_id):
+def free_text_spec(adapter_id, provider_id, model_id, model_version="1"):
     return ModelCapabilitySpec(
         adapter_id=adapter_id, adapter_version="1", provider_id=provider_id,
-        model_id=model_id, model_version="1", task_type="text.analyze",
+        model_id=model_id, model_version=model_version, task_type="text.analyze",
         input_modalities=("text",), output_modalities=("text",), cost_class="free_verified",
     )
 
@@ -97,7 +97,7 @@ class AdultRouterTests(unittest.TestCase):
         before, _ = AdultAttemptTracker.approach_keys("text.analyze", route, INPUT_FP, CONFIG_FP)
         revised = self.registry.revise(
             enabled.capability_id,
-            free_text_spec("adapter-a", "provider-a", "model-a"),
+            free_text_spec("adapter-a", "provider-a", "model-a", model_version="2"),
             enabled.state_version,
         )
         verified_again = self.registry.verify(revised.capability_id, evidence(), revised.state_version)

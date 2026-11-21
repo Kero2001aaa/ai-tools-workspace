@@ -32,14 +32,14 @@ def text_spec(*, adapter_id="mock-adapter", provider_id="mock-provider",
     )
 
 
-def provider_evidence(*, cost=True, expires_at=FUTURE):
+def provider_evidence(*, cost=True, verified_at=STAMP, expires_at=FUTURE):
     return CapabilityEvidence(
         capability_source="official_provider_docs",
         capability_reference="https://provider.example/docs/model",
-        verified_at=STAMP, expires_at=expires_at,
+        verified_at=verified_at, expires_at=expires_at,
         cost_source="official_provider_pricing" if cost else None,
         cost_reference="https://provider.example/pricing" if cost else None,
-        cost_verified_at=STAMP if cost else None,
+        cost_verified_at=verified_at if cost else None,
         cost_expires_at=COST_FUTURE if cost else None,
     )
 
@@ -102,7 +102,10 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
 
     def test_expired_capability_or_cost_evidence_is_rejected(self):
         record = self.registry.register(text_spec())
-        expired = provider_evidence(expires_at="2026-11-21T11:59:59.000000Z")
+        expired = provider_evidence(
+            verified_at="2026-11-20T12:00:00.000000Z",
+            expires_at="2026-11-21T11:59:59.000000Z",
+        )
         with self.assertRaises(CapabilityEvidenceError):
             self.registry.verify(record.capability_id, expired, record.state_version)
 
