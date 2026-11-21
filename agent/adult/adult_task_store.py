@@ -756,7 +756,7 @@ class AdultTaskStore:
                 raise PayloadRetentionUnavailable(
                     "A valid local encryption key is required for encrypted payload retention."
                 ) from None
-        if request.retention_policy != "ephemeral":
+        if request.retention_policy not in {"ephemeral", "encrypted"}:
             raise AdultModelValidationError("Unsupported payload retention policy.")
 
         task_id = str(uuid.uuid4())
