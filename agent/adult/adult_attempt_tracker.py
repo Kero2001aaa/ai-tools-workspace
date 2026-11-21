@@ -92,6 +92,10 @@ class AttemptInProgress(AttemptTrackerError):
     error_code = "attempt_in_progress"
 
 
+class PolicyRejectionStopsTask(AttemptTrackerError):
+    error_code = "policy_rejected"
+
+
 class AttemptNotFound(AttemptTrackerError):
     error_code = "attempt_not_found"
 
@@ -400,7 +404,7 @@ class AdultAttemptTracker:
             raise AttemptNotAvailable("Only local or explicitly verified free routes may be attempted.")
         if route.cost_class == "free_verified" and route.provider_id is None:
             raise AttemptValidationError("A free_verified route requires a provider identifier.")
-        safe_retry_reason = _safe_text("retry_reason", retry_reason) if retry_reason is not None else None
+        safe_retry_reason = _safe_text("retry_reason", retry_reason, required=True) if retry_reason is not None else None
 
         now = self._now()
         attempt_id = uuid.uuid4().hex
@@ -428,6 +432,16 @@ class AdultAttemptTracker:
                 raise AttemptBudgetExhausted("Task wall-time budget is exhausted.")
             if task["failed_attempts_since_approval"] >= 5:
                 raise AttemptApprovalRequired("Five failed attempts require explicit user approval.")
+            policy_rejection = db.execute(
+                """SELECT 1 FROM adult_attempts
+                   WHERE task_id=? AND status='rejected'
+                     AND failure_class='policy_rejection' LIMIT 1""",
+                (task_id,),
+            ).fetchone()
+            if policy_rejection is not None:
+                raise PolicyRejectionStopsTask(
+                    "An upstream policy rejection is terminal for this task and cannot be routed around."
+                )
             if task["total_attempts"] >= task["max_total_attempts"]:
                 raise AttemptBudgetExhausted("Task attempt budget is exhausted.")
 
