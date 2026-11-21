@@ -177,7 +177,7 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
         db = self.store._connect()
         try:
             self.assertEqual(
-                ["registered", "verified", "revoked"],
+                ["registered", "verified", "revoked", "registered"],
                 [row[0] for row in db.execute(
                     "SELECT event_type FROM adult_capability_events ORDER BY rowid"
                 ).fetchall()],
