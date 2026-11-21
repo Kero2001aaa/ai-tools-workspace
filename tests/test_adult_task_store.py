@@ -193,7 +193,6 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         lease = store.claim_task(task.task_id, "approval-worker", lease_seconds=300)
         snapshot = self._checkpoint_snapshot(
             store.get_task(task.task_id), status="waiting_user",
-            failed_attempts_since_approval=4, total_attempts=4,
             pending_user_action="approval_required",
             allowed_decisions=("continue", "cancel"),
         )
