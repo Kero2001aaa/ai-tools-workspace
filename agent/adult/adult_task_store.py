@@ -382,7 +382,7 @@ class AdultTaskStore:
             # Guard dedicated control-flow paths before checking the generic graph,
             # so callers receive the actionable policy error rather than a generic
             # invalid-transition error.
-            if current in {"waiting_user", "needs_input", "paused"} and new_status == "queued":
+            if current in {"checkpointed", "waiting_user", "needs_input", "paused"} and new_status == "queued":
                 raise UserApprovalRequired("Use the dedicated resume operation for this transition.")
             if new_status == "waiting_user":
                 raise UserApprovalRequired("Use set_waiting_user to enforce the five-failure approval gate.")
