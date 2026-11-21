@@ -246,6 +246,17 @@ class AdultArtifactStoreTests(unittest.TestCase):
         self.assertEqual(0o600, stat.S_IMODE(self.store._index_path.stat().st_mode))
         self.assertEqual(0o600, stat.S_IMODE((self.root / (reference.payload_id + ".aap")).stat().st_mode))
 
+    def test_read_rejects_payload_file_with_broad_permissions(self):
+        if os.name != "posix":
+            self.skipTest("POSIX permission bits are not available.")
+        reference = self.store.save_input(
+            "task-1", b"permission escalation", "text/plain", retain_encrypted=True
+        )
+        path = self.root / (reference.payload_id + ".aap")
+        os.chmod(path, 0o644)
+        with self.assertRaises(PayloadStorageError):
+            self.store.load_input(reference.payload_id, "task-1")
+
     def test_store_rejects_symlink_root(self):
         target = self.root / "real"
         target.mkdir()
