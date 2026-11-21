@@ -23,8 +23,8 @@ _ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _SAFE_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .,;:_()'!-]{0,511}$")
 _UNSAFE_TEXT_RE = re.compile(
     r"(?i)(https?://|api[_-]?key|password|authorization|bearer|token|secret|"
-    r"credential|prompt|instruction|base64|payload|provider request|provider response|"
-    r"request body|response body|[\\/](?:home|root|users|tmp)[\\/])"
+    r"credential|prompt|instruction|base64|payload|provider request body|"
+    r"provider response body|request body|response body|[\\/](?:home|root|users|tmp)[\\/])"
 )
 _USAGE_KEYS = frozenset({
     "input_tokens", "output_tokens", "total_tokens",
