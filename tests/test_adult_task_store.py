@@ -252,6 +252,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
 
 
     def test_transition_updates_state_and_appends_event_atomically(self):
+        from agent.adult.adult_task_store import StaleTaskVersion
         from agent.adult.models import AdultTaskRequest, TaskBudget
         store = AdultTaskStore(self.db)
         task = store.create_task(
@@ -272,7 +273,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             events[-1].event_type, events[-1].from_status, events[-1].to_status,
         ))
         self.assertEqual({"reason_code": "user_cancelled"}, events[-1].metadata)
-        with self.assertRaises(Exception):
+        with self.assertRaises(StaleTaskVersion):
             store.transition(task.task_id, {"queued"}, "failed", "state_transition", 0)
 
     def test_transition_rejects_stale_status_or_version_without_partial_write(self):
@@ -408,6 +409,41 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         ))
         self.assertEqual(1, len(store.list_events(task.task_id)))
 
+
+    def test_transition_rolls_back_state_when_event_append_fails(self):
+        import sqlite3
+        from agent.adult.adult_task_store import AdultTaskStoreError
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        original_connect = store._connect
+
+        class EventFailingConnection:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+            def __getattr__(self, name):
+                return getattr(self.wrapped, name)
+            def execute(self, sql, parameters=()):
+                if sql.lstrip().upper().startswith("INSERT INTO ADULT_TASK_EVENTS"):
+                    raise sqlite3.OperationalError("injected event write failure")
+                return self.wrapped.execute(sql, parameters)
+            def close(self):
+                self.wrapped.close()
+
+        with patch.object(
+            store, "_connect",
+            side_effect=lambda: EventFailingConnection(original_connect()),
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                store.transition(
+                    task.task_id, {"queued"}, "failed", "state_transition", 0,
+                )
+        current = store.get_task(task.task_id)
+        self.assertEqual(("queued", 0), (current.status, current.state_version))
+        self.assertEqual(1, len(store.list_events(task.task_id)))
 
 if __name__ == "__main__":
     unittest.main()
