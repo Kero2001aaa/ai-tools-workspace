@@ -252,7 +252,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
 
 
     def test_transition_updates_state_and_appends_event_atomically(self):
-        from agent.adult.adult_task_store import StaleTaskVersion
+        from agent.adult.adult_task_store import TaskTerminal
         from agent.adult.models import AdultTaskRequest, TaskBudget
         store = AdultTaskStore(self.db)
         task = store.create_task(
@@ -273,7 +273,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             events[-1].event_type, events[-1].from_status, events[-1].to_status,
         ))
         self.assertEqual({"reason_code": "user_cancelled"}, events[-1].metadata)
-        with self.assertRaises(StaleTaskVersion):
+        with self.assertRaises(TaskTerminal):
             store.transition(task.task_id, {"queued"}, "failed", "state_transition", 0)
 
     def test_transition_rejects_stale_status_or_version_without_partial_write(self):
