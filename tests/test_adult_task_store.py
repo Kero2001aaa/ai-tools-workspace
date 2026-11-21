@@ -667,13 +667,14 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             self.assertEqual({
                 "adult_schema_migrations", "adult_tasks", "adult_steps",
                 "adult_checkpoints", "adult_task_events", "adult_attempts",
-                "adult_attempt_events",
+                "adult_attempt_events", "adult_model_capabilities",
+                "adult_capability_events",
             }, tables)
             migrations = connection.execute(
                 "SELECT version,name FROM adult_schema_migrations ORDER BY version"
             ).fetchall()
             self.assertEqual(
-                [(1, SCHEMA_NAME), (2, ATTEMPT_SCHEMA_NAME)],
+                [(1, SCHEMA_NAME), (2, ATTEMPT_SCHEMA_NAME), (3, CAPABILITY_SCHEMA_NAME)],
                 [tuple(row) for row in migrations],
             )
             self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
@@ -694,15 +695,21 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             }
             connection.execute("BEGIN IMMEDIATE")
             for trigger in (
+                "validate_adult_capability_update", "prevent_adult_capabilities_delete",
+                "prevent_adult_capability_events_update", "prevent_adult_capability_events_delete",
                 "validate_adult_attempt_update", "prevent_adult_attempts_delete",
                 "prevent_adult_attempt_events_update", "prevent_adult_attempt_events_delete",
             ):
                 connection.execute(f"DROP TRIGGER {trigger}")
             for index in (
+                "idx_adult_capability_identity",
                 "idx_adult_attempts_task_no", "idx_adult_attempts_approach",
                 "idx_adult_attempts_one_running", "idx_adult_attempt_events_task_created",
             ):
                 connection.execute(f"DROP INDEX {index}")
+            connection.execute("DROP TABLE adult_capability_events")
+            connection.execute("DROP TABLE adult_model_capabilities")
+            connection.execute("DELETE FROM adult_schema_migrations WHERE version=3")
             connection.execute("DROP TABLE adult_attempt_events")
             connection.execute("DROP TABLE adult_attempts")
             connection.execute("DELETE FROM adult_schema_migrations WHERE version=2")
@@ -720,7 +727,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
                     "SELECT version,name FROM adult_schema_migrations ORDER BY version"
                 )
             ]
-            self.assertEqual([(1, SCHEMA_NAME), (2, ATTEMPT_SCHEMA_NAME)], migrations)
+            self.assertEqual([(1, SCHEMA_NAME), (2, ATTEMPT_SCHEMA_NAME), (3, CAPABILITY_SCHEMA_NAME)], migrations)
             self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
             self.assertEqual([], connection.execute("PRAGMA foreign_key_check").fetchall())
         self.assertEqual(before, after)

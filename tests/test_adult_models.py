@@ -4,6 +4,10 @@ import unittest
 from agent.adult.models import (
     AdultModelValidationError,
     AdultTaskRequest,
+    CapabilityEvidence,
+    CapabilityQuery,
+    CostPolicy,
+    ModelCapabilitySpec,
     CheckpointSnapshot,
     StepRecord,
     TaskBudget,
@@ -53,6 +57,52 @@ class AdultModelTests(unittest.TestCase):
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(AdultModelValidationError):
                 TaskBudget(**kwargs)
+
+
+    def test_capability_spec_rejects_unverified_modality_and_wildcard_mime(self):
+        base = {
+            "adapter_id": "mock-adapter", "adapter_version": "1",
+            "task_type": "image.analyze", "input_modalities": ("image",),
+            "output_modalities": ("text",), "cost_class": "local",
+            "accepted_mime_types": ("image/png",), "max_input_bytes": 1024,
+            "max_input_width": 1024, "max_input_height": 1024,
+        }
+        self.assertEqual("image.analyze", ModelCapabilitySpec(**base).task_type)
+        with self.assertRaises(AdultModelValidationError):
+            ModelCapabilitySpec(**{**base, "input_modalities": ("text",)})
+        with self.assertRaises(AdultModelValidationError):
+            ModelCapabilitySpec(**{**base, "accepted_mime_types": ("image/*",)})
+
+    def test_capability_evidence_requires_separate_complete_cost_evidence(self):
+        evidence = CapabilityEvidence(
+            capability_source="official_provider_docs",
+            capability_reference="https://provider.example/docs/model",
+            verified_at=STAMP, expires_at="2026-12-21T00:00:00.000000Z",
+            cost_source="official_provider_pricing",
+            cost_reference="https://provider.example/pricing",
+            cost_verified_at=STAMP, cost_expires_at="2026-11-28T00:00:00.000000Z",
+        )
+        self.assertEqual("official_provider_pricing", evidence.cost_source)
+        with self.assertRaises(AdultModelValidationError):
+            CapabilityEvidence(
+                capability_source="official_provider_docs",
+                capability_reference="https://provider.example/docs/model",
+                verified_at=STAMP, expires_at="2026-12-21T00:00:00.000000Z",
+                cost_source="official_provider_pricing",
+            )
+
+    def test_capability_query_and_cost_policy_are_zero_cost_bounded(self):
+        query = CapabilityQuery(
+            task_type="text.analyze", input_modalities=("text",),
+            output_modality="text", input_fingerprint=FINGERPRINT,
+            config_fingerprint=FINGERPRINT,
+        )
+        self.assertEqual("text.analyze", query.task_type)
+        self.assertEqual(0, CostPolicy(max_provider_calls=0).max_provider_calls)
+        with self.assertRaises(AdultModelValidationError):
+            CostPolicy(max_provider_calls=True)
+        with self.assertRaises(AdultModelValidationError):
+            CostPolicy(max_provider_calls=1, max_cost_microusd=1)
 
     def test_task_lease_cannot_be_constructed_by_callers(self):
         with self.assertRaises(TypeError):

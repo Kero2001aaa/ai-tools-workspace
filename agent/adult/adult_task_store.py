@@ -5,6 +5,7 @@ This module deliberately contains no provider, network, payload, or inference co
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import binascii
 import json
 import os
@@ -14,7 +15,7 @@ import stat
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Iterator, Literal
 
 from agent.adult.models import (
     AdultModelValidationError, AdultTaskRequest, AdultTaskSnapshot,
@@ -219,9 +220,11 @@ _SCHEMA: Final[tuple[str, ...]] = (
        BEGIN SELECT RAISE(ABORT, 'adult task events are append-only'); END""",
 )
 
-LATEST_SCHEMA_VERSION: Final = 2
+LATEST_SCHEMA_VERSION: Final = 3
 ATTEMPT_SCHEMA_VERSION: Final = 2
 ATTEMPT_SCHEMA_NAME: Final = "adult_attempt_tracking_v2"
+CAPABILITY_SCHEMA_VERSION: Final = 3
+CAPABILITY_SCHEMA_NAME: Final = "adult_capability_registry_v3"
 
 _ATTEMPT_SCHEMA: Final[tuple[str, ...]] = (
     """CREATE TABLE adult_attempts (
@@ -320,6 +323,92 @@ _ATTEMPT_SCHEMA: Final[tuple[str, ...]] = (
        BEGIN SELECT RAISE(ABORT, 'adult attempt events are append-only'); END""",
 )
 
+_CAPABILITY_SCHEMA: Final[tuple[str, ...]] = (
+    """CREATE TABLE adult_model_capabilities (
+        capability_id TEXT PRIMARY KEY CHECK(length(capability_id) BETWEEN 16 AND 128),
+        adapter_id TEXT NOT NULL CHECK(length(adapter_id) BETWEEN 1 AND 128),
+        adapter_version TEXT NOT NULL CHECK(length(adapter_version) BETWEEN 1 AND 128),
+        provider_id TEXT CHECK(provider_id IS NULL OR length(provider_id) BETWEEN 1 AND 128),
+        model_id TEXT CHECK(model_id IS NULL OR length(model_id) BETWEEN 1 AND 128),
+        model_version TEXT CHECK(model_version IS NULL OR length(model_version) BETWEEN 1 AND 128),
+        task_type TEXT NOT NULL CHECK(task_type IN (
+            'text.analyze','text.generate','text.rewrite',
+            'image.analyze','image.generate','image.edit')),
+        capability_json TEXT NOT NULL
+            CHECK(json_valid(capability_json) AND json_type(capability_json)='object'
+              AND length(CAST(capability_json AS BLOB)) <= 8192),
+        cost_class TEXT NOT NULL CHECK(cost_class IN ('local','free_verified','paid','unknown')),
+        enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+        verification_status TEXT NOT NULL DEFAULT 'unverified'
+            CHECK(verification_status IN ('unverified','verified','revoked')),
+        capability_version TEXT NOT NULL
+            CHECK(length(capability_version)=64 AND capability_version NOT GLOB '*[^0-9a-f]*'),
+        capability_verified_at TEXT,
+        capability_expires_at TEXT,
+        capability_evidence_source TEXT CHECK(capability_evidence_source IN (
+            'official_provider_docs','official_adapter_docs','local_adapter_smoke_test')),
+        capability_evidence_ref TEXT CHECK(capability_evidence_ref IS NULL OR length(capability_evidence_ref) BETWEEN 1 AND 512),
+        cost_verified_at TEXT,
+        cost_expires_at TEXT,
+        cost_evidence_source TEXT CHECK(cost_evidence_source IN (
+            'official_provider_pricing','official_free_tier_terms','local_execution_contract')),
+        cost_evidence_ref TEXT CHECK(cost_evidence_ref IS NULL OR length(cost_evidence_ref) BETWEEN 1 AND 512),
+        state_version INTEGER NOT NULL DEFAULT 1 CHECK(state_version >= 1),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK(cost_class <> 'free_verified' OR (provider_id IS NOT NULL AND model_id IS NOT NULL)),
+        CHECK(enabled = 0 OR verification_status = 'verified'),
+        CHECK(verification_status <> 'verified' OR (
+            capability_verified_at IS NOT NULL AND capability_expires_at IS NOT NULL
+            AND capability_evidence_source IS NOT NULL AND capability_evidence_ref IS NOT NULL
+        )),
+        CHECK(enabled = 0 OR cost_class <> 'free_verified' OR (
+            cost_verified_at IS NOT NULL AND cost_expires_at IS NOT NULL
+            AND cost_evidence_source IS NOT NULL AND cost_evidence_ref IS NOT NULL
+        )),
+        CHECK(cost_verified_at IS NULL OR (
+            cost_expires_at IS NOT NULL AND cost_evidence_source IS NOT NULL
+            AND cost_evidence_ref IS NOT NULL
+        ))
+    )""",
+    """CREATE TABLE adult_capability_events (
+        event_id TEXT PRIMARY KEY CHECK(length(event_id) BETWEEN 16 AND 128),
+        capability_id TEXT NOT NULL REFERENCES adult_model_capabilities(capability_id) ON DELETE RESTRICT,
+        event_type TEXT NOT NULL CHECK(event_type IN (
+            'registered','verified','revised','enabled','disabled','revoked')),
+        from_state TEXT CHECK(from_state IS NULL OR length(from_state) <= 32),
+        to_state TEXT NOT NULL CHECK(length(to_state) BETWEEN 1 AND 32),
+        reason_code TEXT CHECK(reason_code IS NULL OR length(reason_code) BETWEEN 1 AND 64),
+        previous_version TEXT CHECK(previous_version IS NULL OR (length(previous_version)=64 AND previous_version NOT GLOB '*[^0-9a-f]*')),
+        capability_version TEXT NOT NULL CHECK(length(capability_version)=64 AND capability_version NOT GLOB '*[^0-9a-f]*'),
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+            CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'
+              AND length(CAST(metadata_json AS BLOB)) <= 2048),
+        created_at TEXT NOT NULL
+    )""",
+    "CREATE UNIQUE INDEX idx_adult_capability_identity ON adult_model_capabilities(adapter_id,ifnull(provider_id,''),ifnull(model_id,''),task_type)",
+    """CREATE TRIGGER validate_adult_capability_update BEFORE UPDATE ON adult_model_capabilities
+       WHEN NEW.capability_id IS NOT OLD.capability_id
+         OR NEW.created_at IS NOT OLD.created_at
+         OR NEW.state_version <> OLD.state_version + 1
+         OR (OLD.verification_status='revoked' AND NEW.verification_status<>'revoked')
+         OR (NEW.enabled=1 AND (
+              NEW.verification_status<>'verified'
+              OR NEW.capability_expires_at IS NULL
+              OR NEW.capability_expires_at<=NEW.updated_at
+              OR (NEW.cost_class='free_verified' AND (
+                   NEW.cost_expires_at IS NULL OR NEW.cost_expires_at<=NEW.updated_at
+              ))
+         ))
+       BEGIN SELECT RAISE(ABORT, 'invalid adult capability mutation'); END""",
+    """CREATE TRIGGER prevent_adult_capabilities_delete BEFORE DELETE ON adult_model_capabilities
+       BEGIN SELECT RAISE(ABORT, 'adult capability history is immutable'); END""",
+    """CREATE TRIGGER prevent_adult_capability_events_update BEFORE UPDATE ON adult_capability_events
+       BEGIN SELECT RAISE(ABORT, 'adult capability events are append-only'); END""",
+    """CREATE TRIGGER prevent_adult_capability_events_delete BEFORE DELETE ON adult_capability_events
+       BEGIN SELECT RAISE(ABORT, 'adult capability events are append-only'); END""",
+)
+
 _EXPECTED_TABLES_V1: Final = {
     "adult_schema_migrations", "adult_tasks", "adult_steps",
     "adult_checkpoints", "adult_task_events",
@@ -344,6 +433,17 @@ _EXPECTED_TRIGGERS_V2: Final = _EXPECTED_TRIGGERS_V1 | {
     "validate_adult_attempt_update", "prevent_adult_attempts_delete",
     "prevent_adult_attempt_events_update", "prevent_adult_attempt_events_delete",
 }
+_EXPECTED_TABLES_V3: Final = _EXPECTED_TABLES_V2 | {
+    "adult_model_capabilities", "adult_capability_events",
+}
+_EXPECTED_INDEXES_V3: Final = _EXPECTED_INDEXES_V2 | {
+    "idx_adult_capability_identity",
+}
+_EXPECTED_TRIGGERS_V3: Final = _EXPECTED_TRIGGERS_V2 | {
+    "validate_adult_capability_update", "prevent_adult_capabilities_delete",
+    "prevent_adult_capability_events_update", "prevent_adult_capability_events_delete",
+}
+
 
 
 _ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
@@ -398,6 +498,29 @@ class AdultTaskStore:
             (ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME, _utc_now()),
         )
 
+    def _apply_capability_migration(self, connection: sqlite3.Connection) -> None:
+        for statement in _CAPABILITY_SCHEMA:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO adult_schema_migrations(version,name,applied_at) VALUES(?,?,?)",
+            (CAPABILITY_SCHEMA_VERSION, CAPABILITY_SCHEMA_NAME, _utc_now()),
+        )
+
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        """Provide the one bounded transaction boundary used by Adult repositories."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            yield connection
+            connection.commit()
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _migrate(self) -> None:
         connection = self._connect()
         try:
@@ -414,6 +537,8 @@ class AdultTaskStore:
                 )
                 self._validate_schema(connection, schema_version=SCHEMA_VERSION)
                 self._apply_attempt_migration(connection)
+                self._validate_schema(connection, schema_version=ATTEMPT_SCHEMA_VERSION)
+                self._apply_capability_migration(connection)
                 self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
                 connection.commit()
                 return
@@ -424,11 +549,18 @@ class AdultTaskStore:
             history = [(row["version"], row["name"]) for row in rows]
             expected_v1 = [(SCHEMA_VERSION, SCHEMA_NAME)]
             expected_v2 = expected_v1 + [(ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME)]
+            expected_v3 = expected_v2 + [(CAPABILITY_SCHEMA_VERSION, CAPABILITY_SCHEMA_NAME)]
             if history == expected_v1:
                 self._validate_schema(connection, schema_version=SCHEMA_VERSION)
                 self._apply_attempt_migration(connection)
+                self._validate_schema(connection, schema_version=ATTEMPT_SCHEMA_VERSION)
+                self._apply_capability_migration(connection)
                 self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
             elif history == expected_v2:
+                self._validate_schema(connection, schema_version=ATTEMPT_SCHEMA_VERSION)
+                self._apply_capability_migration(connection)
+                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
+            elif history == expected_v3:
                 self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
             else:
                 raise TaskStoreSchemaError("Unsupported Adult task database migration history.")
@@ -448,10 +580,14 @@ class AdultTaskStore:
             expected_tables = _EXPECTED_TABLES_V1
             expected_indexes = _EXPECTED_INDEXES_V1
             expected_triggers = _EXPECTED_TRIGGERS_V1
-        elif schema_version == LATEST_SCHEMA_VERSION:
+        elif schema_version == ATTEMPT_SCHEMA_VERSION:
             expected_tables = _EXPECTED_TABLES_V2
             expected_indexes = _EXPECTED_INDEXES_V2
             expected_triggers = _EXPECTED_TRIGGERS_V2
+        elif schema_version == LATEST_SCHEMA_VERSION:
+            expected_tables = _EXPECTED_TABLES_V3
+            expected_indexes = _EXPECTED_INDEXES_V3
+            expected_triggers = _EXPECTED_TRIGGERS_V3
         else:
             raise TaskStoreSchemaError("Unsupported Adult task schema version.")
 
@@ -473,8 +609,6 @@ class AdultTaskStore:
             raise TaskStoreSchemaError("Adult task database is missing required indexes.")
         if not expected_triggers.issubset(triggers):
             raise TaskStoreSchemaError("Adult task database is missing required triggers.")
-
-
 
     def claim_task(
         self, task_id: str, worker_id: str, lease_seconds: int = 30
