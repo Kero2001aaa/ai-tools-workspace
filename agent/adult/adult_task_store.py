@@ -8,6 +8,7 @@ import base64
 import binascii
 import json
 import os
+import re
 import sqlite3
 import stat
 import uuid
@@ -342,7 +343,7 @@ class AdultTaskStore:
             not isinstance(worker_id, str)
             or not worker_id
             or len(worker_id) > 128
-            or not __import__("re").fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", worker_id)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", worker_id)
         ):
             raise AdultModelValidationError("worker_id must be a bounded opaque identifier.")
         if not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool) or not 1 <= lease_seconds <= 300:
@@ -462,10 +463,10 @@ class AdultTaskStore:
             if row["cancel_requested"]:
                 raise TaskCancelled("A cancellation request prevents lease renewal.")
             cursor = db.execute(
-                """UPDATE adult_tasks SET lease_expires_at=?,updated_at=?
+                """UPDATE adult_tasks SET lease_expires_at=?
                    WHERE task_id=? AND lease_owner=? AND lease_generation=?
                      AND lease_expires_at>? AND cancel_requested=0""",
-                (expires_at, now, lease.task_id, lease.worker_id, lease.lease_generation, now),
+                (expires_at, lease.task_id, lease.worker_id, lease.lease_generation, now),
             )
             if cursor.rowcount != 1:
                 raise LeaseLost("The task lease is expired or no longer current.")
@@ -487,6 +488,129 @@ class AdultTaskStore:
             lease.task_id, lease.worker_id, lease.lease_generation,
             expires_at, lease.state_version_at_grant,
         )
+
+    def release_lease(
+        self,
+        lease: TaskLease,
+        expected_state_version: int,
+        next_status: str = "checkpointed",
+        reason: str = "worker_released",
+    ) -> AdultTaskSnapshot:
+        """Release the current fenced lease and persist the resulting state atomically."""
+        if not isinstance(lease, TaskLease):
+            raise LeaseLost("A TaskStore-issued lease is required.")
+        lease._validate()
+        if (
+            not isinstance(expected_state_version, int)
+            or isinstance(expected_state_version, bool)
+            or expected_state_version < 0
+        ):
+            raise AdultModelValidationError(
+                "expected_state_version must be a non-negative integer."
+            )
+        if not isinstance(next_status, str) or next_status not in TASK_STATUSES:
+            raise AdultModelValidationError("Unsupported lease release destination.")
+        allowed_reasons = {
+            "worker_released", "yielded", "cancel_observed", "budget_exhausted",
+        }
+        if not isinstance(reason, str) or reason not in allowed_reasons:
+            raise AdultModelValidationError("Unsupported lease release reason.")
+
+        now = _utc_now()
+        event_id = str(uuid.uuid4())
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM adult_tasks WHERE task_id=?", (lease.task_id,)
+            ).fetchone()
+            if row is None:
+                raise TaskNotFound("Task does not exist.")
+            if row["status"] in TERMINAL_STATUSES:
+                raise TaskTerminal("Terminal tasks cannot release a lease.")
+            if (
+                row["status"] not in ACTIVE_STATUSES
+                or row["lease_owner"] != lease.worker_id
+                or row["lease_generation"] != lease.lease_generation
+                or row["lease_expires_at"] is None
+                or row["lease_expires_at"] <= now
+            ):
+                raise LeaseLost("The task lease is expired or no longer current.")
+            if row["state_version"] != expected_state_version:
+                raise StaleTaskVersion("Task state version changed.")
+            if next_status in ACTIVE_STATUSES or next_status not in _ALLOWED_TRANSITIONS[row["status"]]:
+                raise InvalidTaskTransition("Requested lease release destination is not allowed.")
+            if row["cancel_requested"] and next_status != "cancelled":
+                raise TaskCancelled("A cancellation request permits only cancellation.")
+            if next_status == "cancelled" and reason != "cancel_observed":
+                raise AdultModelValidationError(
+                    "Cancellation release requires the cancel_observed reason."
+                )
+            if reason == "cancel_observed" and next_status != "cancelled":
+                raise AdultModelValidationError(
+                    "cancel_observed release must transition to cancelled."
+                )
+            if next_status == "checkpointed":
+                checkpoint = db.execute(
+                    "SELECT 1 FROM adult_checkpoints WHERE task_id=? LIMIT 1",
+                    (lease.task_id,),
+                ).fetchone()
+                if checkpoint is None:
+                    raise InvalidCheckpoint(
+                        "A durable checkpoint is required before releasing to checkpointed."
+                    )
+
+            user_action_required = int(next_status in {"needs_input", "paused"})
+            cancel_requested = int(next_status == "cancelled" or row["cancel_requested"])
+            cursor = db.execute(
+                """UPDATE adult_tasks
+                   SET status=?,user_action_required=?,cancel_requested=?,
+                       lease_owner=NULL,lease_expires_at=NULL,
+                       state_version=state_version+1,updated_at=?
+                   WHERE task_id=? AND status=? AND state_version=?
+                     AND lease_owner=? AND lease_generation=? AND lease_expires_at>?""",
+                (
+                    next_status, user_action_required, cancel_requested, now,
+                    lease.task_id, row["status"], expected_state_version,
+                    lease.worker_id, lease.lease_generation, now,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise LeaseLost("The task lease or state version is no longer current.")
+            safe_metadata = {
+                "lease_generation": lease.lease_generation,
+                "reason_code": reason,
+            }
+            TaskEvent(
+                event_id=event_id,
+                task_id=lease.task_id,
+                event_type="lease_released",
+                from_status=row["status"],
+                to_status=next_status,
+                metadata=safe_metadata,
+                created_at=now,
+            )
+            db.execute(
+                """INSERT INTO adult_task_events
+                   (event_id,task_id,event_type,from_status,to_status,metadata_json,created_at)
+                   VALUES (?,?,'lease_released',?,?,?,?)""",
+                (
+                    event_id, lease.task_id, row["status"], next_status,
+                    json.dumps(safe_metadata, separators=(",", ":"), sort_keys=True),
+                    now,
+                ),
+            )
+            db.commit()
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        result = self.get_task(lease.task_id)
+        if result is None:
+            raise TaskStoreSchemaError("Released task could not be reloaded.")
+        return result
 
     def transition(
         self,
