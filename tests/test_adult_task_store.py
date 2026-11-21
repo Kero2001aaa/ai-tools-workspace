@@ -57,6 +57,15 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         values.update(overrides)
         return CheckpointSnapshot(**values)
 
+    def test_get_step_returns_only_the_requested_task_owned_step(self):
+        store, task = self._make_task()
+        step = store.get_step(task.task_id, task.current_step_id)
+        self.assertIsNotNone(step)
+        self.assertEqual((task.task_id, task.current_step_id, "intake", "pending"), (
+            step.task_id, step.step_id, step.operation, step.status,
+        ))
+        self.assertIsNone(store.get_step(task.task_id, "step-not-owned-0001"))
+
     def test_save_step_inserts_and_advances_with_server_timestamps(self):
         from agent.adult.models import StepRecord
         store, task = self._make_task()
