@@ -158,7 +158,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
                 1,
             )
         self.assertEqual(1, store.get_task(task.task_id).state_version)
-        self.assertEqual(1, len(store.list_events(task.task_id)))
+        self.assertEqual(2, len(store.list_events(task.task_id)))
 
     def test_save_checkpoint_appends_revision_and_updates_task_version_atomically(self):
         store, task = self._make_task()
