@@ -448,10 +448,12 @@ class AdultAttemptTracker:
             step = db.execute(
                 "SELECT task_id,status FROM adult_steps WHERE step_id=?", (step_id,)
             ).fetchone()
-            if step is None or step["task_id"] != task_id or task["current_step_id"] != step_id:
-                raise AttemptValidationError("step_id must be the current step belonging to this task.")
+            if step is None or step["task_id"] != task_id:
+                raise AttemptValidationError("step_id must belong to this task.")
             if step["status"] not in {"pending", "running"}:
                 raise AttemptNotAvailable("Attempts require a pending or running task step.")
+            if task["current_step_id"] != step_id:
+                raise AttemptValidationError("step_id must be the current task step.")
 
             approach_key, route_family_key = self.approach_keys(
                 task["task_type"], route, input_fingerprint, config_fingerprint,
@@ -719,7 +721,7 @@ class AdultAttemptTracker:
                    WHERE task_id=? AND state_version=? AND lease_generation=?
                      AND lease_expires_at>? AND status IN ('analyzing','running','evaluating')""",
                 (
-                    int(counts_as_failure), error_code, now, handle.task_id,
+                    int(counts_as_failure), error_code.lower(), now, handle.task_id,
                     task["state_version"], handle.lease_generation, now,
                 ),
             )
@@ -831,7 +833,7 @@ class AdultAttemptTracker:
                        SET failed_attempts_since_approval=CASE
                                WHEN failed_attempts_since_approval < 5
                                THEN failed_attempts_since_approval+1 ELSE 5 END,
-                           last_error_code='PROVIDER_OUTCOME_UNKNOWN',
+                           last_error_code='provider_outcome_unknown',
                            state_version=state_version+1,updated_at=?
                        WHERE task_id=? AND state_version=?""",
                     (now, attempt["task_id"], attempt["task_state_version"]),
