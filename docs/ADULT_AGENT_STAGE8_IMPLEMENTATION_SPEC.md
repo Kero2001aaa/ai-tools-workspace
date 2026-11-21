@@ -124,7 +124,7 @@ The validator must not trust filenames, extensions, HTTP content types, user-dec
 
 ## 6. DTO and adapter boundaries
 
-Preserve existing generic `AdapterResult` and Stage 6 image Protocols unless Stage 8 tests demonstrate a concrete incompatibility. Add Stage 8-specific bounded DTOs rather than changing text pipeline behavior.
+Preserve the Stage 6 image request DTO names and fields, but specialize the image adapter return types in Stage 8: `ImageUnderstandingAdapter.analyze` returns `ImageAnalysisResult`, while `ImageGenerationAdapter.generate` and `ImageEditingAdapter.edit` return `ImageAdapterResult`. The generic Stage 6 `AdapterResult` and `ArtifactResult` remain available for compatibility but are not used as Stage 8 image output containers. This avoids passing artifact IDs from adapters before the pipeline has validated and persisted the bytes.
 
 Proposed DTOs:
 
