@@ -371,6 +371,100 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         self.assertEqual("cancelled", checkpoint.snapshot.status)
         self.assertEqual("cancel_recovered", store.list_events(task.task_id)[-1].event_type)
 
+    def test_generic_transition_cannot_enter_checkpointed_without_durable_checkpoint(self):
+        from agent.adult.adult_task_store import InvalidCheckpoint
+        store, task = self._make_task()
+        with store._connect() as connection:
+            connection.execute("DROP TRIGGER prevent_adult_checkpoints_delete")
+            connection.execute("DELETE FROM adult_checkpoints WHERE task_id=?", (task.task_id,))
+        lease = store.claim_task(task.task_id, "checkpoint-guard-worker", lease_seconds=300)
+        with self.assertRaises(InvalidCheckpoint):
+            store.transition(
+                task.task_id, {"analyzing"}, "checkpointed",
+                "state_transition", 1, lease=lease,
+            )
+        current = store.get_task(task.task_id)
+        self.assertEqual(("analyzing", 1), (current.status, current.state_version))
+        self.assertEqual(["task_created", "task_claimed"], [
+            event.event_type for event in store.list_events(task.task_id)
+        ])
+
+    def test_save_checkpoint_rolls_back_checkpoint_and_state_when_event_append_fails(self):
+        from agent.adult.models import TaskLease
+        store, task = self._make_task()
+        lease = store.claim_task(task.task_id, "checkpoint-rollback-worker", lease_seconds=300)
+        snapshot = self._checkpoint_snapshot(store.get_task(task.task_id))
+        original = store._connect
+
+        class FailingConnection:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+            def __getattr__(self, name):
+                return getattr(self.wrapped, name)
+            def execute(self, sql, parameters=()):
+                if sql.lstrip().upper().startswith("INSERT INTO ADULT_TASK_EVENTS"):
+                    raise sqlite3.OperationalError("injected checkpoint event failure")
+                return self.wrapped.execute(sql, parameters)
+            def close(self):
+                self.wrapped.close()
+
+        with patch.object(store, "_connect", side_effect=lambda: FailingConnection(original())):
+            with self.assertRaises(sqlite3.OperationalError):
+                store.save_checkpoint(
+                    task.task_id, snapshot, "manual_yield", 1, lease=lease
+                )
+        current = store.get_task(task.task_id)
+        self.assertEqual(("analyzing", 1), (current.status, current.state_version))
+        with original() as connection:
+            self.assertEqual(1, connection.execute(
+                "SELECT COUNT(*) FROM adult_checkpoints WHERE task_id=?", (task.task_id,)
+            ).fetchone()[0])
+            self.assertEqual(2, connection.execute(
+                "SELECT COUNT(*) FROM adult_task_events WHERE task_id=?", (task.task_id,)
+            ).fetchone()[0])
+
+    def test_save_checkpoint_rejects_terminal_task(self):
+        from agent.adult.adult_task_store import TaskTerminal
+        store, task = self._make_task()
+        failed = store.transition(
+            task.task_id, {"queued"}, "failed", "state_transition", 0
+        )
+        snapshot = self._checkpoint_snapshot(failed)
+        with self.assertRaises(TaskTerminal):
+            store.save_checkpoint(
+                task.task_id, snapshot, "manual_yield", failed.state_version
+            )
+        self.assertEqual(1, len(store.list_events(task.task_id)))
+
+    def test_resume_rejects_non_string_decisions_without_type_errors(self):
+        from agent.adult.models import AdultModelValidationError
+        store, task = self._make_task()
+        for value in (None, [], {}, True):
+            with self.subTest(value=value), self.assertRaises(AdultModelValidationError):
+                store.resume(task.task_id, value)
+
+    def test_new_pending_step_becomes_current_after_previous_step_is_finished(self):
+        from agent.adult.models import StepRecord
+        store, task = self._make_task()
+        lease = store.claim_task(task.task_id, "step-order-worker", lease_seconds=300)
+        started = store.save_step(
+            task.task_id,
+            StepRecord(task.current_step_id, task.task_id, 0, "intake", "running"),
+            lease, 1,
+        )
+        current = store.get_task(task.task_id)
+        store.save_step(
+            task.task_id,
+            StepRecord(task.current_step_id, task.task_id, 0, "intake", "succeeded"),
+            lease, current.state_version,
+        )
+        current = store.get_task(task.task_id)
+        next_step = StepRecord(
+            "step-follow-up-0001", task.task_id, 1, "text.analyze", "pending"
+        )
+        store.save_step(task.task_id, next_step, lease, current.state_version)
+        self.assertEqual(next_step.step_id, store.get_task(task.task_id).current_step_id)
+
     def test_new_database_has_exact_stage5_tables_and_versioned_schema(self):
         store = AdultTaskStore(self.db)
         with store._connect() as connection:
