@@ -1,7 +1,7 @@
 # Adult Agent — Stage 7 Implementation Specification
 ## Text Pipeline, Deterministic Evaluation, and Policy Gates
 
-**Status:** Approved for implementation  
+**Status:** Pipeline implementation committed; awaiting local and CI validation  
 **Branch:** feature/adult-agent-mvp  
 **Parent:** Stage 6 commit 541ff5e089f37216ad40716f3daecc4ed72da7c1  
 **Preconditions:** Stages 1–6 PASS; Stage 6 local validation confirmed on the parent branch  
@@ -362,3 +362,16 @@ Implement in this order:
 11. Record Stage 7 PASS only when every TXT-* test, previous-stage regression, full suite, security scan, and CI pass.
 
 No Stage 8 work begins until Stage 7 gate is recorded as PASS. No Stage 9 Executor/Supervisor work begins as part of Stage 7.
+
+## 13. Implementation status (2026-11-21)
+
+The following Stage 7 implementation units are committed on `feature/adult-agent-mvp`:
+
+- Text DTOs/protocols, deterministic input/output policies, evaluator, and strict canonical input envelope.
+- Encrypted/transient uncommitted output cleanup via task- and attempt-bound `discard_output`.
+- Mocked OmniRoute text adapter using the Adult-specific route configuration.
+- One-attempt `AdultTextPipeline` with persisted request/step identity checks, input policy gate, text-only capability query, persisted budget routing, exact adapter registry resolution, durable attempt start before invocation, deterministic evaluation, output policy gate, accepted-only artifact storage, success finalization, and safe cleanup after finalization failure.
+- Public task-scoped `AdultTaskStore.get_step` lookup to validate the current step without exposing payload data.
+- Focused pipeline tests cover all three text operations, success publication, no-route behavior, pre-dispatch policy denial, exact adapter resolution, invalid output, terminal output-policy rejection, sanitized adapter errors, storage failure, finalization cleanup, step mismatch, and persisted-request mismatch.
+
+Validation gate remains open until the user confirms focused and full local tests and the corresponding GitHub Actions workflow completes successfully. Stage 7 is not PASS yet. Stage 8 and Stage 9 work remain blocked.
