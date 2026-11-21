@@ -67,6 +67,6 @@ Store the generated value in the local `.env` as `ADULT_PAYLOAD_ENCRYPTION_KEY=.
 
 ## Acceptance tests
 
-`tests/test_adult_payload_store.py` covers encryption round trips, random nonces, distinct derived keys, task/payload associated-data binding, tampering, wrong and missing keys, encrypted-at-rest verification, plaintext exclusion from SQLite, path traversal, symlink roots, permissions, atomic partial-write cleanup, size/chunk bounds, cache bounds/expiry, encrypted retention expiry, task-input deletion, memory-only output fallback, and restart behavior.
+`tests/test_adult_payload_store.py` covers encryption round trips, random nonces, distinct derived keys, task/payload associated-data binding, tampering, wrong and missing keys, encrypted-at-rest verification, plaintext exclusion from the payload index, Adult task database, checkpoints, and logs, path traversal, symlink roots, restrictive read/write permissions, atomic partial-write cleanup, size/chunk bounds, cache bounds/expiry, encrypted retention expiry, task-input deletion, memory-only output fallback, and restart behavior.
 
 The Stage 4 gate is not passed until the focused payload-store tests, Stage 3 and Stage 2 tests, the full repository unit suite, dependency security checks, and CI are all green. No live database migration is required or permitted in this stage.
