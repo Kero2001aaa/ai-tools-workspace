@@ -157,6 +157,34 @@ class AdultTaskRequest:
 
 
 @dataclass(frozen=True)
+class RouteCandidate:
+    """Verified route descriptor shared by Stage 5 tracking and Stage 6 routing."""
+
+    adapter_id: str
+    adapter_version: str
+    provider_id: str | None
+    model_id: str | None
+    model_version: str | None
+    tool_id: str | None
+    tool_version: str | None
+    task_type: str
+    cost_class: Literal["local", "free_verified", "paid", "unknown"]
+    capability_version: str
+    verified_at: str
+
+    def __post_init__(self) -> None:
+        for name in ("adapter_id", "adapter_version", "capability_version"):
+            _identifier(name, getattr(self, name))
+        for name in ("provider_id", "model_id", "model_version", "tool_id", "tool_version"):
+            _identifier(name, getattr(self, name), optional=True)
+        if self.task_type not in TASK_TYPES:
+            raise AdultModelValidationError("Route task_type is unsupported.")
+        if self.cost_class not in {"local", "free_verified", "paid", "unknown"}:
+            raise AdultModelValidationError("Route cost_class is unsupported.")
+        _timestamp("verified_at", self.verified_at)
+
+
+@dataclass(frozen=True)
 class TaskBudget:
     max_total_attempts: int = 20
     max_wall_seconds: int = 600
