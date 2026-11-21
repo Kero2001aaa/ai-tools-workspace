@@ -1178,6 +1178,19 @@ class AdultTaskStore:
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             raise TaskStoreSchemaError("Stored task request metadata is invalid.") from exc
 
+    def get_step(self, task_id: str, step_id: str) -> StepRecord | None:
+        """Read one task-owned step without exposing any payload bytes."""
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if not isinstance(step_id, str) or not step_id or len(step_id) > 128:
+            raise AdultModelValidationError("step_id must be a bounded identifier.")
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM adult_steps WHERE task_id=? AND step_id=?",
+                (task_id, step_id),
+            ).fetchone()
+        return self._step_from_row(row) if row is not None else None
+
     def list_tasks(
         self, status: str | None = None, limit: int = 20,
         cursor: str | None = None,
