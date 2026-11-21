@@ -107,7 +107,7 @@ class AdultTextPipelineTests(unittest.TestCase):
             artifact_id="c" * 32,
             task_id=TASK_ID,
             mime_type="text/plain",
-            size_bytes=12,
+            size_bytes=15,
             persisted=False,
             expires_at=None,
         )
