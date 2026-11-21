@@ -75,16 +75,23 @@ class AdultModelTests(unittest.TestCase):
 
     def test_capability_evidence_requires_separate_complete_cost_evidence(self):
         evidence = CapabilityEvidence(
+            adapter_id="mock-adapter", adapter_version="1",
+            provider_id="mock-provider", model_id="mock-model", model_version="1",
+            task_type="text.analyze", input_modalities=("text",), output_modalities=("text",),
             capability_source="official_provider_docs",
             capability_reference="https://provider.example/docs/model",
             verified_at=STAMP, expires_at="2026-12-21T00:00:00.000000Z",
             cost_source="official_provider_pricing",
             cost_reference="https://provider.example/pricing",
             cost_verified_at=STAMP, cost_expires_at="2026-11-28T00:00:00.000000Z",
+            cost_is_zero=True,
         )
         self.assertEqual("official_provider_pricing", evidence.cost_source)
         with self.assertRaises(AdultModelValidationError):
             CapabilityEvidence(
+                adapter_id="mock-adapter", adapter_version="1",
+                provider_id="mock-provider", model_id="mock-model", model_version="1",
+                task_type="text.analyze", input_modalities=("text",), output_modalities=("text",),
                 capability_source="official_provider_docs",
                 capability_reference="https://provider.example/docs/model",
                 verified_at=STAMP, expires_at="2026-12-21T00:00:00.000000Z",
@@ -103,6 +110,15 @@ class AdultModelTests(unittest.TestCase):
             CostPolicy(max_provider_calls=True)
         with self.assertRaises(AdultModelValidationError):
             CostPolicy(max_provider_calls=1, max_cost_microusd=1)
+
+    def test_cost_policy_requires_a_real_validated_task_budget(self):
+        budget = TaskBudget(max_provider_calls=3)
+        policy = CostPolicy.from_budget(budget)
+        self.assertEqual(3, policy.max_provider_calls)
+        with self.assertRaises(AdultModelValidationError):
+            CostPolicy.from_budget(type("FakeBudget", (), {
+                "max_provider_calls": 3, "max_cost_microusd": 0,
+            })())
 
     def test_task_lease_cannot_be_constructed_by_callers(self):
         with self.assertRaises(TypeError):

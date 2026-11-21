@@ -32,8 +32,15 @@ def text_spec(*, adapter_id="mock-adapter", provider_id="mock-provider",
     )
 
 
-def provider_evidence(*, cost=True, verified_at=STAMP, expires_at=FUTURE):
+def provider_evidence(spec=None, *, cost=True, cost_is_zero=True,
+                      verified_at=STAMP, expires_at=FUTURE):
+    selected = spec or text_spec()
     return CapabilityEvidence(
+        adapter_id=selected.adapter_id, adapter_version=selected.adapter_version,
+        provider_id=selected.provider_id, model_id=selected.model_id,
+        model_version=selected.model_version, task_type=selected.task_type,
+        input_modalities=selected.input_modalities,
+        output_modalities=selected.output_modalities,
         capability_source="official_provider_docs",
         capability_reference="https://provider.example/docs/model",
         verified_at=verified_at, expires_at=expires_at,
@@ -41,6 +48,7 @@ def provider_evidence(*, cost=True, verified_at=STAMP, expires_at=FUTURE):
         cost_reference="https://provider.example/pricing" if cost else None,
         cost_verified_at=verified_at if cost else None,
         cost_expires_at=COST_FUTURE if cost else None,
+        cost_is_zero=cost_is_zero if cost else None,
     )
 
 
@@ -52,8 +60,14 @@ def local_spec():
     )
 
 
-def local_evidence():
+def local_evidence(spec=None):
+    selected = spec or local_spec()
     return CapabilityEvidence(
+        adapter_id=selected.adapter_id, adapter_version=selected.adapter_version,
+        provider_id=selected.provider_id, model_id=selected.model_id,
+        model_version=selected.model_version, task_type=selected.task_type,
+        input_modalities=selected.input_modalities,
+        output_modalities=selected.output_modalities,
         capability_source="local_adapter_smoke_test",
         capability_reference="test:local-adapter-smoke-v1",
         verified_at=STAMP, expires_at=FUTURE,
@@ -100,6 +114,18 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
             self.registry.verify(record.capability_id, provider_evidence(cost=False), record.state_version)
         self.assertEqual("unverified", self.registry.get(record.capability_id).verification_status)
 
+    def test_evidence_cannot_be_reused_for_another_model_or_adapter(self):
+        record = self.registry.register(text_spec())
+        mismatched = provider_evidence(text_spec(model_id="different-model"))
+        with self.assertRaises(CapabilityEvidenceError):
+            self.registry.verify(record.capability_id, mismatched, record.state_version)
+
+    def test_free_verified_requires_explicit_zero_cost_claim(self):
+        record = self.registry.register(text_spec())
+        evidence = provider_evidence(record.spec, cost_is_zero=False)
+        with self.assertRaises(CapabilityEvidenceError):
+            self.registry.verify(record.capability_id, evidence, record.state_version)
+
     def test_expired_capability_or_cost_evidence_is_rejected(self):
         record = self.registry.register(text_spec())
         expired = provider_evidence(
@@ -116,7 +142,7 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
                 model_id=f"{cost_class}-model", cost_class=cost_class,
             ))
             verified = self.registry.verify(
-                record.capability_id, provider_evidence(cost=False), record.state_version,
+                record.capability_id, provider_evidence(record.spec, cost=False), record.state_version,
             )
             with self.assertRaises(CapabilityNotEligible):
                 self.registry.enable(verified.capability_id, verified.state_version)
@@ -161,7 +187,7 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
         record = self.registry.register(local_spec())
         with self.assertRaises(CapabilityEvidenceError):
             self.registry.verify(record.capability_id, provider_evidence(cost=False), record.state_version)
-        verified = self.registry.verify(record.capability_id, local_evidence(), record.state_version)
+        verified = self.registry.verify(record.capability_id, local_evidence(record.spec), record.state_version)
         enabled = self.registry.enable(verified.capability_id, verified.state_version)
         self.assertTrue(enabled.enabled)
 

@@ -105,14 +105,14 @@ The typed DTO rejects booleans where integers are required, unsupported enum val
 
 Capability evidence and price evidence are separate facts:
 
-- CapabilityEvidence proves the exact provider/model/adapter and task operation, including required input/output modalities and material constraints.
-- Cost evidence proves the route is zero-cost for the relevant service/operation and identifies the applicable official pricing/terms reference and validity period.
+- CapabilityEvidence carries the exact adapter ID/version, provider ID, model ID/version, task_type, and input/output modality contract; the registry rejects evidence whose subject differs from the registered capability.
+- Cost evidence carries an explicit `cost_is_zero` boolean. A `free_verified` route is eligible only when it is exactly `true`; a pricing URL by itself is not proof of zero cost.
 
 Allowed source kinds are a strict enum, not arbitrary descriptive text. Evidence references are bounded non-secret identifiers or sanitized HTTPS documentation references; reject URL user-info, query strings, fragments, local paths, tokens, and credentials. Do not store copied provider response bodies or raw documents.
 
 For a provider route, a model-catalog listing or GET /models response is discovery only and cannot by itself verify capability or cost. free_verified requires separate current cost evidence. For a local route, registration does not prove that an adapter is installed or usable; the router also requires a positive result from an injected, side-effect-free adapter-availability check.
 
-Verification expiry is mandatory. An expired capability or zero-cost record is ineligible until explicitly re-verified. No silent expiry extension or background refresh is permitted.
+Evidence subject, source, reference, verification/expiry timestamps, and zero-cost claim participate in the capability version hash. Persisted records fail closed when the version hash no longer matches the stored contract/evidence. Verification expiry is mandatory. An expired capability or zero-cost record is ineligible until explicitly re-verified. No silent expiry extension or background refresh is permitted.
 
 ### 4.4 CapabilityQuery and CostPolicy
 

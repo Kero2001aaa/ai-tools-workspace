@@ -289,7 +289,7 @@ class ModelCapabilitySpec:
 
 @dataclass(frozen=True)
 class CapabilityEvidence:
-    """Non-secret evidence metadata for capability support and, separately, zero-cost status."""
+    """Evidence is bound to one exact adapter/model/operation contract."""
 
     capability_source: Literal[
         "official_provider_docs", "official_adapter_docs", "local_adapter_smoke_test"
@@ -297,32 +297,64 @@ class CapabilityEvidence:
     capability_reference: str
     verified_at: str
     expires_at: str
+    adapter_id: str
+    adapter_version: str
+    task_type: str
+    input_modalities: tuple[str, ...]
+    output_modalities: tuple[str, ...]
+    provider_id: str | None = None
+    model_id: str | None = None
+    model_version: str | None = None
     cost_source: Literal[
-        "official_provider_pricing", "official_free_tier_terms", "local_execution_contract"
+        "official_provider_pricing", "official_free_tier_terms"
     ] | None = None
     cost_reference: str | None = None
     cost_verified_at: str | None = None
     cost_expires_at: str | None = None
+    cost_is_zero: bool | None = None
 
     def __post_init__(self) -> None:
         if self.capability_source not in {
             "official_provider_docs", "official_adapter_docs", "local_adapter_smoke_test"
         }:
             raise AdultModelValidationError("Unsupported capability evidence source.")
+        _identifier("adapter_id", self.adapter_id)
+        _identifier("adapter_version", self.adapter_version)
+        _identifier("provider_id", self.provider_id, optional=True)
+        _identifier("model_id", self.model_id, optional=True)
+        _identifier("model_version", self.model_version, optional=True)
+        if self.task_type not in TASK_TYPES:
+            raise AdultModelValidationError("Unsupported evidence task_type.")
+        expected_input, expected_output = _CAPABILITY_TASK_MODALITIES[self.task_type]
+        if (
+            not isinstance(self.input_modalities, tuple)
+            or len(self.input_modalities) != len(set(self.input_modalities))
+            or set(self.input_modalities) != set(expected_input)
+        ):
+            raise AdultModelValidationError("Evidence input modalities do not match task_type.")
+        if (
+            not isinstance(self.output_modalities, tuple)
+            or len(self.output_modalities) != len(set(self.output_modalities))
+            or set(self.output_modalities) != set(expected_output)
+        ):
+            raise AdultModelValidationError("Evidence output modalities do not match task_type.")
         _evidence_reference("capability_reference", self.capability_reference)
         _timestamp("verified_at", self.verified_at)
         _timestamp("expires_at", self.expires_at)
         if datetime.fromisoformat(self.expires_at[:-1] + "+00:00") <= datetime.fromisoformat(self.verified_at[:-1] + "+00:00"):
             raise AdultModelValidationError("Capability evidence must expire after verification.")
+
         cost_values = (self.cost_source, self.cost_reference, self.cost_verified_at, self.cost_expires_at)
         if all(value is None for value in cost_values):
+            if self.cost_is_zero is not None:
+                raise AdultModelValidationError("cost_is_zero requires complete cost evidence.")
             return
         if any(value is None for value in cost_values):
             raise AdultModelValidationError("Cost evidence fields must be supplied together.")
-        if self.cost_source not in {
-            "official_provider_pricing", "official_free_tier_terms", "local_execution_contract"
-        }:
+        if self.cost_source not in {"official_provider_pricing", "official_free_tier_terms"}:
             raise AdultModelValidationError("Unsupported cost evidence source.")
+        if not isinstance(self.cost_is_zero, bool):
+            raise AdultModelValidationError("Cost evidence must state whether the route is zero-cost.")
         _evidence_reference("cost_reference", self.cost_reference)
         _timestamp("cost_verified_at", self.cost_verified_at)
         _timestamp("cost_expires_at", self.cost_expires_at)
@@ -331,11 +363,17 @@ class CapabilityEvidence:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "adapter_id": self.adapter_id, "adapter_version": self.adapter_version,
+            "provider_id": self.provider_id, "model_id": self.model_id,
+            "model_version": self.model_version, "task_type": self.task_type,
+            "input_modalities": list(self.input_modalities),
+            "output_modalities": list(self.output_modalities),
             "capability_source": self.capability_source,
             "capability_reference": self.capability_reference,
             "verified_at": self.verified_at, "expires_at": self.expires_at,
             "cost_source": self.cost_source, "cost_reference": self.cost_reference,
             "cost_verified_at": self.cost_verified_at, "cost_expires_at": self.cost_expires_at,
+            "cost_is_zero": self.cost_is_zero,
         }
 
 
@@ -418,7 +456,7 @@ class CostPolicy:
 
     @classmethod
     def from_budget(cls, budget: Any) -> "CostPolicy":
-        if not hasattr(budget, "max_provider_calls") or not hasattr(budget, "max_cost_microusd"):
+        if not isinstance(budget, TaskBudget):
             raise AdultModelValidationError("A validated TaskBudget is required.")
         return cls(
             max_provider_calls=budget.max_provider_calls,

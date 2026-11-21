@@ -26,14 +26,18 @@ def free_text_spec(adapter_id, provider_id, model_id, model_version="1"):
     )
 
 
-def evidence():
+def evidence(spec):
     return CapabilityEvidence(
+        adapter_id=spec.adapter_id, adapter_version=spec.adapter_version,
+        provider_id=spec.provider_id, model_id=spec.model_id,
+        model_version=spec.model_version, task_type=spec.task_type,
+        input_modalities=spec.input_modalities, output_modalities=spec.output_modalities,
         capability_source="official_provider_docs",
         capability_reference="https://provider.example/docs/model",
         verified_at=STAMP, expires_at=FUTURE,
         cost_source="official_free_tier_terms",
         cost_reference="https://provider.example/free-tier",
-        cost_verified_at=STAMP, cost_expires_at=COST_FUTURE,
+        cost_verified_at=STAMP, cost_expires_at=COST_FUTURE, cost_is_zero=True,
     )
 
 
@@ -48,7 +52,7 @@ class AdultRouterTests(unittest.TestCase):
 
     def _register(self, spec):
         record = self.registry.register(spec)
-        verified = self.registry.verify(record.capability_id, evidence(), record.state_version)
+        verified = self.registry.verify(record.capability_id, evidence(spec), record.state_version)
         return self.registry.enable(verified.capability_id, verified.state_version)
 
     def _query(self):
@@ -100,7 +104,7 @@ class AdultRouterTests(unittest.TestCase):
             free_text_spec("adapter-a", "provider-a", "model-a", model_version="2"),
             enabled.state_version,
         )
-        verified_again = self.registry.verify(revised.capability_id, evidence(), revised.state_version)
+        verified_again = self.registry.verify(revised.capability_id, evidence(revised.spec), revised.state_version)
         self.registry.enable(verified_again.capability_id, verified_again.state_version)
         new_route = self._router().choose_routes(self._query(), CostPolicy(max_provider_calls=2), set())[0]
         after, _ = AdultAttemptTracker.approach_keys("text.analyze", new_route, INPUT_FP, CONFIG_FP)

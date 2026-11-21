@@ -100,11 +100,18 @@ def _spec_from_row(row: sqlite3.Row) -> ModelCapabilitySpec:
     return spec
 
 
-def _evidence_from_row(row: sqlite3.Row) -> CapabilityEvidence | None:
+def _evidence_from_row(
+    row: sqlite3.Row, spec: ModelCapabilitySpec,
+) -> CapabilityEvidence | None:
     if row["verification_status"] != "verified":
         return None
     try:
+        has_cost_evidence = row["cost_verified_at"] is not None
         return CapabilityEvidence(
+            adapter_id=spec.adapter_id, adapter_version=spec.adapter_version,
+            provider_id=spec.provider_id, model_id=spec.model_id,
+            model_version=spec.model_version, task_type=spec.task_type,
+            input_modalities=spec.input_modalities, output_modalities=spec.output_modalities,
             capability_source=row["capability_evidence_source"],
             capability_reference=row["capability_evidence_ref"],
             verified_at=row["capability_verified_at"],
@@ -113,19 +120,26 @@ def _evidence_from_row(row: sqlite3.Row) -> CapabilityEvidence | None:
             cost_reference=row["cost_evidence_ref"],
             cost_verified_at=row["cost_verified_at"],
             cost_expires_at=row["cost_expires_at"],
+            cost_is_zero=True if has_cost_evidence else None,
         )
     except (TypeError, ValueError) as exc:
         raise CapabilityRegistryError("Stored capability evidence failed validation.") from exc
 
 
 def _to_capability(row: sqlite3.Row) -> ModelCapability:
+    spec = _spec_from_row(row)
+    evidence = _evidence_from_row(row, spec)
+    if row["verification_status"] in {"unverified", "verified"}:
+        expected_version = _capability_version(spec, evidence)
+        if row["capability_version"] != expected_version:
+            raise CapabilityRegistryError("Stored capability version does not match its contract/evidence.")
     return ModelCapability(
         capability_id=row["capability_id"],
-        spec=_spec_from_row(row),
+        spec=spec,
         enabled=bool(row["enabled"]),
         verification_status=row["verification_status"],
         capability_version=row["capability_version"],
-        evidence=_evidence_from_row(row),
+        evidence=evidence,
         state_version=row["state_version"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -192,22 +206,42 @@ class ModelCapabilityRegistry:
     def _require_current_evidence(
         spec: ModelCapabilitySpec, evidence: CapabilityEvidence, now: str
     ) -> None:
+        exact_identity = (
+            evidence.adapter_id == spec.adapter_id
+            and evidence.adapter_version == spec.adapter_version
+            and evidence.provider_id == spec.provider_id
+            and evidence.model_id == spec.model_id
+            and evidence.model_version == spec.model_version
+            and evidence.task_type == spec.task_type
+            and evidence.input_modalities == spec.input_modalities
+            and evidence.output_modalities == spec.output_modalities
+        )
+        if not exact_identity:
+            raise CapabilityEvidenceError("Evidence subject does not match the exact capability contract.")
+
         instant = _parse_utc(now)
         if _parse_utc(evidence.verified_at) > instant or _parse_utc(evidence.expires_at) <= instant:
             raise CapabilityEvidenceError("Capability evidence is not currently valid.")
+        has_cost_evidence = any(value is not None for value in (
+            evidence.cost_source, evidence.cost_reference,
+            evidence.cost_verified_at, evidence.cost_expires_at,
+        ))
         if spec.cost_class == "local":
             if evidence.capability_source != "local_adapter_smoke_test":
                 raise CapabilityEvidenceError("Local routes require local adapter verification evidence.")
-            if any(value is not None for value in (
-                evidence.cost_source, evidence.cost_reference,
-                evidence.cost_verified_at, evidence.cost_expires_at,
-            )):
+            if has_cost_evidence or evidence.cost_is_zero is not None:
                 raise CapabilityEvidenceError("Local routes do not accept provider cost evidence.")
-        elif evidence.capability_source == "local_adapter_smoke_test":
-            raise CapabilityEvidenceError("Provider routes require provider-specific capability evidence.")
+        else:
+            if evidence.capability_source == "local_adapter_smoke_test":
+                raise CapabilityEvidenceError("Provider routes require provider-specific capability evidence.")
+            if spec.cost_class != "free_verified" and has_cost_evidence:
+                raise CapabilityEvidenceError("The MVP accepts cost evidence only for free_verified routes.")
+
         if spec.cost_class == "free_verified":
             if evidence.cost_source not in {"official_provider_pricing", "official_free_tier_terms"}:
                 raise CapabilityEvidenceError("free_verified routes require official zero-cost evidence.")
+            if evidence.cost_is_zero is not True:
+                raise CapabilityEvidenceError("free_verified routes require explicit proof of zero cost.")
             if (
                 evidence.cost_verified_at is None or evidence.cost_expires_at is None
                 or _parse_utc(evidence.cost_verified_at) > instant
