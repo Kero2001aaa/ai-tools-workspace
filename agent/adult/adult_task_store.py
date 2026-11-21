@@ -18,8 +18,9 @@ from typing import Final, Literal
 
 from agent.adult.models import (
     AdultModelValidationError, AdultTaskRequest, AdultTaskSnapshot,
-    Checkpoint, CheckpointSnapshot, TaskBudget, TaskEvent, TaskPage,
+    Checkpoint, CheckpointSnapshot, TaskBudget, TaskEvent, TaskPage, StepRecord,
     TASK_STATUSES, TaskLease, ACTIVE_STATUSES, TERMINAL_STATUSES, EVENT_TYPES,
+    CHECKPOINT_REASONS,
 )
 
 SCHEMA_VERSION: Final = 1
@@ -1117,6 +1118,877 @@ class AdultTaskStore:
             ]
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TaskStoreSchemaError("Stored task event metadata is invalid.") from exc
+
+    @staticmethod
+    def _require_current_lease(
+        row: sqlite3.Row, task_id: str, lease: TaskLease, now: str
+    ) -> None:
+        if not isinstance(lease, TaskLease):
+            raise LeaseLost("A TaskStore-issued lease is required.")
+        lease._validate()
+        if (
+            row["task_id"] != task_id
+            or lease.task_id != task_id
+            or row["status"] not in ACTIVE_STATUSES
+            or row["lease_owner"] != lease.worker_id
+            or row["lease_generation"] != lease.lease_generation
+            or row["lease_expires_at"] is None
+            or row["lease_expires_at"] <= now
+        ):
+            raise LeaseLost("The task lease is expired or no longer current.")
+        if row["cancel_requested"]:
+            raise TaskCancelled("A cancellation request prevents this mutation.")
+
+    @staticmethod
+    def _checkpoint_from_row(row: sqlite3.Row) -> Checkpoint:
+        try:
+            raw = json.loads(row["snapshot_json"])
+            if not isinstance(raw, dict):
+                raise ValueError("checkpoint JSON must be an object")
+            tuple_fields = {
+                "plan", "completed_step_ids", "pending_step_ids",
+                "attempted_approach_keys", "excluded_approach_keys", "allowed_decisions",
+            }
+            for key in tuple_fields:
+                raw[key] = tuple(raw.get(key, ()))
+            snapshot = CheckpointSnapshot(**raw)
+            return Checkpoint(
+                checkpoint_id=row["checkpoint_id"], task_id=row["task_id"],
+                revision=row["revision"], reason=row["reason"],
+                schema_version=row["schema_version"],
+                failed_attempts_since_approval=row["failed_attempts_since_approval"],
+                user_action_required=bool(row["user_action_required"]),
+                created_at=row["created_at"], snapshot=snapshot,
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise TaskStoreSchemaError("Stored checkpoint metadata is invalid.") from exc
+
+    @staticmethod
+    def _step_from_row(row: sqlite3.Row) -> StepRecord:
+        try:
+            return StepRecord(
+                step_id=row["step_id"], task_id=row["task_id"],
+                sequence_no=row["sequence_no"], operation=row["operation"],
+                status=row["status"], adapter_id=row["adapter_id"],
+                provider_id=row["provider_id"], model_id=row["model_id"],
+                tool_id=row["tool_id"], input_payload_id=row["input_payload_id"],
+                output_artifact_id=row["output_artifact_id"],
+                config_fingerprint=row["config_fingerprint"],
+                started_at=row["started_at"], completed_at=row["completed_at"],
+            )
+        except (TypeError, ValueError) as exc:
+            raise TaskStoreSchemaError("Stored task step is invalid.") from exc
+
+    @staticmethod
+    def _validate_checkpoint_snapshot(
+        row: sqlite3.Row, snapshot: CheckpointSnapshot, db: sqlite3.Connection
+    ) -> str:
+        if not isinstance(snapshot, CheckpointSnapshot):
+            raise InvalidCheckpoint("A validated CheckpointSnapshot is required.")
+        if (
+            snapshot.task_id != row["task_id"]
+            or snapshot.task_type != row["task_type"]
+            or snapshot.status != row["status"]
+            or snapshot.input_fingerprint not in {None, row["input_fingerprint"]}
+            or snapshot.payload_id not in {None, row["payload_id"]}
+        ):
+            raise InvalidCheckpoint("Checkpoint snapshot does not match the current task.")
+        if (
+            snapshot.total_attempts != row["total_attempts"]
+            or snapshot.failed_attempts_since_approval != row["failed_attempts_since_approval"]
+            or snapshot.provider_calls != row["provider_calls"]
+            or snapshot.spent_cost_microusd != row["spent_cost_microusd"]
+        ):
+            raise InvalidCheckpoint("Checkpoint counters do not match the current task.")
+        if snapshot.status == "waiting_user":
+            raise InvalidCheckpoint("Use set_waiting_user for the approval checkpoint.")
+        if snapshot.status in TERMINAL_STATUSES and snapshot.status != row["status"]:
+            raise InvalidCheckpoint("Checkpoint terminal state does not match the task.")
+
+        referenced = set(snapshot.plan)
+        referenced.update(snapshot.completed_step_ids)
+        referenced.update(snapshot.pending_step_ids)
+        if snapshot.active_step_id is not None:
+            referenced.add(snapshot.active_step_id)
+        if referenced:
+            placeholders = ",".join("?" for _ in referenced)
+            rows = db.execute(
+                f"SELECT step_id FROM adult_steps WHERE task_id=? AND step_id IN ({placeholders})",
+                (row["task_id"], *sorted(referenced)),
+            ).fetchall()
+            known = {item["step_id"] for item in rows}
+            if known != referenced:
+                raise InvalidCheckpoint("Checkpoint contains a step outside the task.")
+        return snapshot.to_json()
+
+    def save_step(
+        self,
+        task_id: str,
+        step: StepRecord,
+        lease: TaskLease,
+        expected_state_version: int,
+    ) -> StepRecord:
+        """Insert or advance one task step under the current fenced lease."""
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if not isinstance(step, StepRecord) or step.task_id != task_id:
+            raise AdultModelValidationError("step must be a validated StepRecord for this task.")
+        if step.started_at is not None or step.completed_at is not None:
+            raise AdultModelValidationError("Step timestamps are assigned by TaskStore.")
+        if (
+            not isinstance(expected_state_version, int)
+            or isinstance(expected_state_version, bool)
+            or expected_state_version < 0
+        ):
+            raise AdultModelValidationError("expected_state_version must be a non-negative integer.")
+
+        now = _utc_now()
+        event_id = str(uuid.uuid4())
+        returned: StepRecord | None = None
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            task = db.execute(
+                "SELECT * FROM adult_tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise TaskNotFound("Task does not exist.")
+            self._require_current_lease(task, task_id, lease, now)
+            if task["state_version"] != expected_state_version:
+                raise StaleTaskVersion("Task state version changed.")
+            if task["status"] not in {"analyzing", "running", "evaluating"}:
+                raise InvalidTaskTransition("Task state does not allow step mutations.")
+
+            existing = db.execute(
+                "SELECT * FROM adult_steps WHERE step_id=?", (step.step_id,)
+            ).fetchone()
+            columns = (
+                "adapter_id", "provider_id", "model_id", "tool_id",
+                "input_payload_id", "output_artifact_id", "config_fingerprint",
+            )
+            supplied = {name: getattr(step, name) for name in columns}
+            if existing is None:
+                if step.status != "pending":
+                    raise InvalidTaskTransition("New steps must begin in pending state.")
+                if step.sequence_no != 0:
+                    maximum = db.execute(
+                        "SELECT COALESCE(MAX(sequence_no),-1) FROM adult_steps WHERE task_id=?",
+                        (task_id,),
+                    ).fetchone()[0]
+                    if step.sequence_no != maximum + 1:
+                        raise AdultModelValidationError("New step sequence_no must be the next task sequence.")
+                db.execute(
+                    """INSERT INTO adult_steps(
+                        step_id,task_id,sequence_no,operation,status,adapter_id,provider_id,
+                        model_id,tool_id,input_payload_id,output_artifact_id,config_fingerprint,
+                        started_at,completed_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL)""",
+                    (
+                        step.step_id, task_id, step.sequence_no, step.operation, "pending",
+                        *(supplied[name] for name in columns),
+                    ),
+                )
+                event_type = "step_created"
+                status = "pending"
+                started_at = None
+                completed_at = None
+            else:
+                if (
+                    existing["task_id"] != task_id
+                    or existing["sequence_no"] != step.sequence_no
+                    or existing["operation"] != step.operation
+                ):
+                    raise AdultModelValidationError("Step identity, task, sequence and operation are immutable.")
+                old_status = existing["status"]
+                allowed = {
+                    "pending": {"pending", "running", "skipped"},
+                    "running": {"running", "succeeded", "failed"},
+                    "succeeded": set(), "failed": set(), "skipped": set(),
+                }
+                if step.status not in allowed[old_status]:
+                    raise InvalidTaskTransition("Requested step status transition is not allowed.")
+                if old_status in {"succeeded", "failed", "skipped"}:
+                    raise InvalidTaskTransition("Finished steps cannot be modified.")
+                for name, value in supplied.items():
+                    old_value = existing[name]
+                    if old_value is not None and value is not None and old_value != value:
+                        raise AdultModelValidationError(f"{name} is immutable after it is assigned.")
+                status = step.status
+                started_at = existing["started_at"]
+                completed_at = existing["completed_at"]
+                if old_status == "pending" and status == "running":
+                    started_at = now
+                if status in {"succeeded", "failed", "skipped"}:
+                    completed_at = now
+                db.execute(
+                    """UPDATE adult_steps
+                       SET status=?, adapter_id=COALESCE(adapter_id,?),
+                           provider_id=COALESCE(provider_id,?), model_id=COALESCE(model_id,?),
+                           tool_id=COALESCE(tool_id,?), input_payload_id=COALESCE(input_payload_id,?),
+                           output_artifact_id=COALESCE(output_artifact_id,?),
+                           config_fingerprint=COALESCE(config_fingerprint,?),
+                           started_at=?, completed_at=?
+                       WHERE step_id=? AND task_id=?""",
+                    (
+                        status, *(supplied[name] for name in columns),
+                        started_at, completed_at, step.step_id, task_id,
+                    ),
+                )
+                event_type = "step_transition"
+
+            actual = db.execute(
+                "SELECT * FROM adult_steps WHERE step_id=?", (step.step_id,)
+            ).fetchone()
+            returned = self._step_from_row(actual)
+            current_step_id = task["current_step_id"]
+            if returned.status == "running":
+                current_step_id = returned.step_id
+            elif current_step_id == returned.step_id and returned.status in {"succeeded", "failed", "skipped"}:
+                next_step = db.execute(
+                    """SELECT step_id FROM adult_steps
+                       WHERE task_id=? AND status='pending'
+                       ORDER BY sequence_no LIMIT 1""",
+                    (task_id,),
+                ).fetchone()
+                current_step_id = next_step["step_id"] if next_step else None
+            elif current_step_id is None:
+                current_step_id = returned.step_id
+
+            metadata = {
+                "step_id": returned.step_id,
+                "sequence_no": returned.sequence_no,
+                "operation": returned.operation,
+                "status": returned.status,
+            }
+            TaskEvent(
+                event_id=event_id, task_id=task_id, event_type=event_type,
+                from_status=task["status"], to_status=task["status"],
+                metadata=metadata, created_at=now,
+            )
+            cursor = db.execute(
+                """UPDATE adult_tasks
+                   SET current_step_id=?,state_version=state_version+1,updated_at=?
+                   WHERE task_id=? AND state_version=? AND lease_owner=?
+                     AND lease_generation=? AND lease_expires_at>?""",
+                (
+                    current_step_id, now, task_id, expected_state_version,
+                    lease.worker_id, lease.lease_generation, now,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StaleTaskVersion("Task state version or lease changed.")
+            db.execute(
+                """INSERT INTO adult_task_events(
+                    event_id,task_id,event_type,from_status,to_status,metadata_json,created_at
+                ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    event_id, task_id, event_type, task["status"], task["status"],
+                    json.dumps(metadata, separators=(",", ":"), sort_keys=True), now,
+                ),
+            )
+            db.commit()
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        if returned is None:
+            raise TaskStoreSchemaError("Saved step could not be reloaded.")
+        return returned
+
+    def save_checkpoint(
+        self,
+        task_id: str,
+        snapshot: CheckpointSnapshot,
+        reason: str,
+        expected_state_version: int,
+        lease: TaskLease | None = None,
+    ) -> Checkpoint:
+        """Append a validated checkpoint and advance task state_version atomically."""
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if not isinstance(reason, str) or reason not in CHECKPOINT_REASONS:
+            raise AdultModelValidationError("Unsupported checkpoint reason.")
+        if (
+            not isinstance(expected_state_version, int)
+            or isinstance(expected_state_version, bool)
+            or expected_state_version < 0
+        ):
+            raise AdultModelValidationError("expected_state_version must be a non-negative integer.")
+        if not isinstance(snapshot, CheckpointSnapshot) or snapshot.task_id != task_id:
+            raise InvalidCheckpoint("A validated checkpoint snapshot for this task is required.")
+
+        now = _utc_now()
+        checkpoint_id = str(uuid.uuid4())
+        event_id = str(uuid.uuid4())
+        result: Checkpoint | None = None
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            task = db.execute(
+                "SELECT * FROM adult_tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise TaskNotFound("Task does not exist.")
+            if task["status"] in ACTIVE_STATUSES:
+                if not isinstance(lease, TaskLease):
+                    raise LeaseLost("An active checkpoint requires a current task lease.")
+                self._require_current_lease(task, task_id, lease, now)
+            elif lease is not None:
+                raise LeaseLost("A lease cannot be supplied for a non-active task.")
+            if task["state_version"] != expected_state_version:
+                raise StaleTaskVersion("Task state version changed.")
+            encoded = self._validate_checkpoint_snapshot(task, snapshot, db)
+            latest = db.execute(
+                "SELECT COALESCE(MAX(revision),0) FROM adult_checkpoints WHERE task_id=?",
+                (task_id,),
+            ).fetchone()[0]
+            revision = int(latest) + 1
+            action_required = int(snapshot.status in {"waiting_user", "needs_input", "paused"})
+            if snapshot.status != task["status"]:
+                raise InvalidCheckpoint("Checkpoint status must match the current task status.")
+            if action_required != int(task["user_action_required"]):
+                raise InvalidCheckpoint("Checkpoint user-action flag does not match the task.")
+            db.execute(
+                """INSERT INTO adult_checkpoints(
+                    checkpoint_id,task_id,revision,reason,schema_version,snapshot_json,
+                    failed_attempts_since_approval,user_action_required,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    checkpoint_id, task_id, revision, reason, snapshot.schema_version,
+                    encoded, snapshot.failed_attempts_since_approval, action_required, now,
+                ),
+            )
+            cursor = db.execute(
+                """UPDATE adult_tasks
+                   SET current_step_id=?,selected_adapter=?,selected_provider=?,
+                       selected_model=?,selected_tool=?,latest_result_artifact_id=?,
+                       state_version=state_version+1,updated_at=?
+                   WHERE task_id=? AND state_version=?""",
+                (
+                    snapshot.active_step_id, snapshot.selected_adapter,
+                    snapshot.selected_provider, snapshot.selected_model, snapshot.selected_tool,
+                    snapshot.latest_result_artifact_id, now, task_id, expected_state_version,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StaleTaskVersion("Task state version changed during checkpoint.")
+            metadata = {
+                "checkpoint_revision": revision,
+                "schema_version": snapshot.schema_version,
+                "reason_code": reason,
+            }
+            TaskEvent(
+                event_id=event_id, task_id=task_id, event_type="checkpoint_saved",
+                from_status=task["status"], to_status=task["status"],
+                metadata=metadata, created_at=now,
+            )
+            db.execute(
+                """INSERT INTO adult_task_events(
+                    event_id,task_id,event_type,from_status,to_status,metadata_json,created_at
+                ) VALUES(?,?,'checkpoint_saved',?,?,?,?)""",
+                (
+                    event_id, task_id, task["status"], task["status"],
+                    json.dumps(metadata, separators=(",", ":"), sort_keys=True), now,
+                ),
+            )
+            db.commit()
+            result = Checkpoint(
+                checkpoint_id=checkpoint_id, task_id=task_id, revision=revision,
+                reason=reason, schema_version=snapshot.schema_version,
+                failed_attempts_since_approval=snapshot.failed_attempts_since_approval,
+                user_action_required=bool(action_required), created_at=now, snapshot=snapshot,
+            )
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        if result is None:
+            raise TaskStoreSchemaError("Checkpoint could not be created.")
+        return result
+
+    def set_waiting_user(
+        self,
+        task_id: str,
+        snapshot: CheckpointSnapshot,
+        lease: TaskLease,
+        expected_state_version: int,
+    ) -> Checkpoint:
+        """Atomically checkpoint the exact five-failure approval boundary."""
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if not isinstance(snapshot, CheckpointSnapshot) or snapshot.task_id != task_id:
+            raise InvalidCheckpoint("A validated checkpoint snapshot for this task is required.")
+        if (
+            not isinstance(expected_state_version, int)
+            or isinstance(expected_state_version, bool)
+            or expected_state_version < 0
+        ):
+            raise AdultModelValidationError("expected_state_version must be a non-negative integer.")
+        now = _utc_now()
+        checkpoint_id = str(uuid.uuid4())
+        event_id = str(uuid.uuid4())
+        result: Checkpoint | None = None
+        exhausted = False
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            task = db.execute(
+                "SELECT * FROM adult_tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise TaskNotFound("Task does not exist.")
+            self._require_current_lease(task, task_id, lease, now)
+            if task["state_version"] != expected_state_version:
+                raise StaleTaskVersion("Task state version changed.")
+            if task["failed_attempts_since_approval"] != 5:
+                raise UserApprovalRequired("Exactly five failed attempts are required.")
+            if (
+                snapshot.status != "waiting_user"
+                or snapshot.failed_attempts_since_approval != 5
+                or snapshot.pending_user_action != "approval_required"
+                or set(snapshot.allowed_decisions) != {"continue", "cancel"}
+                or snapshot.total_attempts != task["total_attempts"]
+            ):
+                raise InvalidCheckpoint("Waiting-user snapshot does not satisfy the approval contract.")
+            deadline_left = max(
+                0, int((
+                    datetime.fromisoformat(task["deadline_at"][:-1] + "+00:00")
+                    - datetime.fromisoformat(now[:-1] + "+00:00")
+                ).total_seconds())
+            )
+            has_budget = (
+                task["total_attempts"] < task["max_total_attempts"]
+                and deadline_left > 0
+                and task["provider_calls"] <= task["max_provider_calls"]
+                and task["spent_cost_microusd"] <= task["max_cost_microusd"]
+            )
+            if not has_budget:
+                db.execute(
+                    """UPDATE adult_tasks
+                       SET status='failed',user_action_required=0,
+                           lease_owner=NULL,lease_expires_at=NULL,
+                           state_version=state_version+1,updated_at=?
+                       WHERE task_id=? AND state_version=? AND lease_generation=?""",
+                    (now, task_id, expected_state_version, lease.lease_generation),
+                )
+                metadata = {"reason_code": "attempt_budget_exhausted"}
+                TaskEvent(
+                    event_id=event_id, task_id=task_id, event_type="budget_exhausted",
+                    from_status=task["status"], to_status="failed",
+                    metadata=metadata, created_at=now,
+                )
+                db.execute(
+                    """INSERT INTO adult_task_events(
+                        event_id,task_id,event_type,from_status,to_status,metadata_json,created_at
+                    ) VALUES(?,?,'budget_exhausted',?,'failed',?,?)""",
+                    (
+                        event_id, task_id, task["status"],
+                        json.dumps(metadata, separators=(",", ":")), now,
+                    ),
+                )
+                exhausted = True
+            else:
+                encoded = snapshot.to_json()
+                latest = db.execute(
+                    "SELECT COALESCE(MAX(revision),0) FROM adult_checkpoints WHERE task_id=?",
+                    (task_id,),
+                ).fetchone()[0]
+                revision = int(latest) + 1
+                db.execute(
+                    """INSERT INTO adult_checkpoints(
+                        checkpoint_id,task_id,revision,reason,schema_version,snapshot_json,
+                        failed_attempts_since_approval,user_action_required,created_at
+                    ) VALUES(?,?,?,'approval_required',1,?,5,1,?)""",
+                    (checkpoint_id, task_id, revision, encoded, now),
+                )
+                cursor = db.execute(
+                    """UPDATE adult_tasks
+                       SET status='waiting_user',user_action_required=1,
+                           current_step_id=?,selected_adapter=?,selected_provider=?,
+                           selected_model=?,selected_tool=?,latest_result_artifact_id=?,
+                           lease_owner=NULL,lease_expires_at=NULL,
+                           state_version=state_version+1,updated_at=?
+                       WHERE task_id=? AND state_version=? AND lease_generation=?
+                         AND lease_owner=? AND lease_expires_at>? AND cancel_requested=0""",
+                    (
+                        snapshot.active_step_id, snapshot.selected_adapter,
+                        snapshot.selected_provider, snapshot.selected_model,
+                        snapshot.selected_tool, snapshot.latest_result_artifact_id,
+                        now, task_id, expected_state_version, lease.lease_generation,
+                        lease.worker_id, now,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise StaleTaskVersion("Task state or lease changed during approval checkpoint.")
+                metadata = {
+                    "checkpoint_revision": revision,
+                    "failed_attempts_since_approval": 5,
+                }
+                TaskEvent(
+                    event_id=event_id, task_id=task_id, event_type="waiting_user",
+                    from_status=task["status"], to_status="waiting_user",
+                    metadata=metadata, created_at=now,
+                )
+                db.execute(
+                    """INSERT INTO adult_task_events(
+                        event_id,task_id,event_type,from_status,to_status,metadata_json,created_at
+                    ) VALUES(?,?,'waiting_user',?,'waiting_user',?,?)""",
+                    (
+                        event_id, task_id,
+                        task["status"],
+                        json.dumps(metadata, separators=(",", ":"), sort_keys=True), now,
+                    ),
+                )
+                result = Checkpoint(
+                    checkpoint_id=checkpoint_id, task_id=task_id, revision=revision,
+                    reason="approval_required", schema_version=1,
+                    failed_attempts_since_approval=5, user_action_required=True,
+                    created_at=now, snapshot=snapshot,
+                )
+            db.commit()
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        if exhausted:
+            raise TaskBudgetExhausted("No execution budget remains for user approval.")
+        if result is None:
+            raise TaskStoreSchemaError("Waiting-user checkpoint could not be created.")
+        return result
+
+    def resume(self, task_id: str, decision: str) -> AdultTaskSnapshot:
+        """Persist an explicit continue/cancel decision; never dispatch work."""
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if decision not in {"continue", "cancel"}:
+            raise AdultModelValidationError("decision must be continue or cancel.")
+        if decision == "cancel":
+            return self.request_cancel(task_id)
+
+        now = _utc_now()
+        event_id = str(uuid.uuid4())
+        result: AdultTaskSnapshot | None = None
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            task = db.execute(
+                "SELECT * FROM adult_tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise TaskNotFound("Task does not exist.")
+            if task["status"] in TERMINAL_STATUSES:
+                raise TaskTerminal("Terminal tasks cannot be resumed.")
+            if task["cancel_requested"]:
+                raise TaskCancelled("A cancellation request prevents task resume.")
+            if task["status"] == "needs_input":
+                raise UserApprovalRequired("A validated replacement payload is required before resume.")
+            if task["status"] == "paused":
+                raise InvalidTaskTransition("Paused tasks require a separately defined corrective action.")
+            if task["status"] not in {"waiting_user", "checkpointed"}:
+                raise InvalidTaskTransition("Only waiting_user or checkpointed tasks can be resumed.")
+
+            if task["status"] == "waiting_user" and (
+                not task["user_action_required"] or task["failed_attempts_since_approval"] != 5
+            ):
+                raise UserApprovalRequired("Waiting-user task does not satisfy the approval gate.")
+            deadline_left = max(
+                0, int((
+                    datetime.fromisoformat(task["deadline_at"][:-1] + "+00:00")
+                    - datetime.fromisoformat(now[:-1] + "+00:00")
+                ).total_seconds())
+            )
+            budget_available = (
+                task["total_attempts"] < task["max_total_attempts"]
+                and deadline_left > 0
+                and task["provider_calls"] <= task["max_provider_calls"]
+                and task["spent_cost_microusd"] <= task["max_cost_microusd"]
+            )
+            if not budget_available:
+                cursor = db.execute(
+                    """UPDATE adult_tasks
+                       SET status='failed',user_action_required=0,
+                           state_version=state_version+1,updated_at=?
+                       WHERE task_id=? AND status=? AND state_version=?""",
+                    (now, task_id, task["status"], task["state_version"]),
+                )
+                if cursor.rowcount != 1:
+                    raise StaleTaskVersion("Task state changed while checking resume budget.")
+                metadata = {"reason_code": "resume_budget_exhausted"}
+                TaskEvent(
+                    event_id=event_id, task_id=task_id, event_type="budget_exhausted",
+                    from_status=task["status"], to_status="failed",
+                    metadata=metadata, created_at=now,
+                )
+                db.execute(
+                    """INSERT INTO adult_task_events(
+                        event_id,task_id,event_type,from_status,to_status,metadata_json,created_at
+                    ) VALUES(?,?,'budget_exhausted',?,'failed',?,?)""",
+                    (
+                        event_id, task_id, task["status"],
+                        json.dumps(metadata, separators=(",", ":")), now,
+                    ),
+                )
+            else:
+                waiting_for_user = task["status"] == "waiting_user"
+                cursor = db.execute(
+                    """UPDATE adult_tasks
+                       SET status='queued',
+                           approvals_granted=approvals_granted+?,
+                           failed_attempts_since_approval=CASE WHEN ?=1 THEN 0
+                                                               ELSE failed_attempts_since_approval END,
+                           user_action_required=0,state_version=state_version+1,updated_at=?
+                       WHERE task_id=? AND status=? AND state_version=? AND cancel_requested=0""",
+                    (
+                        int(waiting_for_user), int(waiting_for_user), now,
+                        task_id, task["status"], task["state_version"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise StaleTaskVersion("Task state changed while resuming.")
+                metadata = {"decision": "continue", "approval_granted": waiting_for_user}
+                TaskEvent(
+                    event_id=event_id, task_id=task_id, event_type="task_resumed",
+                    from_status=task["status"], to_status="queued",
+                    metadata=metadata, created_at=now,
+                )
+                db.execute(
+                    """INSERT INTO adult_task_events(
+                        event_id,task_id,event_type,from_status,to_status,metadata_json,created_at
+                    ) VALUES(?,?,'task_resumed',?,'queued',?,?)""",
+                    (
+                        event_id, task_id, task["status"],
+                        json.dumps(metadata, separators=(",", ":"), sort_keys=True), now,
+                    ),
+                )
+            db.commit()
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        result = self.get_task(task_id)
+        if result is None:
+            raise TaskStoreSchemaError("Resumed task could not be reloaded.")
+        return result
+
+    def request_cancel(self, task_id: str) -> AdultTaskSnapshot:
+        """Persist a cancellation request with active-worker acknowledgement semantics."""
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        now = _utc_now()
+        event_id = str(uuid.uuid4())
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            task = db.execute(
+                "SELECT * FROM adult_tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise TaskNotFound("Task does not exist.")
+            if task["status"] in {"completed", "failed"}:
+                raise TaskTerminal("Completed or failed tasks cannot be cancelled.")
+            if task["status"] == "cancelled" or (
+                task["status"] in ACTIVE_STATUSES and task["cancel_requested"]
+            ):
+                db.commit()
+                return self._snapshot_from_row(task)
+
+            active = task["status"] in ACTIVE_STATUSES
+            new_status = task["status"] if active else "cancelled"
+            event_type = "cancel_requested" if active else "task_cancelled"
+            cursor = db.execute(
+                """UPDATE adult_tasks
+                   SET status=?,cancel_requested=1,user_action_required=0,
+                       lease_owner=CASE WHEN ?=1 THEN lease_owner ELSE NULL END,
+                       lease_expires_at=CASE WHEN ?=1 THEN lease_expires_at ELSE NULL END,
+                       state_version=state_version+1,updated_at=?
+                   WHERE task_id=? AND state_version=?""",
+                (
+                    new_status, int(active), int(active), now,
+                    task_id, task["state_version"],
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StaleTaskVersion("Task state changed while requesting cancellation.")
+            metadata = {"reason_code": "user_cancelled"}
+            TaskEvent(
+                event_id=event_id, task_id=task_id, event_type=event_type,
+                from_status=task["status"], to_status=new_status,
+                metadata=metadata, created_at=now,
+            )
+            db.execute(
+                """INSERT INTO adult_task_events(
+                    event_id,task_id,event_type,from_status,to_status,metadata_json,created_at
+                ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    event_id, task_id, event_type, task["status"], new_status,
+                    json.dumps(metadata, separators=(",", ":")), now,
+                ),
+            )
+            db.commit()
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        result = self.get_task(task_id)
+        if result is None:
+            raise TaskStoreSchemaError("Cancelled task could not be reloaded.")
+        return result
+
+    def _build_recovery_snapshot(
+        self, db: sqlite3.Connection, task: sqlite3.Row,
+        new_status: str, now: str,
+    ) -> CheckpointSnapshot:
+        steps = db.execute(
+            "SELECT * FROM adult_steps WHERE task_id=? ORDER BY sequence_no",
+            (task["task_id"],),
+        ).fetchall()
+        plan = tuple(row["step_id"] for row in steps)
+        completed = tuple(
+            row["step_id"] for row in steps if row["status"] in {"succeeded", "skipped"}
+        )
+        pending = tuple(
+            row["step_id"] for row in steps if row["status"] in {"pending", "running"}
+        )
+        attempted: tuple[str, ...] = ()
+        excluded: tuple[str, ...] = ()
+        has_attempts = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='adult_attempts'"
+        ).fetchone()
+        if has_attempts:
+            attempts = db.execute(
+                """SELECT approach_key,status FROM adult_attempts
+                   WHERE task_id=? ORDER BY attempt_no""",
+                (task["task_id"],),
+            ).fetchall()
+            attempted = tuple(dict.fromkeys(row["approach_key"] for row in attempts))
+            excluded = tuple(dict.fromkeys(
+                row["approach_key"] for row in attempts
+                if row["status"] in {"failed", "rejected", "timed_out", "unknown_outcome"}
+            ))
+        remaining_wall = max(
+            0, int((
+                datetime.fromisoformat(task["deadline_at"][:-1] + "+00:00")
+                - datetime.fromisoformat(now[:-1] + "+00:00")
+            ).total_seconds())
+        )
+        return CheckpointSnapshot(
+            schema_version=1, task_id=task["task_id"], task_type=task["task_type"],
+            status=new_status, active_step_id=task["current_step_id"],
+            input_fingerprint=task["input_fingerprint"], payload_id=task["payload_id"],
+            plan=plan, completed_step_ids=completed, pending_step_ids=pending,
+            latest_result_artifact_id=task["latest_result_artifact_id"],
+            selected_adapter=task["selected_adapter"], selected_provider=task["selected_provider"],
+            selected_model=task["selected_model"], selected_tool=task["selected_tool"],
+            attempted_approach_keys=attempted, excluded_approach_keys=excluded,
+            total_attempts=task["total_attempts"],
+            failed_attempts_since_approval=task["failed_attempts_since_approval"],
+            provider_calls=task["provider_calls"], spent_cost_microusd=task["spent_cost_microusd"],
+            remaining_attempts=max(0, task["max_total_attempts"] - task["total_attempts"]),
+            remaining_wall_seconds=remaining_wall,
+            remaining_provider_calls=max(0, task["max_provider_calls"] - task["provider_calls"]),
+            remaining_cost_microusd=max(0, task["max_cost_microusd"] - task["spent_cost_microusd"]),
+            last_error_code=task["last_error_code"],
+        )
+
+    def recover_expired_leases(self) -> int:
+        """Checkpoint and release expired task leases without re-dispatching work."""
+        now = _utc_now()
+        recovered = 0
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                """SELECT * FROM adult_tasks
+                   WHERE status IN ('analyzing','running','evaluating')
+                     AND lease_expires_at IS NOT NULL AND lease_expires_at<=?
+                   ORDER BY created_at,task_id""",
+                (now,),
+            ).fetchall()
+            for task in rows:
+                current = db.execute(
+                    "SELECT * FROM adult_tasks WHERE task_id=?", (task["task_id"],)
+                ).fetchone()
+                if (
+                    current is None or current["status"] not in ACTIVE_STATUSES
+                    or current["lease_generation"] != task["lease_generation"]
+                    or current["lease_expires_at"] is None
+                    or current["lease_expires_at"] > now
+                ):
+                    continue
+                cancelled = bool(current["cancel_requested"])
+                new_status = "cancelled" if cancelled else "checkpointed"
+                reason = "cancelled" if cancelled else "lease_recovered"
+                snapshot = self._build_recovery_snapshot(db, current, new_status, now)
+                latest = db.execute(
+                    "SELECT COALESCE(MAX(revision),0) FROM adult_checkpoints WHERE task_id=?",
+                    (current["task_id"],),
+                ).fetchone()[0]
+                revision = int(latest) + 1
+                checkpoint_id = str(uuid.uuid4())
+                db.execute(
+                    """INSERT INTO adult_checkpoints(
+                        checkpoint_id,task_id,revision,reason,schema_version,snapshot_json,
+                        failed_attempts_since_approval,user_action_required,created_at
+                    ) VALUES(?,?,?,?,?,?,?,0,?)""",
+                    (
+                        checkpoint_id, current["task_id"], revision, reason,
+                        snapshot.schema_version, snapshot.to_json(),
+                        snapshot.failed_attempts_since_approval, now,
+                    ),
+                )
+                cursor = db.execute(
+                    """UPDATE adult_tasks
+                       SET status=?,user_action_required=0,lease_owner=NULL,
+                           lease_expires_at=NULL,lease_generation=lease_generation+1,
+                           state_version=state_version+1,updated_at=?
+                       WHERE task_id=? AND status=? AND state_version=?
+                         AND lease_generation=? AND lease_expires_at<=?""",
+                    (
+                        new_status, now, current["task_id"], current["status"],
+                        current["state_version"], current["lease_generation"], now,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise StaleTaskVersion("Task changed during lease recovery.")
+                event_type = "cancel_recovered" if cancelled else "lease_expired_recovered"
+                metadata = {
+                    "checkpoint_revision": revision,
+                    "lease_generation": current["lease_generation"],
+                }
+                TaskEvent(
+                    event_id=str(uuid.uuid4()), task_id=current["task_id"],
+                    event_type=event_type, from_status=current["status"],
+                    to_status=new_status, metadata=metadata, created_at=now,
+                )
+                db.execute(
+                    """INSERT INTO adult_task_events(
+                        event_id,task_id,event_type,from_status,to_status,metadata_json,created_at
+                    ) VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        str(uuid.uuid4()), current["task_id"], event_type,
+                        current["status"], new_status,
+                        json.dumps(metadata, separators=(",", ":"), sort_keys=True), now,
+                    ),
+                )
+                recovered += 1
+            db.commit()
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        return recovered
 
     @staticmethod
     def _snapshot_from_row(row: sqlite3.Row) -> AdultTaskSnapshot:
