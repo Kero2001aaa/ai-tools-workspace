@@ -218,20 +218,130 @@ _SCHEMA: Final[tuple[str, ...]] = (
        BEGIN SELECT RAISE(ABORT, 'adult task events are append-only'); END""",
 )
 
-_EXPECTED_TABLES: Final = {
+LATEST_SCHEMA_VERSION: Final = 2
+ATTEMPT_SCHEMA_VERSION: Final = 2
+ATTEMPT_SCHEMA_NAME: Final = "adult_attempt_tracking_v2"
+
+_ATTEMPT_SCHEMA: Final[tuple[str, ...]] = (
+    """CREATE TABLE adult_attempts (
+        attempt_id TEXT PRIMARY KEY CHECK(length(attempt_id) BETWEEN 16 AND 128),
+        task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
+        step_id TEXT NOT NULL REFERENCES adult_steps(step_id) ON DELETE RESTRICT,
+        attempt_no INTEGER NOT NULL CHECK(attempt_no BETWEEN 1 AND 20),
+        approach_key TEXT NOT NULL CHECK(length(approach_key)=64 AND approach_key NOT GLOB '*[^0-9a-f]*'),
+        route_family_key TEXT NOT NULL CHECK(length(route_family_key)=64 AND route_family_key NOT GLOB '*[^0-9a-f]*'),
+        task_type TEXT NOT NULL CHECK(task_type IN (
+            'text.analyze','text.generate','text.rewrite',
+            'image.analyze','image.generate','image.edit')),
+        adapter_id TEXT NOT NULL,
+        adapter_version TEXT NOT NULL,
+        provider_id TEXT,
+        model_id TEXT,
+        model_version TEXT,
+        tool_id TEXT,
+        tool_version TEXT,
+        input_fingerprint TEXT NOT NULL,
+        config_fingerprint TEXT NOT NULL,
+        environment_fingerprint TEXT,
+        lease_generation INTEGER NOT NULL CHECK(lease_generation > 0),
+        status TEXT NOT NULL CHECK(status IN (
+            'running','succeeded','failed','rejected','timed_out','unknown_outcome')),
+        failure_class TEXT CHECK(failure_class IN (
+            'transient','capability_mismatch','permanent_request',
+            'policy_rejection','budget_exhaustion','unknown')),
+        retryable INTEGER NOT NULL DEFAULT 0 CHECK(retryable IN (0,1)),
+        retry_reason TEXT CHECK(retry_reason IS NULL OR length(retry_reason) <= 512),
+        error_code TEXT CHECK(error_code IS NULL OR length(error_code) BETWEEN 1 AND 64),
+        sanitized_error TEXT CHECK(sanitized_error IS NULL OR length(sanitized_error) <= 512),
+        output_fingerprint TEXT,
+        output_artifact_id TEXT,
+        usage_json TEXT NOT NULL DEFAULT '{}'
+            CHECK(json_valid(usage_json) AND json_type(usage_json)='object'
+              AND length(CAST(usage_json AS BLOB)) <= 2048),
+        cost_microusd INTEGER CHECK(cost_microusd IS NULL OR cost_microusd >= 0),
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        elapsed_ms INTEGER CHECK(elapsed_ms IS NULL OR elapsed_ms >= 0),
+        UNIQUE(task_id,attempt_no),
+        CHECK((status='running' AND finished_at IS NULL)
+           OR (status<>'running' AND finished_at IS NOT NULL)),
+        CHECK(status NOT IN ('succeeded','running') OR failure_class IS NULL),
+        CHECK(status<>'rejected' OR (failure_class='policy_rejection' AND retryable=0))
+    )""",
+    """CREATE TABLE adult_attempt_events (
+        event_id TEXT PRIMARY KEY CHECK(length(event_id) BETWEEN 16 AND 128),
+        task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
+        attempt_id TEXT REFERENCES adult_attempts(attempt_id) ON DELETE RESTRICT,
+        event_type TEXT NOT NULL CHECK(event_type IN (
+            'attempt_started','attempt_succeeded','attempt_failed',
+            'attempt_rejected','attempt_timed_out','attempt_unknown_outcome',
+            'approach_skipped','retry_authorized')),
+        approach_key TEXT NOT NULL CHECK(length(approach_key)=64 AND approach_key NOT GLOB '*[^0-9a-f]*'),
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+            CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'
+              AND length(CAST(metadata_json AS BLOB)) <= 2048),
+        created_at TEXT NOT NULL
+    )""",
+    "CREATE INDEX idx_adult_attempts_task_no ON adult_attempts(task_id,attempt_no DESC)",
+    "CREATE INDEX idx_adult_attempts_approach ON adult_attempts(task_id,approach_key,attempt_no DESC)",
+    "CREATE UNIQUE INDEX idx_adult_attempts_one_running ON adult_attempts(task_id) WHERE status='running'",
+    "CREATE INDEX idx_adult_attempt_events_task_created ON adult_attempt_events(task_id,created_at)",
+    """CREATE TRIGGER validate_adult_attempt_update BEFORE UPDATE ON adult_attempts
+       WHEN OLD.status <> 'running'
+       OR NEW.attempt_id IS NOT OLD.attempt_id
+       OR NEW.task_id IS NOT OLD.task_id
+       OR NEW.step_id IS NOT OLD.step_id
+       OR NEW.attempt_no IS NOT OLD.attempt_no
+       OR NEW.approach_key IS NOT OLD.approach_key
+       OR NEW.route_family_key IS NOT OLD.route_family_key
+       OR NEW.task_type IS NOT OLD.task_type
+       OR NEW.adapter_id IS NOT OLD.adapter_id
+       OR NEW.adapter_version IS NOT OLD.adapter_version
+       OR NEW.provider_id IS NOT OLD.provider_id
+       OR NEW.model_id IS NOT OLD.model_id
+       OR NEW.model_version IS NOT OLD.model_version
+       OR NEW.tool_id IS NOT OLD.tool_id
+       OR NEW.tool_version IS NOT OLD.tool_version
+       OR NEW.input_fingerprint IS NOT OLD.input_fingerprint
+       OR NEW.config_fingerprint IS NOT OLD.config_fingerprint
+       OR NEW.environment_fingerprint IS NOT OLD.environment_fingerprint
+       OR NEW.lease_generation IS NOT OLD.lease_generation
+       OR NEW.started_at IS NOT OLD.started_at
+       OR NEW.retry_reason IS NOT OLD.retry_reason
+       OR NEW.status NOT IN ('succeeded','failed','rejected','timed_out','unknown_outcome')
+       OR NEW.finished_at IS NULL
+       BEGIN SELECT RAISE(ABORT, 'invalid adult attempt mutation'); END""",
+    """CREATE TRIGGER prevent_adult_attempts_delete BEFORE DELETE ON adult_attempts
+       BEGIN SELECT RAISE(ABORT, 'adult attempt history is immutable'); END""",
+    """CREATE TRIGGER prevent_adult_attempt_events_update BEFORE UPDATE ON adult_attempt_events
+       BEGIN SELECT RAISE(ABORT, 'adult attempt events are append-only'); END""",
+    """CREATE TRIGGER prevent_adult_attempt_events_delete BEFORE DELETE ON adult_attempt_events
+       BEGIN SELECT RAISE(ABORT, 'adult attempt events are append-only'); END""",
+)
+
+_EXPECTED_TABLES_V1: Final = {
     "adult_schema_migrations", "adult_tasks", "adult_steps",
     "adult_checkpoints", "adult_task_events",
 }
-_EXPECTED_INDEXES: Final = {
+_EXPECTED_INDEXES_V1: Final = {
     "idx_adult_tasks_status_updated", "idx_adult_single_active_task",
     "idx_adult_steps_task_sequence", "idx_adult_checkpoints_task_revision",
     "idx_adult_events_task_created",
 }
-_EXPECTED_TRIGGERS: Final = {
+_EXPECTED_TRIGGERS_V1: Final = {
     "prevent_adult_tasks_delete", "prevent_adult_steps_delete",
     "validate_adult_steps_update", "prevent_adult_checkpoints_update",
     "prevent_adult_checkpoints_delete", "prevent_adult_task_events_update",
     "prevent_adult_task_events_delete",
+}
+_EXPECTED_TABLES_V2: Final = _EXPECTED_TABLES_V1 | {"adult_attempts", "adult_attempt_events"}
+_EXPECTED_INDEXES_V2: Final = _EXPECTED_INDEXES_V1 | {
+    "idx_adult_attempts_task_no", "idx_adult_attempts_approach",
+    "idx_adult_attempts_one_running", "idx_adult_attempt_events_task_created",
+}
+_EXPECTED_TRIGGERS_V2: Final = _EXPECTED_TRIGGERS_V1 | {
+    "validate_adult_attempt_update", "prevent_adult_attempts_delete",
+    "prevent_adult_attempt_events_update", "prevent_adult_attempt_events_delete",
 }
 
 
@@ -279,6 +389,14 @@ class AdultTaskStore:
             raise TaskStoreSchemaError("Adult task database must use DELETE journal mode.")
         return connection
 
+    def _apply_attempt_migration(self, connection: sqlite3.Connection) -> None:
+        for statement in _ATTEMPT_SCHEMA:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO adult_schema_migrations(version,name,applied_at) VALUES(?,?,?)",
+            (ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME, _utc_now()),
+        )
+
     def _migrate(self) -> None:
         connection = self._connect()
         try:
@@ -286,22 +404,33 @@ class AdultTaskStore:
             exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='adult_schema_migrations'"
             ).fetchone()
-            if exists:
-                rows = connection.execute(
-                    "SELECT version, name FROM adult_schema_migrations ORDER BY version"
-                ).fetchall()
-                if len(rows) != 1 or rows[0]["version"] != SCHEMA_VERSION or rows[0]["name"] != SCHEMA_NAME:
-                    raise TaskStoreSchemaError("Unsupported Adult task database migration history.")
-                self._validate_schema(connection)
+            if not exists:
+                for statement in _SCHEMA:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO adult_schema_migrations(version,name,applied_at) VALUES(?,?,?)",
+                    (SCHEMA_VERSION, SCHEMA_NAME, _utc_now()),
+                )
+                self._validate_schema(connection, schema_version=SCHEMA_VERSION)
+                self._apply_attempt_migration(connection)
+                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
                 connection.commit()
                 return
-            for statement in _SCHEMA:
-                connection.execute(statement)
-            connection.execute(
-                "INSERT INTO adult_schema_migrations(version,name,applied_at) VALUES(?,?,?)",
-                (SCHEMA_VERSION, SCHEMA_NAME, _utc_now()),
-            )
-            self._validate_schema(connection)
+
+            rows = connection.execute(
+                "SELECT version,name FROM adult_schema_migrations ORDER BY version"
+            ).fetchall()
+            history = [(row["version"], row["name"]) for row in rows]
+            expected_v1 = [(SCHEMA_VERSION, SCHEMA_NAME)]
+            expected_v2 = expected_v1 + [(ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME)]
+            if history == expected_v1:
+                self._validate_schema(connection, schema_version=SCHEMA_VERSION)
+                self._apply_attempt_migration(connection)
+                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
+            elif history == expected_v2:
+                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
+            else:
+                raise TaskStoreSchemaError("Unsupported Adult task database migration history.")
             connection.commit()
         except Exception:
             if connection.in_transaction:
@@ -311,7 +440,20 @@ class AdultTaskStore:
             connection.close()
 
     @staticmethod
-    def _validate_schema(connection: sqlite3.Connection) -> None:
+    def _validate_schema(
+        connection: sqlite3.Connection, *, schema_version: int = LATEST_SCHEMA_VERSION
+    ) -> None:
+        if schema_version == SCHEMA_VERSION:
+            expected_tables = _EXPECTED_TABLES_V1
+            expected_indexes = _EXPECTED_INDEXES_V1
+            expected_triggers = _EXPECTED_TRIGGERS_V1
+        elif schema_version == LATEST_SCHEMA_VERSION:
+            expected_tables = _EXPECTED_TABLES_V2
+            expected_indexes = _EXPECTED_INDEXES_V2
+            expected_triggers = _EXPECTED_TRIGGERS_V2
+        else:
+            raise TaskStoreSchemaError("Unsupported Adult task schema version.")
+
         rows = connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
@@ -324,11 +466,11 @@ class AdultTaskStore:
             "SELECT name FROM sqlite_master WHERE type='trigger'"
         ).fetchall()
         triggers = {row["name"] for row in rows}
-        if tables != _EXPECTED_TABLES:
-            raise TaskStoreSchemaError("Adult task database is missing required tables.")
-        if not _EXPECTED_INDEXES.issubset(indexes):
+        if tables != expected_tables:
+            raise TaskStoreSchemaError("Adult task database contains an unexpected table layout.")
+        if not expected_indexes.issubset(indexes):
             raise TaskStoreSchemaError("Adult task database is missing required indexes.")
-        if not _EXPECTED_TRIGGERS.issubset(triggers):
+        if not expected_triggers.issubset(triggers):
             raise TaskStoreSchemaError("Adult task database is missing required triggers.")
 
 
