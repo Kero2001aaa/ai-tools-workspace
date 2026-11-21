@@ -533,5 +533,87 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         self.assertEqual(2, len(store.list_events(task.task_id)))
         self.assertEqual(1, store.get_task(task.task_id).state_version)
 
+    def test_release_lease_clears_fenced_owner_and_records_atomic_event(self):
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        lease = store.claim_task(task.task_id, "worker-1")
+        released = store.release_lease(
+            lease, expected_state_version=lease.state_version_at_grant
+        )
+        self.assertEqual(("checkpointed", 2), (released.status, released.state_version))
+        with store._connect() as connection:
+            row = connection.execute(
+                "SELECT lease_owner,lease_expires_at FROM adult_tasks WHERE task_id=?",
+                (task.task_id,),
+            ).fetchone()
+        self.assertEqual((None, None), tuple(row))
+        event = store.list_events(task.task_id)[-1]
+        self.assertEqual(("lease_released", "analyzing", "checkpointed"), (
+            event.event_type, event.from_status, event.to_status,
+        ))
+        self.assertEqual({
+            "lease_generation": lease.lease_generation,
+            "reason_code": "worker_released",
+        }, event.metadata)
+
+    def test_release_lease_rejects_stale_version_and_expired_or_stale_generation(self):
+        from datetime import timedelta
+        from agent.adult.adult_task_store import LeaseLost, StaleTaskVersion
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        lease = store.claim_task(task.task_id, "worker-1")
+        with self.assertRaises(StaleTaskVersion):
+            store.release_lease(lease, expected_state_version=0)
+        current = store.get_task(task.task_id)
+        self.assertEqual(("analyzing", 1), (current.status, current.state_version))
+        stale = type(lease)._from_store(
+            lease.task_id, lease.worker_id, lease.lease_generation - 1,
+            lease.expires_at, lease.state_version_at_grant,
+        )
+        with self.assertRaises(LeaseLost):
+            store.release_lease(stale, expected_state_version=1)
+        self.assertEqual(2, len(store.list_events(task.task_id)))
+
+    def test_release_lease_rolls_back_state_when_event_append_fails(self):
+        from agent.adult.adult_task_store import AdultTaskStoreError
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        lease = store.claim_task(task.task_id, "worker-1")
+        original_connect = store._connect
+
+        class EventFailingConnection:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+            def __getattr__(self, name):
+                return getattr(self.wrapped, name)
+            def execute(self, sql, parameters=()):
+                if sql.lstrip().upper().startswith("INSERT INTO ADULT_TASK_EVENTS"):
+                    raise sqlite3.OperationalError("injected event write failure")
+                return self.wrapped.execute(sql, parameters)
+            def close(self):
+                self.wrapped.close()
+
+        with patch.object(
+            store, "_connect",
+            side_effect=lambda: EventFailingConnection(original_connect()),
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                store.release_lease(lease, expected_state_version=1)
+        current = store.get_task(task.task_id)
+        self.assertEqual(("analyzing", 1), (current.status, current.state_version))
+        self.assertEqual(2, len(store.list_events(task.task_id)))
+
 if __name__ == "__main__":
     unittest.main()
