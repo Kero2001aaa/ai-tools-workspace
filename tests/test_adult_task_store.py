@@ -412,7 +412,6 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
 
     def test_transition_rolls_back_state_when_event_append_fails(self):
         import sqlite3
-        from agent.adult.adult_task_store import AdultTaskStoreError
         from agent.adult.models import AdultTaskRequest, TaskBudget
         store = AdultTaskStore(self.db)
         task = store.create_task(
@@ -561,7 +560,6 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         }, event.metadata)
 
     def test_release_lease_rejects_stale_version_and_expired_or_stale_generation(self):
-        from datetime import timedelta
         from agent.adult.adult_task_store import LeaseLost, StaleTaskVersion
         from agent.adult.models import AdultTaskRequest, TaskBudget
         store = AdultTaskStore(self.db)
@@ -575,7 +573,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         current = store.get_task(task.task_id)
         self.assertEqual(("analyzing", 1), (current.status, current.state_version))
         stale = type(lease)._from_store(
-            lease.task_id, lease.worker_id, lease.lease_generation - 1,
+            lease.task_id, lease.worker_id, lease.lease_generation + 1,
             lease.expires_at, lease.state_version_at_grant,
         )
         with self.assertRaises(LeaseLost):
