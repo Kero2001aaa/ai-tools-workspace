@@ -749,9 +749,13 @@ class AdultTaskStore:
         if not isinstance(budget, TaskBudget):
             raise InvalidTaskBudget("budget must be a validated TaskBudget.")
         if request.retention_policy == "encrypted":
-            raise PayloadRetentionUnavailable(
-                "Encrypted payload retention is unavailable until Stage 4."
-            )
+            try:
+                from agent.adult.payload_store import PayloadCipher, PayloadStoreError
+                PayloadCipher.from_environment()
+            except (ImportError, PayloadStoreError, ValueError):
+                raise PayloadRetentionUnavailable(
+                    "A valid local encryption key is required for encrypted payload retention."
+                ) from None
         if request.retention_policy != "ephemeral":
             raise AdultModelValidationError("Unsupported payload retention policy.")
 
