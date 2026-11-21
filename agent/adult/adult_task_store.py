@@ -4,11 +4,22 @@ This module deliberately contains no provider, network, payload, or inference co
 """
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import os
 import sqlite3
 import stat
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final
+
+from agent.adult.models import (
+    AdultModelValidationError, AdultTaskRequest, AdultTaskSnapshot,
+    Checkpoint, CheckpointSnapshot, TaskBudget, TaskEvent, TaskPage,
+    TASK_STATUSES,
+)
 
 SCHEMA_VERSION: Final = 1
 SCHEMA_NAME: Final = "adult_operational_store_v1"
@@ -21,6 +32,18 @@ class AdultTaskStoreError(Exception):
 
 class TaskStoreSchemaError(AdultTaskStoreError):
     """The operational database schema is missing or inconsistent."""
+
+class TaskNotFound(AdultTaskStoreError):
+    error_code = "task_not_found"
+
+class InvalidTaskBudget(AdultTaskStoreError):
+    error_code = "invalid_task_budget"
+
+class PayloadRetentionUnavailable(AdultTaskStoreError):
+    error_code = "payload_retention_unavailable"
+
+class InvalidCursor(AdultTaskStoreError):
+    error_code = "invalid_cursor"
 
 _SCHEMA: Final[tuple[str, ...]] = (
     """CREATE TABLE adult_schema_migrations (
@@ -261,6 +284,293 @@ class AdultTaskStore:
             raise TaskStoreSchemaError("Adult task database is missing required indexes.")
         if not _EXPECTED_TRIGGERS.issubset(triggers):
             raise TaskStoreSchemaError("Adult task database is missing required triggers.")
+
+
+    def create_task(self, request: AdultTaskRequest, budget: TaskBudget) -> AdultTaskSnapshot:
+        if not isinstance(request, AdultTaskRequest):
+            raise AdultModelValidationError("request must be an AdultTaskRequest.")
+        if not isinstance(budget, TaskBudget):
+            raise InvalidTaskBudget("budget must be a validated TaskBudget.")
+        if request.retention_policy == "encrypted":
+            raise PayloadRetentionUnavailable(
+                "Encrypted payload retention is unavailable until Stage 4."
+            )
+        if request.retention_policy != "ephemeral":
+            raise AdultModelValidationError("Unsupported payload retention policy.")
+
+        task_id = str(uuid.uuid4())
+        step_id = str(uuid.uuid4())
+        now = _utc_now()
+        deadline = (
+            datetime.fromisoformat(now[:-1] + "+00:00")
+            + timedelta(seconds=budget.max_wall_seconds)
+        ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        snapshot = CheckpointSnapshot(
+            schema_version=1,
+            task_id=task_id,
+            task_type=request.task_type,
+            status="queued",
+            active_step_id=None,
+            input_fingerprint=request.input_fingerprint,
+            payload_id=request.payload_id,
+            plan=(step_id,),
+            completed_step_ids=(),
+            pending_step_ids=(step_id,),
+            total_attempts=0,
+            failed_attempts_since_approval=0,
+            provider_calls=0,
+            spent_cost_microusd=0,
+            remaining_attempts=budget.max_total_attempts,
+            remaining_wall_seconds=budget.max_wall_seconds,
+            remaining_provider_calls=budget.max_provider_calls,
+            remaining_cost_microusd=budget.max_cost_microusd,
+        )
+        checkpoint_id = str(uuid.uuid4())
+        event_id = str(uuid.uuid4())
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                """INSERT INTO adult_tasks (
+                    task_id, task_type, status, input_fingerprint,
+                    instruction_fingerprint, request_options_json, payload_id,
+                    retention_policy, current_step_id, failed_attempts_since_approval,
+                    total_attempts, provider_calls, approvals_granted,
+                    max_total_attempts, max_wall_seconds, max_provider_calls,
+                    max_cost_microusd, spent_cost_microusd, deadline_at,
+                    state_version, cancel_requested, user_action_required,
+                    created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,0,0,0,0,?,?,?,?,0,?,0,0,0,?,?)""",
+                (
+                    task_id, request.task_type, "queued", request.input_fingerprint,
+                    request.instruction_fingerprint,
+                    json.dumps(request.requested_options, separators=(",", ":"), sort_keys=True, allow_nan=False),
+                    request.payload_id, request.retention_policy, step_id,
+                    budget.max_total_attempts, budget.max_wall_seconds,
+                    budget.max_provider_calls, budget.max_cost_microusd,
+                    deadline, now, now,
+                ),
+            )
+            db.execute(
+                """INSERT INTO adult_steps
+                   (step_id,task_id,sequence_no,operation,status)
+                   VALUES (?,?,0,'intake','pending')""",
+                (step_id, task_id),
+            )
+            db.execute(
+                """INSERT INTO adult_checkpoints
+                   (checkpoint_id,task_id,revision,reason,schema_version,
+                    snapshot_json,failed_attempts_since_approval,user_action_required,created_at)
+                   VALUES (?,?,1,'initial',1,?,0,0,?)""",
+                (checkpoint_id, task_id, snapshot.to_json(), now),
+            )
+            db.execute(
+                """INSERT INTO adult_task_events
+                   (event_id,task_id,event_type,from_status,to_status,metadata_json,created_at)
+                   VALUES (?,?,'task_created',NULL,'queued','{}',?)""",
+                (event_id, task_id, now),
+            )
+            db.commit()
+        except sqlite3.IntegrityError as exc:
+            if db.in_transaction:
+                db.rollback()
+            raise AdultTaskStoreError("Task creation violated a persistence invariant.") from exc
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        result = self.get_task(task_id)
+        if result is None:
+            raise TaskStoreSchemaError("Created task could not be reloaded.")
+        return result
+
+    def get_task(self, task_id: str) -> AdultTaskSnapshot | None:
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM adult_tasks WHERE task_id=?", (task_id,)).fetchone()
+        return self._snapshot_from_row(row) if row else None
+
+    def get_task_request(self, task_id: str) -> AdultTaskRequest | None:
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT task_type,input_fingerprint,instruction_fingerprint,
+                          payload_id,retention_policy,request_options_json
+                   FROM adult_tasks WHERE task_id=?""",
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            options = json.loads(row["request_options_json"])
+            return AdultTaskRequest(
+                task_type=row["task_type"],
+                input_fingerprint=row["input_fingerprint"],
+                instruction_fingerprint=row["instruction_fingerprint"],
+                payload_id=row["payload_id"],
+                retention_policy=row["retention_policy"],
+                requested_options=options,
+            )
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise TaskStoreSchemaError("Stored task request metadata is invalid.") from exc
+
+    def list_tasks(
+        self, status: str | None = None, limit: int = 20,
+        cursor: str | None = None,
+    ) -> TaskPage:
+        if status is not None and status not in TASK_STATUSES:
+            raise AdultModelValidationError("Unsupported task status filter.")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 50:
+            raise AdultModelValidationError("limit must be an integer from 1 through 50.")
+        cursor_values = self._decode_cursor(cursor) if cursor is not None else None
+        clauses = []
+        parameters: list[object] = []
+        if status is not None:
+            clauses.append("status=?")
+            parameters.append(status)
+        if cursor_values is not None:
+            created_at, task_id = cursor_values
+            clauses.append("(created_at < ? OR (created_at = ? AND task_id < ?))")
+            parameters.extend((created_at, created_at, task_id))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM adult_tasks" + where
+                + " ORDER BY created_at DESC, task_id DESC LIMIT ?",
+                (*parameters, limit + 1),
+            ).fetchall()
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        next_cursor = None
+        if has_more and page_rows:
+            last = page_rows[-1]
+            next_cursor = self._encode_cursor(last["created_at"], last["task_id"])
+        return TaskPage(
+            items=tuple(self._snapshot_from_row(row) for row in page_rows),
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
+
+    def get_latest_checkpoint(self, task_id: str) -> Checkpoint | None:
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT * FROM adult_checkpoints
+                   WHERE task_id=? ORDER BY revision DESC LIMIT 1""",
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            raw = json.loads(row["snapshot_json"])
+            tuple_fields = {
+                "plan", "completed_step_ids", "pending_step_ids",
+                "attempted_approach_keys", "excluded_approach_keys", "allowed_decisions",
+            }
+            for key in tuple_fields:
+                raw[key] = tuple(raw.get(key, ()))
+            checkpoint_snapshot = CheckpointSnapshot(**raw)
+            return Checkpoint(
+                checkpoint_id=row["checkpoint_id"],
+                task_id=row["task_id"],
+                revision=row["revision"],
+                reason=row["reason"],
+                schema_version=row["schema_version"],
+                failed_attempts_since_approval=row["failed_attempts_since_approval"],
+                user_action_required=bool(row["user_action_required"]),
+                created_at=row["created_at"],
+                snapshot=checkpoint_snapshot,
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise TaskStoreSchemaError("Stored checkpoint metadata is invalid.") from exc
+
+    def list_events(self, task_id: str, limit: int = 50) -> list[TaskEvent]:
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise AdultModelValidationError("limit must be an integer from 1 through 200.")
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT * FROM adult_task_events WHERE task_id=?
+                   ORDER BY created_at,event_id LIMIT ?""",
+                (task_id, limit),
+            ).fetchall()
+        try:
+            return [
+                TaskEvent(
+                    event_id=row["event_id"], task_id=row["task_id"],
+                    event_type=row["event_type"], from_status=row["from_status"],
+                    to_status=row["to_status"], metadata=json.loads(row["metadata_json"]),
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ]
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise TaskStoreSchemaError("Stored task event metadata is invalid.") from exc
+
+    @staticmethod
+    def _snapshot_from_row(row: sqlite3.Row) -> AdultTaskSnapshot:
+        return AdultTaskSnapshot(
+            task_id=row["task_id"], task_type=row["task_type"], status=row["status"],
+            created_at=row["created_at"], updated_at=row["updated_at"],
+            state_version=row["state_version"], current_step_id=row["current_step_id"],
+            attempt_count=row["total_attempts"],
+            failed_attempts_since_approval=row["failed_attempts_since_approval"],
+            provider_calls=row["provider_calls"], approvals_granted=row["approvals_granted"],
+            max_total_attempts=row["max_total_attempts"],
+            max_wall_seconds=row["max_wall_seconds"],
+            max_provider_calls=row["max_provider_calls"],
+            max_cost_microusd=row["max_cost_microusd"],
+            spent_cost_microusd=row["spent_cost_microusd"], deadline_at=row["deadline_at"],
+            selected_adapter=row["selected_adapter"], selected_provider=row["selected_provider"],
+            selected_model=row["selected_model"], selected_tool=row["selected_tool"],
+            latest_result_artifact_id=row["latest_result_artifact_id"],
+            last_error_code=row["last_error_code"],
+            user_action_required=bool(row["user_action_required"]),
+            cancel_requested=bool(row["cancel_requested"]),
+        )
+
+    @staticmethod
+    def _encode_cursor(created_at: str, task_id: str) -> str:
+        payload = json.dumps(
+            {"v": 1, "created_at": created_at, "task_id": task_id},
+            separators=(",", ":"), sort_keys=True,
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_cursor(cursor: str) -> tuple[str, str]:
+        if not isinstance(cursor, str) or not cursor or len(cursor) > 2048:
+            raise InvalidCursor("Task cursor is invalid.")
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            decoded = base64.b64decode(padded, altchars=b"-_", validate=True)
+            if len(decoded) > 1024:
+                raise InvalidCursor("Task cursor is invalid.")
+            value = json.loads(decoded.decode("utf-8"))
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"v", "created_at", "task_id"}
+                or type(value["v"]) is not int or value["v"] != 1
+                or not isinstance(value["created_at"], str)
+                or not isinstance(value["task_id"], str)
+                or not value["task_id"] or len(value["task_id"]) > 128
+            ):
+                raise InvalidCursor("Task cursor is invalid.")
+            stamp = value["created_at"]
+            if not stamp.endswith("Z"):
+                raise InvalidCursor("Task cursor is invalid.")
+            datetime.fromisoformat(stamp[:-1] + "+00:00")
+            return stamp, value["task_id"]
+        except (ValueError, TypeError, UnicodeDecodeError, binascii.Error) as exc:
+            if isinstance(exc, InvalidCursor):
+                raise
+            raise InvalidCursor("Task cursor is invalid.") from exc
 
     def _utc_now(self) -> str:
         return _utc_now()
