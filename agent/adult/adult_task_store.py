@@ -811,6 +811,15 @@ class AdultTaskStore:
                 raise UserApprovalRequired("Use set_waiting_user to enforce the five-failure approval gate.")
             if new_status not in _ALLOWED_TRANSITIONS[current]:
                 raise InvalidTaskTransition("Requested task transition is not allowed.")
+            if new_status == "checkpointed":
+                checkpoint = db.execute(
+                    "SELECT 1 FROM adult_checkpoints WHERE task_id=? LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                if checkpoint is None:
+                    raise InvalidCheckpoint(
+                        "A durable checkpoint is required before entering checkpointed."
+                    )
             if new_status in ACTIVE_STATUSES and current not in ACTIVE_STATUSES:
                 raise LeaseNotAvailable("Active states can only be entered by claim_task.")
             if row["cancel_requested"] and new_status != "cancelled":
@@ -1352,6 +1361,13 @@ class AdultTaskStore:
                 current_step_id = next_step["step_id"] if next_step else None
             elif current_step_id is None:
                 current_step_id = returned.step_id
+            elif returned.status == "pending":
+                current_row = db.execute(
+                    "SELECT status FROM adult_steps WHERE step_id=? AND task_id=?",
+                    (current_step_id, task_id),
+                ).fetchone()
+                if current_row is not None and current_row["status"] in {"succeeded", "failed", "skipped"}:
+                    current_step_id = returned.step_id
 
             metadata = {
                 "step_id": returned.step_id,
@@ -1430,6 +1446,8 @@ class AdultTaskStore:
             ).fetchone()
             if task is None:
                 raise TaskNotFound("Task does not exist.")
+            if task["status"] in TERMINAL_STATUSES:
+                raise TaskTerminal("Terminal tasks cannot create new checkpoints.")
             if task["status"] in ACTIVE_STATUSES:
                 if not isinstance(lease, TaskLease):
                     raise LeaseLost("An active checkpoint requires a current task lease.")
@@ -1461,8 +1479,11 @@ class AdultTaskStore:
             )
             cursor = db.execute(
                 """UPDATE adult_tasks
-                   SET current_step_id=?,selected_adapter=?,selected_provider=?,
-                       selected_model=?,selected_tool=?,latest_result_artifact_id=?,
+                   SET current_step_id=?,selected_adapter=COALESCE(?,selected_adapter),
+                       selected_provider=COALESCE(?,selected_provider),
+                       selected_model=COALESCE(?,selected_model),
+                       selected_tool=COALESCE(?,selected_tool),
+                       latest_result_artifact_id=COALESCE(?,latest_result_artifact_id),
                        state_version=state_version+1,updated_at=?
                    WHERE task_id=? AND state_version=?""",
                 (
@@ -1685,7 +1706,7 @@ class AdultTaskStore:
         """Persist an explicit continue/cancel decision; never dispatch work."""
         if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
             raise AdultModelValidationError("task_id must be a bounded identifier.")
-        if decision not in {"continue", "cancel"}:
+        if not isinstance(decision, str) or decision not in {"continue", "cancel"}:
             raise AdultModelValidationError("decision must be continue or cancel.")
         if decision == "cancel":
             return self.request_cancel(task_id)
