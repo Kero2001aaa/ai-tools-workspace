@@ -224,7 +224,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
             "image.generate", self.image, output_mime_types=("image/*",)
         )
         self.assertFalse(result.accepted)
-        self.assertIn("policy_blocked", result.reason_codes)
+        self.assertIn("route_mime_policy_invalid", result.reason_codes)
         self.assertFalse(result.needs_revision)
 
 
