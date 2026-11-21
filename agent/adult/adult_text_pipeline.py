@@ -344,7 +344,7 @@ class AdultTextPipeline:
 
         evaluation = self._evaluator.evaluate(task.task_type, adapter_result.text)
         if not evaluation.accepted:
-            if "policy_rejected" in evaluation.reason_codes:
+            if any(code in {"policy_rejected", "policy_unavailable"} for code in evaluation.reason_codes):
                 attempt = self._fail(handle, "POLICY_REJECTED", "Output policy rejected the generated text.", False)
                 return self._outcome(task, step_id, "rejected", "POLICY_REJECTED", route, attempt, evaluation)
             attempt = self._fail(handle, "MODEL_OUTPUT_INVALID", "Model output failed deterministic validation.", True)
@@ -357,13 +357,14 @@ class AdultTextPipeline:
             return self._outcome(task, step_id, "failed", "COST_POLICY_BLOCKED", route, attempt, evaluation)
 
         artifact: ArtifactRef | None = None
+        output_bytes: bytes | None = None
         try:
             output_bytes = adapter_result.text.encode("utf-8", errors="strict")
             artifact = self._artifact_store.save_output(
                 task.task_id, handle.attempt_id, output_bytes, "text/plain",
             )
         except Exception:
-            attempt = self._fail(handle, "PROVIDER_ERROR", "Output artifact could not be stored.", False)
+            attempt = self._fail(handle, "OUTPUT_STORAGE_FAILED", "Output artifact could not be stored.", False)
             return self._outcome(task, step_id, "failed", "OUTPUT_STORAGE_FAILED", route, attempt, evaluation)
 
         try:
@@ -384,6 +385,7 @@ class AdultTextPipeline:
             del adapter_result
             del envelope
             del raw_input
+            del output_bytes
 
         return self._outcome(
             task, step_id, "succeeded", route=route, attempt=attempt,
