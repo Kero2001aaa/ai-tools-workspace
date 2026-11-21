@@ -285,7 +285,7 @@ class TransientPayloadCache:
                 raise ValueError(f"{name} must be a positive integer.")
         self._max_entries, self._max_bytes, self._ttl_seconds = max_entries, max_bytes, ttl_seconds
         self._clock = clock
-        self._entries: OrderedDict[tuple[str, str], tuple[bytes, float]] = OrderedDict()
+        self._entries: OrderedDict[tuple[str, str], tuple[bytes, float, str]] = OrderedDict()
         self._total_bytes = 0
         self._lock = threading.RLock()
 
@@ -298,14 +298,16 @@ class TransientPayloadCache:
 
     def _prune_locked(self) -> int:
         now = self._clock()
-        expired = [key for key, (_, deadline) in self._entries.items() if deadline <= now]
+        expired = [key for key, (_, deadline, _) in self._entries.items() if deadline <= now]
         for key in expired:
             self._remove(key)
         return len(expired)
 
-    def _put_reference(self, task_id: str, payload_ref: str, payload: bytes) -> None:
+    def _put_reference(self, task_id: str, payload_ref: str, payload: bytes, *, kind: str = "input") -> None:
         _validate_task_id(task_id)
         _validate_payload_id(payload_ref)
+        if kind not in {"input", "output"}:
+            raise ValueError("Transient payload kind is invalid.")
         if not isinstance(payload, bytes):
             raise TypeError("Transient payload must be bytes.")
         if len(payload) > self._max_bytes:
@@ -319,12 +321,12 @@ class TransientPayloadCache:
                 if not self._entries:
                     raise TransientCacheFull("Transient payload cache is full.")
                 self._remove(next(iter(self._entries)))
-            self._entries[key] = (bytes(payload), self._clock() + self._ttl_seconds)
+            self._entries[key] = (bytes(payload), self._clock() + self._ttl_seconds, kind)
             self._total_bytes += len(payload)
 
     def put(self, task_id: str, payload: bytes) -> str:
         reference = uuid.uuid4().hex
-        self._put_reference(task_id, reference, payload)
+        self._put_reference(task_id, reference, payload, kind="input")
         return reference
 
     def get(self, task_id: str, payload_ref: str) -> bytes | None:
@@ -344,6 +346,19 @@ class TransientPayloadCache:
         _validate_payload_id(payload_ref)
         with self._lock:
             return self._remove((task_id, payload_ref))
+
+    def discard_task_kind(self, task_id: str, kind: str) -> int:
+        _validate_task_id(task_id)
+        if kind not in {"input", "output"}:
+            raise ValueError("Transient payload kind is invalid.")
+        with self._lock:
+            selected = [
+                key for key, (_, _, entry_kind) in self._entries.items()
+                if key[0] == task_id and entry_kind == kind
+            ]
+            for key in selected:
+                self._remove(key)
+            return len(selected)
 
     def prune(self) -> int:
         with self._lock:
@@ -373,8 +388,7 @@ class AdultArtifactStore:
         self.cache = cache if cache is not None else TransientPayloadCache()
         self._clock = clock
         self._lock = threading.RLock()
-        self._ephemeral_inputs: dict[str, set[str]] = {}
-        self._transient_artifacts: dict[str, tuple[str, str, int]] = {}
+        self._transient_artifacts: OrderedDict[str, tuple[str, str, int]] = OrderedDict()
 
         configured_root = root if root is not None else os.environ.get("ADULT_PAYLOAD_DIR", "")
         candidate = Path(configured_root).expanduser() if configured_root else _DEFAULT_ROOT
@@ -670,7 +684,6 @@ class AdultArtifactStore:
         with self._lock:
             if not retain_encrypted:
                 payload_id = self.cache.put(task_id, data)
-                self._ephemeral_inputs.setdefault(task_id, set()).add(payload_id)
                 return PayloadRef(payload_id, task_id, False, None)
             if self.cipher is None:
                 raise PayloadKeyUnavailable("Encrypted input retention requires a configured local key.")
@@ -720,7 +733,9 @@ class AdultArtifactStore:
         with self._lock:
             artifact_id = uuid.uuid4().hex
             if self.cipher is None:
-                self.cache._put_reference(task_id, artifact_id, data)
+                self.cache._put_reference(task_id, artifact_id, data, kind="output")
+                while len(self._transient_artifacts) >= self.cache._max_entries:
+                    self._transient_artifacts.popitem(last=False)
                 self._transient_artifacts[artifact_id] = (task_id, mime_type, len(data))
                 return ArtifactRef(artifact_id, task_id, mime_type, len(data), False, None)
             expiry = self._persist_encrypted(
@@ -744,6 +759,7 @@ class AdultArtifactStore:
                 transient_info = self._transient_artifacts.get(artifact_id)
                 if transient_info is None:
                     raise PayloadNotFound("Artifact is unavailable.")
+                self._transient_artifacts.move_to_end(artifact_id)
                 task_id, mime_type, expected_size = transient_info
                 data = self.cache.get(task_id, artifact_id)
                 if data is None:
@@ -791,10 +807,7 @@ class AdultArtifactStore:
                 except OSError as exc:
                     raise PayloadStorageError("Retained input could not be deleted safely.") from exc
             self._remove_records(persistent_ids)
-            ephemeral_ids = self._ephemeral_inputs.pop(task_id, set())
-            removed_ephemeral = sum(
-                1 for payload_id in ephemeral_ids if self.cache.discard_ref(task_id, payload_id)
-            )
+            removed_ephemeral = self.cache.discard_task_kind(task_id, "input")
             return len(persistent_ids) + removed_ephemeral
 
     def delete_expired(self) -> int:
