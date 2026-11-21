@@ -1,7 +1,7 @@
 # Adult Agent — Stage 7 Implementation Specification
 ## Text Pipeline, Deterministic Evaluation, and Policy Gates
 
-**Status:** Pipeline implementation committed; awaiting local and CI validation  
+**Status:** PASS — implementation, local validation, and GitHub Actions validation complete  
 **Branch:** feature/adult-agent-mvp  
 **Parent:** Stage 6 commit 541ff5e089f37216ad40716f3daecc4ed72da7c1  
 **Preconditions:** Stages 1–6 PASS; Stage 6 local validation confirmed on the parent branch  
@@ -374,4 +374,4 @@ The following Stage 7 implementation units are committed on `feature/adult-agent
 - Public task-scoped `AdultTaskStore.get_step` lookup to validate the current step without exposing payload data.
 - Focused pipeline tests cover all three text operations, success publication, no-route behavior, pre-dispatch policy denial, exact adapter resolution, invalid output, terminal output-policy rejection, sanitized adapter errors, storage failure, finalization cleanup, step mismatch, and persisted-request mismatch.
 
-Validation gate remains open until the user confirms focused and full local tests and the corresponding GitHub Actions workflow completes successfully. Stage 7 is not PASS yet. Stage 8 and Stage 9 work remain blocked.
+Validation gate: PASS. The user confirmed that all requested focused, Adult-specific regression, full repository test, diff-check, and working-tree validation commands passed locally. GitHub Actions workflow #345 for commit `92480f1d43155941b88aee62d63e5e620c72a249` completed successfully, including unit tests, MCP security scan, OSV Python dependency audit, and optional browser dependency audit. Stage 7 is complete. Stage 8 and Stage 9 remain blocked until separately authorized; no Stage 8 or Stage 9 implementation is included in this stage.
