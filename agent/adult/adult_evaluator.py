@@ -1,6 +1,8 @@
 """Deterministic, bounded evaluation for Adult text outputs."""
 from __future__ import annotations
 
+import unicodedata
+
 from agent.adult.adult_policies import AdultPolicies
 from agent.adult.models import EvaluationResult, PolicyDecision
 
@@ -59,8 +61,7 @@ class AdultEvaluator:
                 quality_reasons.append("output_empty")
 
         controls_valid = is_text and not any(
-            ord(char) < 32 and char not in _ALLOWED_CONTROLS
-            or ord(char) == 127
+            unicodedata.category(char) == "Cc" and char not in _ALLOWED_CONTROLS
             for char in output_text
         )
         if controls_valid:
