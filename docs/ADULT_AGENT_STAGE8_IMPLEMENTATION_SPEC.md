@@ -1,12 +1,12 @@
 # Adult Agent — Stage 8 Implementation Specification
 ## Image Input Validation, Image Adapters, Evaluator, and One-Attempt Pipeline
 
-**Status:** Proposed design — awaiting explicit user approval  
+**Status:** Approved design — Stage 8 implementation in progress (Step 1)  
 **Branch:** `feature/adult-agent-mvp`  
 **Parent specification:** `docs/ADULT_AGENT_IMPLEMENTATION_SPEC.md`  
 **Precondition:** Stages 1–7 are PASS on the current branch head  
 **Scope:** `image.analyze`, `image.generate`, and `image.edit`  
-**Implementation authorization:** No Stage 8 implementation code may be added until this design is approved.
+**Implementation authorization:** Approved by the user on 2026-11-21; implementation remains gated step-by-step.
 
 ---
 
@@ -286,4 +286,4 @@ The proposed design deliberately makes the following choices:
 5. **Structural evaluation only:** no semantic image-quality or content-safety model is added.
 6. **Strict zero-cost boundary:** local by default; remote free_verified only with explicit positive provider-call budget and current zero-cost evidence; paid/unknown always blocked.
 
-**Approval required:** approve this Stage 8 design as written, or request changes. Until approval, this document is design-only and no Stage 8 implementation code is authorized.
+**Approval record:** The user explicitly authorized Stage 8 implementation on 2026-11-21. Continue to enforce per-step local-test and CI gates; this approval does not authorize Stage 9 implementation.

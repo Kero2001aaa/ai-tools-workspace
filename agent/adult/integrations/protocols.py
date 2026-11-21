@@ -47,6 +47,56 @@ class TextAdapterResult:
             _integer("cost_microusd", self.cost_microusd, 0, 10**12)
 
 
+
+def _validate_image_result_usage(usage: dict[str, int], cost_microusd: int | None) -> None:
+    if not isinstance(usage, dict) or len(usage) > 16:
+        raise AdultModelValidationError("usage must be a bounded counter object.")
+    for key, value in usage.items():
+        if not isinstance(key, str) or not _USAGE_KEY_RE.fullmatch(key):
+            raise AdultModelValidationError("usage contains an invalid counter name.")
+        _integer(f"usage.{key}", value, 0, 10**12)
+    if cost_microusd is not None:
+        _integer("cost_microusd", cost_microusd, 0, 10**12)
+
+
+@dataclass(frozen=True)
+class ImageAnalysisResult:
+    """Ephemeral analysis text returned by an image adapter."""
+
+    text: str = field(repr=False)
+    usage: dict[str, int]
+    cost_microusd: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str):
+            raise AdultModelValidationError("Image analysis text must be a string.")
+        try:
+            encoded = self.text.encode("utf-8", "strict")
+        except UnicodeEncodeError as exc:
+            raise AdultModelValidationError("Image analysis text must be valid UTF-8.") from exc
+        if len(self.text) > 20_000 or len(encoded) > 80 * 1024:
+            raise AdultModelValidationError("Image analysis text exceeds its size limit.")
+        _validate_image_result_usage(self.usage, self.cost_microusd)
+
+
+@dataclass(frozen=True)
+class ImageAdapterResult:
+    """Ephemeral generated image bytes; the pipeline owns validation and persistence."""
+
+    image_bytes: bytes = field(repr=False)
+    mime_type: str
+    usage: dict[str, int]
+    cost_microusd: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.image_bytes, bytes):
+            raise AdultModelValidationError("Image adapter output must be bytes.")
+        _integer("image_bytes", len(self.image_bytes), 1, 20 * 1024 * 1024)
+        if self.mime_type not in {"image/png", "image/jpeg", "image/webp"}:
+            raise AdultModelValidationError("Image adapter output MIME type is unsupported.")
+        _validate_image_result_usage(self.usage, self.cost_microusd)
+
+
 @dataclass(frozen=True)
 class ImageAnalysisRequest:
     task_id: str
@@ -130,12 +180,12 @@ class TextModelAdapter(Protocol):
 
 
 class ImageUnderstandingAdapter(Protocol):
-    def analyze(self, request: ImageAnalysisRequest) -> AdapterResult: ...
+    def analyze(self, request: ImageAnalysisRequest) -> ImageAnalysisResult: ...
 
 
 class ImageGenerationAdapter(Protocol):
-    def generate(self, request: ImageGenerationRequest) -> ArtifactResult: ...
+    def generate(self, request: ImageGenerationRequest) -> ImageAdapterResult: ...
 
 
 class ImageEditingAdapter(Protocol):
-    def edit(self, request: ImageEditRequest) -> ArtifactResult: ...
+    def edit(self, request: ImageEditRequest) -> ImageAdapterResult: ...

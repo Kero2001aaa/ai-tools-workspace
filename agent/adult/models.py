@@ -157,6 +157,76 @@ class AdultTaskRequest:
         _safe_metadata(self.requested_options, max_bytes=8192)
 
 
+
+_IMAGE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_IMAGE_INPUT_BYTES = 15 * 1024 * 1024
+MAX_IMAGE_OUTPUT_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_DIMENSION = 8192
+MAX_IMAGE_PIXELS = 40_000_000
+
+
+@dataclass(frozen=True)
+class ImageInputEnvelope:
+    """Canonical image-task envelope containing opaque task-scoped payload references only."""
+
+    task_type: str
+    schema_version: int = 1
+    image_payload_id: str | None = None
+    prompt_payload_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise AdultModelValidationError("Image input schema_version must equal integer 1.")
+        if self.task_type not in {"image.analyze", "image.generate", "image.edit"}:
+            raise AdultModelValidationError("Image input task_type is unsupported.")
+        if self.task_type == "image.analyze":
+            _identifier("image_payload_id", self.image_payload_id)
+            _identifier("prompt_payload_id", self.prompt_payload_id, optional=True)
+            if self.prompt_payload_id is not None:
+                raise AdultModelValidationError("image.analyze cannot include a prompt payload.")
+        elif self.task_type == "image.generate":
+            _identifier("prompt_payload_id", self.prompt_payload_id)
+            _identifier("image_payload_id", self.image_payload_id, optional=True)
+            if self.image_payload_id is not None:
+                raise AdultModelValidationError("image.generate cannot include an image payload.")
+        else:
+            _identifier("image_payload_id", self.image_payload_id)
+            _identifier("prompt_payload_id", self.prompt_payload_id)
+
+    def to_mapping(self) -> dict[str, str | int]:
+        value: dict[str, str | int] = {
+            "schema_version": self.schema_version,
+            "task_type": self.task_type,
+        }
+        if self.image_payload_id is not None:
+            value["image_payload_id"] = self.image_payload_id
+        if self.prompt_payload_id is not None:
+            value["prompt_payload_id"] = self.prompt_payload_id
+        return value
+
+
+@dataclass(frozen=True)
+class ValidatedImage:
+    """Validator-derived image metadata; image bytes are never stored in this DTO."""
+
+    mime_type: str
+    byte_count: int
+    width: int
+    height: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if self.mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+            raise AdultModelValidationError("Validated image MIME type is unsupported.")
+        _integer("byte_count", self.byte_count, 1, MAX_IMAGE_OUTPUT_BYTES)
+        _integer("width", self.width, 1, MAX_IMAGE_DIMENSION)
+        _integer("height", self.height, 1, MAX_IMAGE_DIMENSION)
+        if self.width * self.height > MAX_IMAGE_PIXELS:
+            raise AdultModelValidationError("Validated image pixel count exceeds the limit.")
+        if not isinstance(self.sha256, str) or not _IMAGE_SHA256_RE.fullmatch(self.sha256):
+            raise AdultModelValidationError("Validated image digest must be lowercase SHA-256.")
+
+
 CAPABILITY_MODALITIES = frozenset({"text", "image"})
 CAPABILITY_COST_CLASSES = frozenset({"local", "free_verified", "paid", "unknown"})
 _CAPABILITY_TASK_MODALITIES = {

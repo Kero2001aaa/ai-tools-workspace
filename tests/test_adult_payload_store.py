@@ -273,6 +273,19 @@ class AdultArtifactStoreTests(unittest.TestCase):
             store.load_input(source.payload_id, "task-1")
         self.assertEqual(b"temporary output", store.read_chunk(output.artifact_id, 0).data)
 
+
+    def test_transient_output_reference_cannot_be_loaded_as_input(self):
+        store = AdultArtifactStore(self.root / "transient-kind-check")
+        output = store.save_output(
+            "task-1", "attempt-1", b"private transient output", "text/plain"
+        )
+        with self.assertRaises(PayloadNotFound):
+            store.load_input(output.artifact_id, "task-1")
+        self.assertEqual(
+            b"private transient output",
+            store.read_chunk(output.artifact_id, 0).data,
+        )
+
     def test_transient_cache_enforces_entry_and_byte_bounds(self):
         cache = TransientPayloadCache(max_entries=1, max_bytes=8, ttl_seconds=30)
         first = cache.put("task-1", b"1234")

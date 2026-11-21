@@ -341,6 +341,21 @@ class TransientPayloadCache:
             self._entries.move_to_end(key)
             return bytes(entry[0])
 
+    def get_input(self, task_id: str, payload_ref: str) -> bytes | None:
+        """Return only task-owned transient input payloads, never output artifacts."""
+        _validate_task_id(task_id)
+        _validate_payload_id(payload_ref)
+        key = (task_id, payload_ref)
+        with self._lock:
+            self._prune_locked()
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            if entry[2] != "input":
+                raise PayloadNotFound("Payload reference does not belong to this task.")
+            self._entries.move_to_end(key)
+            return bytes(entry[0])
+
     def discard_ref(self, task_id: str, payload_ref: str) -> bool:
         _validate_task_id(task_id)
         _validate_payload_id(payload_ref)
@@ -710,7 +725,7 @@ class AdultArtifactStore:
         with self._lock:
             record = self._get_record(payload_id)
             if record is None:
-                transient = self.cache.get(task_id, payload_id)
+                transient = self.cache.get_input(task_id, payload_id)
                 if transient is None:
                     raise PayloadUnavailable("Required input is unavailable; new input is required.")
                 return transient
