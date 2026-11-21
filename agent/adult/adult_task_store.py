@@ -332,6 +332,162 @@ class AdultTaskStore:
 
 
 
+    def claim_task(
+        self, task_id: str, worker_id: str, lease_seconds: int = 30
+    ) -> TaskLease:
+        """Atomically claim one queued/checkpointed task with a fenced lease."""
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if (
+            not isinstance(worker_id, str)
+            or not worker_id
+            or len(worker_id) > 128
+            or not __import__("re").fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", worker_id)
+        ):
+            raise AdultModelValidationError("worker_id must be a bounded opaque identifier.")
+        if not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool) or not 1 <= lease_seconds <= 300:
+            raise AdultModelValidationError("lease_seconds must be an integer from 1 through 300.")
+
+        now = _utc_now()
+        expires_at = (
+            datetime.fromisoformat(now[:-1] + "+00:00") + timedelta(seconds=lease_seconds)
+        ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        event_id = str(uuid.uuid4())
+        exhausted = False
+        lease = None
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM adult_tasks WHERE task_id=?", (task_id,)).fetchone()
+            if row is None:
+                raise TaskNotFound("Task does not exist.")
+            if row["status"] in TERMINAL_STATUSES:
+                raise TaskTerminal("Terminal tasks cannot be claimed.")
+            if row["cancel_requested"]:
+                raise TaskCancelled("Cancelled tasks cannot be claimed.")
+            if row["status"] not in {"queued", "checkpointed"}:
+                raise LeaseNotAvailable("Task is not available for claiming.")
+
+            deadline = datetime.fromisoformat(row["deadline_at"][:-1] + "+00:00")
+            if deadline <= datetime.fromisoformat(now[:-1] + "+00:00") or row["total_attempts"] >= row["max_total_attempts"]:
+                cursor = db.execute(
+                    """UPDATE adult_tasks SET status='failed',lease_owner=NULL,
+                       lease_expires_at=NULL,user_action_required=0,state_version=state_version+1,
+                       updated_at=? WHERE task_id=? AND state_version=?""",
+                    (now, task_id, row["state_version"]),
+                )
+                if cursor.rowcount != 1:
+                    raise StaleTaskVersion("Task changed while its execution budget was checked.")
+                db.execute(
+                    """INSERT INTO adult_task_events
+                       (event_id,task_id,event_type,from_status,to_status,metadata_json,created_at)
+                       VALUES (?,?,'budget_exhausted',?,'failed',?,?)""",
+                    (event_id, task_id, row["status"],
+                     json.dumps({"reason_code": "deadline_or_attempt_limit"}, separators=(",", ":")), now),
+                )
+                db.commit()
+                exhausted = True
+            else:
+                active = db.execute(
+                    "SELECT task_id FROM adult_tasks WHERE status IN ('analyzing','running','evaluating') LIMIT 1"
+                ).fetchone()
+                if active is not None:
+                    raise TaskAlreadyActive("Another Adult task already holds the active lease.")
+                generation = row["lease_generation"] + 1
+                state_version = row["state_version"] + 1
+                try:
+                    cursor = db.execute(
+                        """UPDATE adult_tasks SET status='analyzing',lease_owner=?,
+                           lease_expires_at=?,lease_generation=?,state_version=?,updated_at=?
+                           WHERE task_id=? AND state_version=? AND status=? AND cancel_requested=0""",
+                        (worker_id, expires_at, generation, state_version, now,
+                         task_id, row["state_version"], row["status"]),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise TaskAlreadyActive("Another Adult task already holds the active lease.") from exc
+                if cursor.rowcount != 1:
+                    raise StaleTaskVersion("Task changed while its lease was being claimed.")
+                db.execute(
+                    """INSERT INTO adult_task_events
+                       (event_id,task_id,event_type,from_status,to_status,metadata_json,created_at)
+                       VALUES (?,?,'task_claimed',?,'analyzing',?,?)""",
+                    (event_id, task_id, row["status"],
+                     json.dumps({"lease_generation": generation, "state_version": state_version},
+                                separators=(",", ":")), now),
+                )
+                db.commit()
+                lease = TaskLease._from_store(
+                    task_id, worker_id, generation, expires_at, state_version
+                )
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        if exhausted:
+            raise TaskBudgetExhausted("Task execution budget is exhausted.")
+        if lease is None:
+            raise TaskStoreSchemaError("Claim completed without issuing a lease.")
+        return lease
+
+    def renew_lease(self, lease: TaskLease, lease_seconds: int = 30) -> TaskLease:
+        """Extend only the current, unexpired fencing generation."""
+        if not isinstance(lease, TaskLease):
+            raise LeaseLost("A TaskStore-issued lease is required.")
+        lease._validate()
+        if not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool) or not 1 <= lease_seconds <= 300:
+            raise AdultModelValidationError("lease_seconds must be an integer from 1 through 300.")
+        now = _utc_now()
+        expires_at = (
+            datetime.fromisoformat(now[:-1] + "+00:00") + timedelta(seconds=lease_seconds)
+        ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        event_id = str(uuid.uuid4())
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM adult_tasks WHERE task_id=?", (lease.task_id,)
+            ).fetchone()
+            if row is None:
+                raise TaskNotFound("Task does not exist.")
+            if (
+                row["status"] not in ACTIVE_STATUSES
+                or row["lease_owner"] != lease.worker_id
+                or row["lease_generation"] != lease.lease_generation
+                or row["lease_expires_at"] is None
+                or row["lease_expires_at"] <= now
+            ):
+                raise LeaseLost("The task lease is expired or no longer current.")
+            if row["cancel_requested"]:
+                raise TaskCancelled("A cancellation request prevents lease renewal.")
+            cursor = db.execute(
+                """UPDATE adult_tasks SET lease_expires_at=?,updated_at=?
+                   WHERE task_id=? AND lease_owner=? AND lease_generation=?
+                     AND lease_expires_at>? AND cancel_requested=0""",
+                (expires_at, now, lease.task_id, lease.worker_id, lease.lease_generation, now),
+            )
+            if cursor.rowcount != 1:
+                raise LeaseLost("The task lease is expired or no longer current.")
+            db.execute(
+                """INSERT INTO adult_task_events
+                   (event_id,task_id,event_type,from_status,to_status,metadata_json,created_at)
+                   VALUES (?,?,'lease_renewed',?,?,?,?)""",
+                (event_id, lease.task_id, row["status"], row["status"],
+                 json.dumps({"lease_generation": lease.lease_generation}, separators=(",", ":")), now),
+            )
+            db.commit()
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        return TaskLease._from_store(
+            lease.task_id, lease.worker_id, lease.lease_generation,
+            expires_at, lease.state_version_at_grant,
+        )
+
     def transition(
         self,
         task_id: str,
