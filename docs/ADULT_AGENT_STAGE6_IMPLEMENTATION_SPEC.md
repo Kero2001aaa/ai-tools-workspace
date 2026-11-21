@@ -171,7 +171,7 @@ Lifecycle invariants:
 3. enable succeeds only for verified, unexpired evidence and requires expected_state_version to match.
 4. revise replaces only the capability contract, increments state_version, computes a new capability_version, clears prior evidence, and forces enabled=false/unverified. Re-verification and explicit enablement are required.
 5. disable makes the record ineligible without deleting its history.
-6. revoke is terminal for that capability record; re-registration under a new capability ID is required.
+6. revoke is terminal for that capability record; a partial unique identity index permits re-registration under a new capability ID while preserving the revoked historical row. Disable, revise, verify, and enable reject revoked records.
 7. Every successful lifecycle mutation and every rejected stale-version transition is handled without partial writes. Successful mutations append one capability audit event in the same transaction.
 8. list_eligible is read-only. It never registers, verifies, enables, refreshes, or contacts a provider.
 
@@ -307,7 +307,7 @@ The Workspace MODEL_* configuration is not an Adult fallback. An Adult API key d
 - CAP-MIG-04: repeated initialization at v3 is idempotent.
 - CAP-MIG-05: injected migration failure rolls back all v3 DDL and ledger changes.
 - CAP-MIG-06: all v2 task/step/checkpoint/task-event/attempt/attempt-event rows and required indexes/triggers survive unchanged.
-- CAP-MIG-07: unexpected schema/history or tampered required object fails closed.
+- CAP-MIG-07: unexpected schema/history or tampered required object fails closed, including a modified capability identity index definition.
 - CAP-MIG-08: duplicate normalized local/provider/model/task identities are rejected.
 
 ### Registry and evidence
@@ -320,7 +320,7 @@ The Workspace MODEL_* configuration is not an Adult fallback. An Adult API key d
 - CAP-REG-06: enable requires verified, unexpired evidence and matching state_version.
 - CAP-REG-07: stale state_version cannot enable, revise, disable or revoke.
 - CAP-REG-08: revision changes capability_version, clears evidence and disables the route.
-- CAP-REG-09: revoked records cannot be re-enabled.
+- CAP-REG-09: revoked records cannot be re-enabled, disabled, revised or verified; re-registration uses a new ID while retaining the revoked record.
 - CAP-REG-10: expired capability evidence is ineligible.
 - CAP-REG-11: free_verified requires separate current zero-cost evidence.
 - CAP-REG-12: expired/missing/invalid cost evidence excludes the route.

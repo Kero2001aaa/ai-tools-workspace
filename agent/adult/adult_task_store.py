@@ -386,7 +386,7 @@ _CAPABILITY_SCHEMA: Final[tuple[str, ...]] = (
               AND length(CAST(metadata_json AS BLOB)) <= 2048),
         created_at TEXT NOT NULL
     )""",
-    "CREATE UNIQUE INDEX idx_adult_capability_identity ON adult_model_capabilities(adapter_id,ifnull(provider_id,''),ifnull(model_id,''),task_type)",
+    "CREATE UNIQUE INDEX idx_adult_capability_identity ON adult_model_capabilities(adapter_id,ifnull(provider_id,''),ifnull(model_id,''),task_type) WHERE verification_status<>'revoked'",
     """CREATE TRIGGER validate_adult_capability_update BEFORE UPDATE ON adult_model_capabilities
        WHEN NEW.capability_id IS NOT OLD.capability_id
          OR NEW.created_at IS NOT OLD.created_at
@@ -609,6 +609,18 @@ class AdultTaskStore:
             raise TaskStoreSchemaError("Adult task database is missing required indexes.")
         if not expected_triggers.issubset(triggers):
             raise TaskStoreSchemaError("Adult task database is missing required triggers.")
+        if schema_version == LATEST_SCHEMA_VERSION:
+            actual_index = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+                ("idx_adult_capability_identity",),
+            ).fetchone()
+            expected_index_sql = _CAPABILITY_SCHEMA[2]
+            normalize_sql = lambda value: " ".join(value.split()).casefold()
+            if (
+                actual_index is None
+                or normalize_sql(actual_index["sql"]) != normalize_sql(expected_index_sql)
+            ):
+                raise TaskStoreSchemaError("Adult capability identity index definition is invalid.")
 
     def claim_task(
         self, task_id: str, worker_id: str, lease_seconds: int = 30

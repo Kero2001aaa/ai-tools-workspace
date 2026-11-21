@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.adult.adult_task_store import (
-    AdultTaskStore, SCHEMA_NAME, ATTEMPT_SCHEMA_NAME,
+    AdultTaskStore, TaskStoreSchemaError, SCHEMA_NAME, ATTEMPT_SCHEMA_NAME,
     CAPABILITY_SCHEMA_NAME, _SCHEMA,
 )
 
@@ -745,6 +745,17 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
                 "SELECT type,name,sql FROM sqlite_master ORDER BY type,name"
             ).fetchall()
         self.assertEqual(before, after)
+
+    def test_schema_rejects_tampered_capability_identity_index(self):
+        AdultTaskStore(self.db)
+        with sqlite3.connect(self.db) as connection:
+            connection.execute("DROP INDEX idx_adult_capability_identity")
+            connection.execute(
+                "CREATE UNIQUE INDEX idx_adult_capability_identity "
+                "ON adult_model_capabilities(capability_id)"
+            )
+        with self.assertRaises(TaskStoreSchemaError):
+            AdultTaskStore(self.db)
 
     def test_every_connection_enables_foreign_keys_and_delete_journal(self):
         store = AdultTaskStore(self.db)

@@ -168,6 +168,12 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
         self.assertEqual("revoked", revoked.verification_status)
         with self.assertRaises(CapabilityNotEligible):
             self.registry.enable(revoked.capability_id, revoked.state_version)
+        with self.assertRaises(CapabilityNotEligible):
+            self.registry.disable(revoked.capability_id, "operator_hold", revoked.state_version)
+        replacement = self.registry.register(text_spec())
+        self.assertNotEqual(revoked.capability_id, replacement.capability_id)
+        self.assertEqual("unverified", replacement.verification_status)
+        self.assertFalse(replacement.enabled)
         db = self.store._connect()
         try:
             self.assertEqual(

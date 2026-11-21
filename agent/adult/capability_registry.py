@@ -420,6 +420,8 @@ class ModelCapabilityRegistry:
         with self._store._transaction() as db:
             row = self._load_row(db, capability_id)
             self._expect_version(row, expected_state_version)
+            if row["verification_status"] == "revoked":
+                raise CapabilityNotEligible("Revoked capabilities are terminal and cannot be changed.")
             before = _state(row)
             cursor = db.execute(
                 """UPDATE adult_model_capabilities SET enabled=0,
