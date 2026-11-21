@@ -72,6 +72,18 @@ class AdultModelTests(unittest.TestCase):
             ModelCapabilitySpec(**{**base, "input_modalities": ("text",)})
         with self.assertRaises(AdultModelValidationError):
             ModelCapabilitySpec(**{**base, "accepted_mime_types": ("image/*",)})
+        with self.assertRaises(AdultModelValidationError):
+            ModelCapabilitySpec(**{**base, "accepted_mime_types": ("image/svg+xml",)})
+        output_image = {
+            "adapter_id": "image-generator", "adapter_version": "1",
+            "task_type": "image.generate", "input_modalities": ("text",),
+            "output_modalities": ("image",), "cost_class": "local",
+            "output_mime_types": ("image/png",), "max_output_bytes": 1024,
+            "max_output_width": 512, "max_output_height": 512,
+        }
+        self.assertEqual("image.generate", ModelCapabilitySpec(**output_image).task_type)
+        with self.assertRaises(AdultModelValidationError):
+            ModelCapabilitySpec(**{**output_image, "output_mime_types": ("image/svg+xml",)})
 
     def test_capability_evidence_requires_separate_complete_cost_evidence(self):
         evidence = CapabilityEvidence(

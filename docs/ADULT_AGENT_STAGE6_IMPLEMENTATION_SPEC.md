@@ -88,7 +88,7 @@ Use a frozen typed DTO with these logical fields:
 - provider_id and model_id, optional only for a genuinely local adapter; model_version when supplied.
 - task_type: one exact existing Adult task type.
 - input_modalities and output_modalities: non-empty, allowlisted modality sets matching the task mapping.
-- accepted_mime_types: explicit MIME allowlist for binary inputs; no wildcard MIME types.
+- accepted_mime_types: explicit MIME allowlist for binary inputs, restricted to PNG/JPEG/WebP; SVG and wildcard MIME types are rejected.
 - max_input_bytes, max_output_bytes, max_width, max_height: positive bounded constraints where applicable; irrelevant text-only constraints are null.
 - cost_class: local, free_verified, paid, or unknown.
 - enabled: false on registration.

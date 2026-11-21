@@ -351,7 +351,7 @@ _CAPABILITY_SCHEMA: Final[tuple[str, ...]] = (
         cost_verified_at TEXT,
         cost_expires_at TEXT,
         cost_evidence_source TEXT CHECK(cost_evidence_source IN (
-            'official_provider_pricing','official_free_tier_terms','local_execution_contract')),
+            'official_provider_pricing','official_free_tier_terms')),
         cost_evidence_ref TEXT CHECK(cost_evidence_ref IS NULL OR length(cost_evidence_ref) BETWEEN 1 AND 512),
         state_version INTEGER NOT NULL DEFAULT 1 CHECK(state_version >= 1),
         created_at TEXT NOT NULL,

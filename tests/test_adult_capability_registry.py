@@ -207,12 +207,16 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
         tracker.begin(task.task_id, task.current_step_id, route, INPUT_FP, CONFIG_FP)
         db = self.store._connect()
         try:
-            before_attempts = [tuple(row) for row in db.execute(
-                "SELECT attempt_id,task_id,step_id,attempt_no,approach_key,status FROM adult_attempts"
-            ).fetchall()]
-            before_events = [tuple(row) for row in db.execute(
-                "SELECT event_id,task_id,attempt_id,event_type,approach_key FROM adult_attempt_events"
-            ).fetchall()]
+            preserved_tables = (
+                "adult_tasks", "adult_steps", "adult_checkpoints",
+                "adult_task_events", "adult_attempts", "adult_attempt_events",
+            )
+            before_rows = {
+                table: [tuple(row) for row in db.execute(
+                    f"SELECT * FROM {table} ORDER BY rowid"
+                ).fetchall()]
+                for table in preserved_tables
+            }
             db.execute("BEGIN IMMEDIATE")
             for trigger in (
                 "validate_adult_capability_update", "prevent_adult_capabilities_delete",
@@ -230,19 +234,18 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
         upgraded = AdultTaskStore(self.db)
         db = upgraded._connect()
         try:
-            after_attempts = [tuple(row) for row in db.execute(
-                "SELECT attempt_id,task_id,step_id,attempt_no,approach_key,status FROM adult_attempts"
-            ).fetchall()]
-            after_events = [tuple(row) for row in db.execute(
-                "SELECT event_id,task_id,attempt_id,event_type,approach_key FROM adult_attempt_events"
-            ).fetchall()]
+            after_rows = {
+                table: [tuple(row) for row in db.execute(
+                    f"SELECT * FROM {table} ORDER BY rowid"
+                ).fetchall()]
+                for table in preserved_tables
+            }
             versions = [tuple(row) for row in db.execute(
                 "SELECT version,name FROM adult_schema_migrations ORDER BY version"
             ).fetchall()]
         finally:
             db.close()
-        self.assertEqual(before_attempts, after_attempts)
-        self.assertEqual(before_events, after_events)
+        self.assertEqual(before_rows, after_rows)
         self.assertEqual([
             (1, "adult_operational_store_v1"),
             (2, "adult_attempt_tracking_v2"),

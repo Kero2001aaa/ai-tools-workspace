@@ -11,6 +11,7 @@ TASK_TYPES = frozenset({
     "text.analyze", "text.generate", "text.rewrite",
     "image.analyze", "image.generate", "image.edit",
 })
+SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 TASK_STATUSES = frozenset({
     "queued", "analyzing", "running", "evaluating", "checkpointed",
     "waiting_user", "needs_input", "paused", "completed", "failed", "cancelled",
@@ -243,7 +244,7 @@ class ModelCapabilitySpec:
                 raise AdultModelValidationError("Image input capabilities require a MIME allowlist.")
             if len(set(self.accepted_mime_types)) != len(self.accepted_mime_types):
                 raise AdultModelValidationError("Duplicate input MIME types are not allowed.")
-            if any(not isinstance(v, str) or not _MIME_RE.fullmatch(v) for v in self.accepted_mime_types):
+            if any(not isinstance(v, str) or v not in SUPPORTED_IMAGE_MIME_TYPES for v in self.accepted_mime_types):
                 raise AdultModelValidationError("Input MIME types must be explicit and cannot be wildcards.")
             _integer("max_input_bytes", self.max_input_bytes, 1, 15 * 1024 * 1024)
             _integer("max_input_width", self.max_input_width, 1, 10000)
@@ -260,7 +261,7 @@ class ModelCapabilitySpec:
                 raise AdultModelValidationError("Image output capabilities require a MIME allowlist.")
             if len(set(self.output_mime_types)) != len(self.output_mime_types):
                 raise AdultModelValidationError("Duplicate output MIME types are not allowed.")
-            if any(not isinstance(v, str) or not _MIME_RE.fullmatch(v) for v in self.output_mime_types):
+            if any(not isinstance(v, str) or v not in SUPPORTED_IMAGE_MIME_TYPES for v in self.output_mime_types):
                 raise AdultModelValidationError("Output MIME types must be explicit and cannot be wildcards.")
             _integer("max_output_bytes", self.max_output_bytes, 1, 20 * 1024 * 1024)
             _integer("max_output_width", self.max_output_width, 1, 10000)
@@ -433,7 +434,7 @@ class CapabilityQuery:
         _fingerprint("input_fingerprint", self.input_fingerprint)
         _fingerprint("config_fingerprint", self.config_fingerprint)
         if "image" in self.input_modalities:
-            if not isinstance(self.mime_type, str) or not _MIME_RE.fullmatch(self.mime_type):
+            if not isinstance(self.mime_type, str) or self.mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
                 raise AdultModelValidationError("Image queries require an explicit MIME type.")
             _integer("input_bytes", self.input_bytes, 1, 15 * 1024 * 1024)
             _integer("width", self.width, 1, 10000)
