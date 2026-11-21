@@ -16,6 +16,7 @@ from agent.adult.payload_store import (
     PayloadKeyInvalid,
     PayloadKeyMismatch,
     PayloadKeyUnavailable,
+    InvalidPayloadReference,
     PayloadNotFound,
     PayloadStorageError,
     PayloadTooLarge,
@@ -158,9 +159,9 @@ class AdultArtifactStoreTests(unittest.TestCase):
             self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM adult_payload_records").fetchone()[0])
 
     def test_path_traversal_references_are_rejected(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(InvalidPayloadReference):
             self.store.load_input("../../outside", "task-1")
-        with self.assertRaises(Exception):
+        with self.assertRaises(InvalidPayloadReference):
             self.store.read_chunk("../outside", 0)
 
     def test_output_artifact_is_encrypted_and_chunked(self):
@@ -205,6 +206,16 @@ class AdultArtifactStoreTests(unittest.TestCase):
         with self.assertRaises(PayloadUnavailable):
             self.store.load_input(ephemeral.payload_id, "task-1")
         self.assertEqual(b"keep output", self.store.read_chunk(output.artifact_id, 0).data)
+
+    def test_deleting_task_inputs_does_not_delete_memory_only_outputs(self):
+        store = AdultArtifactStore(self.root / "ephemeral-output")
+        source = store.save_input("task-1", b"private input", "text/plain", retain_encrypted=False)
+        output = store.save_output("task-1", "attempt-1", b"temporary output", "text/plain")
+        self.assertFalse(output.persisted)
+        self.assertEqual(1, store.delete_task_inputs("task-1"))
+        with self.assertRaises(PayloadUnavailable):
+            store.load_input(source.payload_id, "task-1")
+        self.assertEqual(b"temporary output", store.read_chunk(output.artifact_id, 0).data)
 
     def test_transient_cache_enforces_entry_and_byte_bounds(self):
         cache = TransientPayloadCache(max_entries=1, max_bytes=8, ttl_seconds=30)
