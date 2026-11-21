@@ -329,10 +329,12 @@ class AdultTextPipeline:
             return self._outcome(task, step_id, "failed", "PROVIDER_TIMEOUT", route, attempt)
         except Exception as exc:
             adapter_code = getattr(exc, "error_code", None)
-            if adapter_code == "input_invalid":
+            if adapter_code in {"input_invalid", "input_unavailable"}:
                 code, safe, retryable = "INVALID_INPUT", "Adapter input validation failed.", False
             elif adapter_code == "client_unavailable":
                 code, safe, retryable = "BACKEND_UNAVAILABLE", "Text backend is unavailable.", True
+            elif adapter_code in {"output_invalid", "output_too_large"}:
+                code, safe, retryable = "MODEL_OUTPUT_INVALID", "Model output failed deterministic validation.", True
             else:
                 code, safe, retryable = "PROVIDER_ERROR", "Text adapter invocation failed.", True
             attempt = self._fail(handle, code, safe, retryable)
