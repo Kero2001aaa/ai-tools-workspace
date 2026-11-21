@@ -469,7 +469,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         import threading
         from agent.adult.adult_task_store import TaskAlreadyActive
         store, first = self._make_task()
-        second, _ = store.create_task(
+        second = store.create_task(
             __import__("agent.adult.models", fromlist=["AdultTaskRequest"]).AdultTaskRequest(
                 "text.generate", "hmac-sha256:fedcba9876543210"
             ),
@@ -603,27 +603,26 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         from agent.adult.adult_task_store import InvalidTaskTransition
         from agent.adult.models import AdultModelValidationError, StepRecord
         store, task = self._make_task()
+        step_id = task.current_step_id
         lease = store.claim_task(task.task_id, "step-final-worker", lease_seconds=300)
-        started = store.save_step(
-            task.task_id, StepRecord(task.current_step_id, task.task_id, 0, "intake", "running"),
+        store.save_step(
+            task.task_id, StepRecord(step_id, task.task_id, 0, "intake", "running"),
             lease, 1,
         )
         finished = store.save_step(
-            task.task_id, StepRecord(task.current_step_id, task.task_id, 0, "intake", "succeeded"),
+            task.task_id, StepRecord(step_id, task.task_id, 0, "intake", "succeeded"),
             lease, store.get_task(task.task_id).state_version,
         )
         with self.assertRaises(InvalidTaskTransition):
             store.save_step(
                 task.task_id,
-                StepRecord(task.current_step_id, task.task_id, 0, "intake", "running"),
+                StepRecord(step_id, task.task_id, 0, "intake", "running"),
                 lease, store.get_task(task.task_id).state_version,
             )
         with self.assertRaises(AdultModelValidationError):
             store.save_step(
                 task.task_id,
-                StepRecord(
-                    task.current_step_id, task.task_id, 0, "text.analyze", "succeeded"
-                ),
+                StepRecord(step_id, task.task_id, 0, "text.analyze", "succeeded"),
                 lease, store.get_task(task.task_id).state_version,
             )
         self.assertEqual("succeeded", finished.status)
