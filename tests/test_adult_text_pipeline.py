@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -151,6 +152,30 @@ class AdultTextPipelineTests(unittest.TestCase):
         )
         self.artifact_store.save_output.assert_called_once()
         self.assertNotIn("Rewritten source", repr(outcome))
+
+    def test_each_supported_text_operation_uses_the_same_bounded_pipeline_contract(self):
+        for task_type in ("text.analyze", "text.generate", "text.rewrite"):
+            with self.subTest(task_type=task_type):
+                self.task = replace(self.task, task_type=task_type)
+                self.task_request = replace(self.task_request, task_type=task_type)
+                self.step = replace(self.step, operation=task_type)
+                self.route = replace(self.route, task_type=task_type)
+                self.task_store.get_task_request.return_value = self.task_request
+                self.task_store.get_step.return_value = self.step
+                self.router.choose_routes.return_value = [self.route]
+                self.artifact_store.load_input.return_value = encode_text_input(
+                    task_type, "Source text for this operation",
+                )
+                self.adapter.invoke.return_value = TextAdapterResult(
+                    "A valid generated text result", {}, 0,
+                )
+                self.pipeline = self.make_pipeline()
+                outcome = self.run_pipeline()
+                self.assertEqual("succeeded", outcome.status)
+                self.adapter.invoke.assert_called_once()
+                self.adapter.invoke.reset_mock()
+                self.tracker.begin.reset_mock()
+                self.tracker.succeed.reset_mock()
 
     def test_no_eligible_route_creates_no_attempt_or_artifact(self):
         self.router.choose_routes.return_value = []
