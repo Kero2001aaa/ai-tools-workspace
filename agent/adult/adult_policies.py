@@ -10,7 +10,7 @@ _MAX_SOURCE_CHARS = 20_000
 _MAX_INSTRUCTION_CHARS = 4_000
 _MAX_OUTPUT_CHARS = 20_000
 _MAX_OUTPUT_BYTES = 80 * 1024
-_ALLOWED_CONTROLS = frozenset({"\\t", "\\n", "\\r"})
+_ALLOWED_CONTROLS = frozenset({"\t", "\n", "\r"})
 
 
 def _text_problem(value: str) -> str | None:
