@@ -1,5 +1,8 @@
 """Security and lifecycle tests for Adult Stage 4 encrypted payload storage."""
 import base64
+import io
+import json
+import logging
 import os
 import sqlite3
 import stat
@@ -100,6 +103,53 @@ class AdultArtifactStoreTests(unittest.TestCase):
                 (reference.payload_id,),
             ).fetchone()
         self.assertEqual((self.cipher.key_id, 1, 1, "input"), row)
+
+    def test_plaintext_never_enters_task_database_checkpoints_metadata_or_logs(self):
+        from agent.adult.adult_task_store import AdultTaskStore
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+
+        secret = b"checkpoint-log-exclusion-private-source-74f1c9"
+        state_db = self.root / "adult-state.sqlite3"
+        task_store = AdultTaskStore(state_db)
+        with patch.dict(os.environ, {"ADULT_PAYLOAD_ENCRYPTION_KEY": KEY_ONE}, clear=False):
+            task = task_store.create_task(
+                AdultTaskRequest(
+                    "text.analyze",
+                    self.cipher.fingerprint(secret),
+                    retention_policy="encrypted",
+                ),
+                TaskBudget(),
+            )
+
+        logger = logging.getLogger("agent.adult.payload_store")
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        logger.addHandler(handler)
+        try:
+            reference = self.store.save_input(
+                task.task_id, secret, "text/plain", retain_encrypted=True
+            )
+            self.store.load_input(reference.payload_id, task.task_id)
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+        with sqlite3.connect(state_db) as connection:
+            task_rows = connection.execute("SELECT * FROM adult_tasks").fetchall()
+            checkpoints = connection.execute(
+                "SELECT snapshot_json FROM adult_checkpoints"
+            ).fetchall()
+        with sqlite3.connect(self.store._index_path) as connection:
+            payload_rows = connection.execute(
+                "SELECT * FROM adult_payload_records"
+            ).fetchall()
+
+        protected = json.dumps([task_rows, checkpoints, payload_rows], default=str)
+        self.assertNotIn(secret.decode("ascii"), protected)
+        self.assertNotIn(secret.decode("ascii"), stream.getvalue())
+        self.assertEqual(1, len(task_rows))
+        self.assertEqual(1, len(checkpoints))
+        self.assertEqual(1, len(payload_rows))
 
     def test_wrong_task_cannot_load_retained_input(self):
         reference = self.store.save_input("task-1", b"secret", "text/plain", retain_encrypted=True)
