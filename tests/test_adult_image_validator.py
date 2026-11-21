@@ -45,7 +45,7 @@ def _webp(payload: bytes, kind: bytes = b"VP8L", *, extended: bool = False,
     chunks = []
     if extended:
         # Canvas is 1x1; all reserved bytes are zero.
-        chunks.append(_webp_chunk(b"VP8X", bytes((flags, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
+        chunks.append(_webp_chunk(b"VP8X", bytes((flags, 0, 0, 0, 0, 0, 0, 0, 0, 0))))
     chunks.append(_webp_chunk(kind, payload))
     body = b"".join(chunks)
     return b"RIFF" + struct.pack("<I", len(body) + 4) + b"WEBP" + body
