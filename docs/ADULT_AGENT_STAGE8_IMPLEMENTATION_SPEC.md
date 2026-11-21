@@ -1,7 +1,7 @@
 # Adult Agent — Stage 8 Implementation Specification
 ## Image Input Validation, Image Adapters, Evaluator, and One-Attempt Pipeline
 
-**Status:** Approved design — Step 1 PASS; Step 2 implementation in progress
+**Status:** Approved design — Steps 1–2 PASS; Step 3 implementation in progress
 **Branch:** `feature/adult-agent-mvp`  
 **Parent specification:** `docs/ADULT_AGENT_IMPLEMENTATION_SPEC.md`  
 **Precondition:** Stages 1–7 are PASS on the current branch head  
@@ -257,10 +257,22 @@ Stable error codes should reuse existing Stage 7/Stage 5 codes where semantics m
 
 ## 12. Required implementation order and gate
 
-### Step 2 — structural image validation and image policies (IN PROGRESS)
+### Step 2 — structural image validation and image policies (PASS)
 
 Implement a standard-library-only validator for PNG, JPEG, and static WebP containers. Enforce the 15 MiB input / 20 MiB output limits, 8,192-pixel dimension limits, 40-megapixel cap, signatures, structural lengths, CRCs where defined, terminal container markers, and rejection of animation/unsupported features. Return only immutable metadata and SHA-256. Add deterministic input/output policy checks for MIME allowlists and route-specific byte/dimension limits. No raster decoding or new dependency is permitted.
 
+
+
+### Step 3 — deterministic image evaluator (IN PROGRESS)
+
+Add `AdultImageEvaluator` with no semantic model, moderation call, OCR, network access, or secondary provider invocation.
+
+- For `image.analyze`, accept only `ImageAnalysisResult`; enforce strict UTF-8, non-empty text, the 20,000-character / 80 KiB bounds, permitted whitespace controls, and the existing `AdultImagePolicies.validate_analysis_output` decision.
+- For `image.generate` and `image.edit`, accept only `ImageAdapterResult`; validate the actual returned bytes using `validate_image(..., output=True)`; require the declared MIME to match the detected MIME; enforce route output MIME, byte, width, height, and pixel constraints through `AdultImagePolicies.validate_image_output`.
+- Return only the existing bounded `EvaluationResult` DTO: accepted flag, pass-fraction score, normalized check IDs, normalized reason codes, and retryability classification. Never include output text, image bytes, or exception content.
+- Treat corrupt/invalid model output and route output-contract mismatches as revision candidates. Treat unsupported tasks, wrong adapter DTOs, unavailable/malformed policy decisions, and malformed route policy configuration as terminal. No output is semantically scored.
+
+The step gate requires focused evaluator tests, all Adult tests, the full suite, and `git diff --check` before Step 4 begins.
 
 
 After explicit design approval, implement in this order:
