@@ -171,7 +171,12 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         self.assertEqual("analyzing", checkpoint.snapshot.status)
         current = store.get_task(task.task_id)
         self.assertEqual(2, current.state_version)
-        self.assertEqual(checkpoint.checkpoint_id, store.get_latest_checkpoint(task.task_id).checkpoint_id)
+        next_snapshot = self._checkpoint_snapshot(current)
+        second = store.save_checkpoint(
+            task.task_id, next_snapshot, "step_completed", current.state_version, lease=lease
+        )
+        self.assertEqual(3, second.revision)
+        self.assertEqual(second.checkpoint_id, store.get_latest_checkpoint(task.task_id).checkpoint_id)
         self.assertEqual("checkpoint_saved", store.list_events(task.task_id)[-1].event_type)
 
     def test_save_checkpoint_rejects_stale_snapshot_and_rolls_back(self):
@@ -351,6 +356,30 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         self.assertEqual("lease_recovered", checkpoint.reason)
         self.assertEqual("checkpointed", checkpoint.snapshot.status)
         self.assertEqual("lease_expired_recovered", store.list_events(task.task_id)[-1].event_type)
+
+    def test_stale_lease_cannot_renew_release_or_mutate_after_recovery(self):
+        from datetime import datetime, timedelta, timezone
+        from agent.adult.adult_task_store import LeaseLost
+        from agent.adult.models import StepRecord
+        store, task = self._make_task()
+        lease = store.claim_task(task.task_id, "stale-generation-worker", lease_seconds=1)
+        future = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(
+            timespec="microseconds"
+        ).replace("+00:00", "Z")
+        with patch("agent.adult.adult_task_store._utc_now", return_value=future):
+            self.assertEqual(1, store.recover_expired_leases())
+        with self.assertRaises(LeaseLost):
+            store.renew_lease(lease, lease_seconds=30)
+        with self.assertRaises(LeaseLost):
+            store.release_lease(lease, expected_state_version=1)
+        with self.assertRaises(LeaseLost):
+            store.save_step(
+                task.task_id,
+                StepRecord(task.current_step_id, task.task_id, 0, "intake", "running"),
+                lease, 2,
+            )
+        current = store.get_task(task.task_id)
+        self.assertEqual(("checkpointed", 2), (current.status, current.state_version))
 
     def test_recover_expired_lease_with_cancel_request_transitions_to_cancelled(self):
         from datetime import datetime, timedelta, timezone
