@@ -315,12 +315,16 @@ class StepRecord:
             _timestamp("completed_at", self.completed_at)
         if self.status == "pending" and (self.started_at is not None or self.completed_at is not None):
             raise AdultModelValidationError("Pending steps cannot have execution timestamps.")
-        if self.status == "running" and (self.started_at is None or self.completed_at is not None):
-            raise AdultModelValidationError("Running steps require started_at and cannot have completed_at.")
-        if self.status in {"succeeded", "failed", "skipped"} and self.completed_at is None:
-            raise AdultModelValidationError("Finished steps require completed_at.")
-        if self.status in {"succeeded", "failed"} and self.started_at is None:
-            raise AdultModelValidationError("Executed steps require started_at.")
+        if self.status == "running" and self.completed_at is not None:
+            raise AdultModelValidationError("Running steps cannot have completed_at.")
+        # Step timestamps are output fields owned by AdultTaskStore. Write DTOs
+        # may therefore express a target status without supplying timestamps.
+        if (
+            self.started_at is not None and self.completed_at is not None
+            and datetime.fromisoformat(self.completed_at[:-1] + "+00:00")
+                < datetime.fromisoformat(self.started_at[:-1] + "+00:00")
+        ):
+            raise AdultModelValidationError("Step completion cannot precede its start.")
 
 
 @dataclass(frozen=True)
