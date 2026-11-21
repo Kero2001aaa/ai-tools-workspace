@@ -91,6 +91,10 @@ class AdultAttemptTrackerTests(unittest.TestCase):
         handle = self.begin()
         self.assertEqual(1, self.tracker.total_attempts(self.task.task_id))
         self.assertEqual(0, self.tracker.failures_since_approval(self.task.task_id))
+        task = self.store.get_task(self.task.task_id)
+        self.assertEqual((2, 1, "mock-adapter", "mock-provider"), (
+            task.state_version, task.provider_calls, task.selected_adapter, task.selected_provider,
+        ))
         attempt = self.query("SELECT status,attempt_no,lease_generation FROM adult_attempts")
         self.assertEqual(("running", 1, self.lease.lease_generation), tuple(attempt[0]))
         events = self.query("SELECT event_type FROM adult_attempt_events")
@@ -114,12 +118,30 @@ class AdultAttemptTrackerTests(unittest.TestCase):
         row = self.query("SELECT status,output_artifact_id,usage_json FROM adult_attempts")[0]
         self.assertEqual("succeeded", row["status"])
         self.assertEqual("a" * 32, row["output_artifact_id"])
+        task = self.store.get_task(self.task.task_id)
+        self.assertEqual((3, 0), (task.state_version, task.spent_cost_microusd))
+
+    def test_success_rejects_cost_above_the_zero_cost_budget_without_finalizing(self):
+        handle = self.begin()
+        with self.assertRaises(AttemptBudgetExhausted):
+            self.tracker.succeed(handle, None, None, 1)
+        self.assertEqual("running", self.query(
+            "SELECT status FROM adult_attempts WHERE attempt_id=?", (handle.attempt_id,)
+        )[0][0])
+        result = self.tracker.fail(
+            handle, "COST_POLICY_BLOCKED", "Reported route cost exceeded the configured zero-cost budget.", False
+        )
+        self.assertEqual(("failed", "budget_exhaustion"), (result.status, result.failure_class))
+        task = self.store.get_task(self.task.task_id)
+        self.assertEqual(0, task.spent_cost_microusd)
 
     def test_transient_failure_increments_failure_counter_and_allows_distinct_route(self):
         handle = self.begin()
         result = self.tracker.fail(handle, "PROVIDER_ERROR", "Provider request failed.", True)
         self.assertEqual(("failed", "transient", True), (result.status, result.failure_class, result.retryable))
         self.assertEqual(1, self.tracker.failures_since_approval(self.task.task_id))
+        task = self.store.get_task(self.task.task_id)
+        self.assertEqual((3, "PROVIDER_ERROR"), (task.state_version, task.last_error_code))
         second = self.begin(route(adapter_id="different-adapter"))
         self.assertEqual(2, second.attempt_no)
 
@@ -377,6 +399,34 @@ class AdultAttemptTrackerTests(unittest.TestCase):
         with self.assertRaises(AttemptValidationError):
             self.tracker.fail(second, "PROVIDER_ERROR", "/home/user/private", True)
         self.tracker.fail(second, "PROVIDER_ERROR", "Retryable service error.", True)
+
+    def test_mutated_attempt_handle_fields_are_rejected(self):
+        from agent.adult.adult_attempt_tracker import StaleAttemptHandle
+        handle = self.begin()
+        object.__setattr__(handle, "approach_key", "f" * 64)
+        with self.assertRaises(StaleAttemptHandle):
+            self.tracker.succeed(handle, "a" * 32, None, 0)
+        self.assertEqual("running", self.query(
+            "SELECT status FROM adult_attempts WHERE attempt_id=?", (handle.attempt_id,)
+        )[0][0])
+
+    def test_attempt_start_rejects_terminal_step(self):
+        from agent.adult.models import StepRecord
+        store, task, lease, tracker = self._isolated_task(
+            "terminal-step-attempt", TaskBudget(max_total_attempts=5, max_provider_calls=5)
+        )
+        tracker._store.save_step(
+            task.task_id, StepRecord(task.current_step_id, task.task_id, 0, "intake", "running"),
+            lease, store.get_task(task.task_id).state_version,
+        )
+        current = store.get_task(task.task_id)
+        tracker._store.save_step(
+            task.task_id, StepRecord(task.current_step_id, task.task_id, 0, "intake", "succeeded"),
+            lease, current.state_version,
+        )
+        with self.assertRaises(AttemptNotAvailable):
+            tracker.begin(task.task_id, task.current_step_id, route(), INPUT_FP, CONFIG_FP)
+        self.assertEqual(0, tracker.total_attempts(task.task_id))
 
     def test_tracker_issued_handle_cannot_be_constructed_by_callers(self):
         with self.assertRaises(TypeError):
