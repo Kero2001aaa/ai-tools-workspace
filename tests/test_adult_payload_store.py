@@ -135,14 +135,20 @@ class AdultArtifactStoreTests(unittest.TestCase):
             handler.close()
 
         with sqlite3.connect(state_db) as connection:
-            task_rows = connection.execute("SELECT * FROM adult_tasks").fetchall()
-            checkpoints = connection.execute(
-                "SELECT snapshot_json FROM adult_checkpoints"
-            ).fetchall()
+            task_rows = [
+                tuple(row) for row in connection.execute("SELECT * FROM adult_tasks").fetchall()
+            ]
+            checkpoints = [
+                tuple(row) for row in connection.execute(
+                    "SELECT snapshot_json FROM adult_checkpoints"
+                ).fetchall()
+            ]
         with sqlite3.connect(self.store._index_path) as connection:
-            payload_rows = connection.execute(
-                "SELECT * FROM adult_payload_records"
-            ).fetchall()
+            payload_rows = [
+                tuple(row) for row in connection.execute(
+                    "SELECT * FROM adult_payload_records"
+                ).fetchall()
+            ]
 
         protected = json.dumps([task_rows, checkpoints, payload_rows], default=str)
         self.assertNotIn(secret.decode("ascii"), protected)
