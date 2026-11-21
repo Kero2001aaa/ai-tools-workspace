@@ -18,7 +18,7 @@ from typing import Final
 from agent.adult.models import (
     AdultModelValidationError, AdultTaskRequest, AdultTaskSnapshot,
     Checkpoint, CheckpointSnapshot, TaskBudget, TaskEvent, TaskPage,
-    TASK_STATUSES,
+    TASK_STATUSES, TaskLease, ACTIVE_STATUSES, TERMINAL_STATUSES, EVENT_TYPES,
 )
 
 SCHEMA_VERSION: Final = 1
@@ -44,6 +44,36 @@ class PayloadRetentionUnavailable(AdultTaskStoreError):
 
 class InvalidCursor(AdultTaskStoreError):
     error_code = "invalid_cursor"
+
+class InvalidTaskTransition(AdultTaskStoreError):
+    error_code = "invalid_task_transition"
+
+class StaleTaskVersion(AdultTaskStoreError):
+    error_code = "stale_task_version"
+
+class TaskAlreadyActive(AdultTaskStoreError):
+    error_code = "task_already_active"
+
+class LeaseNotAvailable(AdultTaskStoreError):
+    error_code = "lease_not_available"
+
+class LeaseLost(AdultTaskStoreError):
+    error_code = "lease_lost"
+
+class InvalidCheckpoint(AdultTaskStoreError):
+    error_code = "invalid_checkpoint"
+
+class TaskBudgetExhausted(AdultTaskStoreError):
+    error_code = "task_budget_exhausted"
+
+class TaskTerminal(AdultTaskStoreError):
+    error_code = "task_terminal"
+
+class UserApprovalRequired(AdultTaskStoreError):
+    error_code = "user_approval_required"
+
+class TaskCancelled(AdultTaskStoreError):
+    error_code = "task_cancelled"
 
 _SCHEMA: Final[tuple[str, ...]] = (
     """CREATE TABLE adult_schema_migrations (
@@ -203,6 +233,21 @@ _EXPECTED_TRIGGERS: Final = {
     "prevent_adult_task_events_delete",
 }
 
+
+_ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
+    "queued": frozenset({"analyzing", "cancelled", "failed"}),
+    "analyzing": frozenset({"running", "checkpointed", "waiting_user", "needs_input", "paused", "failed", "cancelled"}),
+    "running": frozenset({"evaluating", "checkpointed", "waiting_user", "needs_input", "paused", "failed", "cancelled"}),
+    "evaluating": frozenset({"completed", "running", "checkpointed", "paused", "failed", "cancelled"}),
+    "checkpointed": frozenset({"queued", "analyzing", "cancelled", "paused", "needs_input"}),
+    "waiting_user": frozenset({"queued", "cancelled"}),
+    "needs_input": frozenset({"queued", "cancelled"}),
+    "paused": frozenset({"queued", "cancelled", "failed"}),
+    "completed": frozenset(),
+    "failed": frozenset(),
+    "cancelled": frozenset(),
+}
+
 class AdultTaskStore:
     """Owns the isolated Adult operational database; no provider integration."""
 
@@ -285,6 +330,135 @@ class AdultTaskStore:
         if not _EXPECTED_TRIGGERS.issubset(triggers):
             raise TaskStoreSchemaError("Adult task database is missing required triggers.")
 
+
+
+    def transition(
+        self,
+        task_id: str,
+        expected_status: set[str],
+        new_status: str,
+        event_type: str,
+        expected_state_version: int,
+        metadata: dict | None = None,
+        lease: TaskLease | None = None,
+    ) -> AdultTaskSnapshot:
+        """Apply one guarded state transition and append its event atomically.
+
+        Lease acquisition and controlled resume/waiting-user paths are handled
+        by their dedicated methods, not by this generic transition primitive.
+        """
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if not isinstance(expected_status, (set, frozenset)) or not expected_status:
+            raise AdultModelValidationError("expected_status must be a non-empty status set.")
+        if any(not isinstance(value, str) or value not in TASK_STATUSES for value in expected_status):
+            raise AdultModelValidationError("expected_status contains an unsupported status.")
+        if not isinstance(new_status, str) or new_status not in TASK_STATUSES:
+            raise AdultModelValidationError("Unsupported destination task status.")
+        if not isinstance(event_type, str) or event_type not in EVENT_TYPES:
+            raise AdultModelValidationError("Unsupported task event type.")
+        if event_type != "state_transition":
+            raise AdultModelValidationError("Generic transitions must use the state_transition event.")
+        if not isinstance(expected_state_version, int) or isinstance(expected_state_version, bool) or expected_state_version < 0:
+            raise AdultModelValidationError("expected_state_version must be a non-negative integer.")
+        safe_metadata = {} if metadata is None else metadata
+        if not isinstance(safe_metadata, dict):
+            raise AdultModelValidationError("metadata must be a JSON object.")
+        now = _utc_now()
+        event_id = str(uuid.uuid4())
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM adult_tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if row is None:
+                raise TaskNotFound("Task does not exist.")
+            current = row["status"]
+            if current in TERMINAL_STATUSES:
+                raise TaskTerminal("Terminal tasks cannot transition.")
+            if current not in expected_status or row["state_version"] != expected_state_version:
+                raise StaleTaskVersion("Task status or state version changed.")
+            if new_status not in _ALLOWED_TRANSITIONS[current]:
+                raise InvalidTaskTransition("Requested task transition is not allowed.")
+            if current in {"waiting_user", "needs_input", "paused"} and new_status == "queued":
+                raise UserApprovalRequired("Use the dedicated resume operation for this transition.")
+            if new_status == "waiting_user":
+                raise UserApprovalRequired("Use set_waiting_user to enforce the five-failure approval gate.")
+            if new_status in ACTIVE_STATUSES and current not in ACTIVE_STATUSES:
+                raise LeaseNotAvailable("Active states can only be entered by claim_task.")
+            if row["cancel_requested"] and new_status != "cancelled":
+                raise TaskCancelled("Cancellation has precedence over other state transitions.")
+
+            if current in ACTIVE_STATUSES:
+                if not isinstance(lease, TaskLease):
+                    raise LeaseLost("A current task lease is required.")
+                lease._validate()
+                if (
+                    lease.task_id != task_id
+                    or lease.worker_id != row["lease_owner"]
+                    or lease.lease_generation != row["lease_generation"]
+                    or row["lease_expires_at"] is None
+                    or row["lease_expires_at"] <= now
+                ):
+                    raise LeaseLost("The task lease is expired or no longer current.")
+            elif lease is not None:
+                raise LeaseLost("A lease cannot be supplied for a task without an active lease.")
+
+            user_action_required = int(new_status in {"needs_input", "paused"})
+            cancel_requested = 1 if new_status == "cancelled" else int(row["cancel_requested"])
+            if new_status in ACTIVE_STATUSES:
+                lease_owner = row["lease_owner"]
+                lease_expires_at = row["lease_expires_at"]
+            else:
+                lease_owner = None
+                lease_expires_at = None
+
+            # DTO validation rejects unsafe metadata before any durable write.
+            TaskEvent(
+                event_id=event_id,
+                task_id=task_id,
+                event_type="state_transition",
+                from_status=current,
+                to_status=new_status,
+                metadata=safe_metadata,
+                created_at=now,
+            )
+            cursor = db.execute(
+                """UPDATE adult_tasks
+                   SET status=?, user_action_required=?, cancel_requested=?,
+                       lease_owner=?, lease_expires_at=?, state_version=state_version+1,
+                       updated_at=?
+                   WHERE task_id=? AND status=? AND state_version=?""",
+                (
+                    new_status, user_action_required, cancel_requested,
+                    lease_owner, lease_expires_at, now, task_id,
+                    current, expected_state_version,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StaleTaskVersion("Task status or state version changed.")
+            db.execute(
+                """INSERT INTO adult_task_events
+                   (event_id,task_id,event_type,from_status,to_status,metadata_json,created_at)
+                   VALUES (?,?,'state_transition', ?, ?, ?, ?)""",
+                (
+                    event_id, task_id, current, new_status,
+                    json.dumps(safe_metadata, separators=(",", ":"), sort_keys=True, allow_nan=False),
+                    now,
+                ),
+            )
+            db.commit()
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+        finally:
+            db.close()
+        result = self.get_task(task_id)
+        if result is None:
+            raise TaskStoreSchemaError("Transitioned task could not be reloaded.")
+        return result
 
     def create_task(self, request: AdultTaskRequest, budget: TaskBudget) -> AdultTaskSnapshot:
         if not isinstance(request, AdultTaskRequest):
