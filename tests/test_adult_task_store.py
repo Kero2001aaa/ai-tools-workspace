@@ -567,7 +567,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
                 with self.assertRaises(sqlite3.OperationalError):
                     store.recover_expired_leases()
         current = store.get_task(task.task_id)
-        self.assertEqual(("analyzing", 1, 1), (
+        self.assertEqual(("analyzing", 1, 0), (
             current.status, current.state_version, current.attempt_count,
         ))
         with original() as connection:
