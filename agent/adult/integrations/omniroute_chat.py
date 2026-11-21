@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
@@ -15,15 +14,15 @@ class AdultOmniRouteConfigError(ValueError):
     """Adult OmniRoute settings are incomplete or unsafe."""
 
 
-@dataclass(frozen=True)
 class AdultOmniRouteConfig:
-    base_url: str
-    api_key: str = field(repr=False, compare=False)
+    """Immutable Adult-only configuration with no generic dataclass serialization."""
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.base_url, str) or not isinstance(self.api_key, str) or not self.api_key.strip():
+    __slots__ = ("_base_url", "_api_key")
+
+    def __init__(self, base_url: str, api_key: str):
+        if not isinstance(base_url, str) or not isinstance(api_key, str) or not api_key.strip():
             raise AdultOmniRouteConfigError("Adult OmniRoute configuration is incomplete.")
-        parsed = urlsplit(self.base_url)
+        parsed = urlsplit(base_url)
         if (
             parsed.scheme not in {"https", "http"} or not parsed.hostname
             or parsed.username or parsed.password or parsed.query or parsed.fragment
@@ -32,8 +31,34 @@ class AdultOmniRouteConfig:
             raise AdultOmniRouteConfigError("Adult OmniRoute base URL must be a clean /v1 endpoint.")
         if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise AdultOmniRouteConfigError("Non-loopback Adult OmniRoute endpoints require HTTPS.")
-        if len(self.base_url) > 512 or len(self.api_key) > 4096:
+        if len(base_url) > 512 or len(api_key) > 4096:
             raise AdultOmniRouteConfigError("Adult OmniRoute configuration exceeds its size limit.")
+        object.__setattr__(self, "_base_url", base_url)
+        object.__setattr__(self, "_api_key", api_key)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("AdultOmniRouteConfig is immutable.")
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @property
+    def api_key(self) -> str:
+        return self._api_key
+
+    def __repr__(self) -> str:
+        return f"AdultOmniRouteConfig(base_url={self._base_url!r})"
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, AdultOmniRouteConfig) and self._base_url == other._base_url
+
+    def __hash__(self) -> int:
+        return hash(self._base_url)
+
+    def to_dict(self) -> dict[str, str]:
+        """Return a deliberately redacted serializable view."""
+        return {"base_url": self._base_url}
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "AdultOmniRouteConfig | None":
@@ -42,8 +67,12 @@ class AdultOmniRouteConfig:
             source = os.environ
         else:
             source = environ
-        base_url = source.get("ADULT_OMNIROUTE_BASE_URL", "").strip()
-        api_key = source.get("ADULT_OMNIROUTE_API_KEY", "").strip()
+        base_url = source.get("ADULT_OMNIROUTE_BASE_URL", "")
+        api_key = source.get("ADULT_OMNIROUTE_API_KEY", "")
+        if not isinstance(base_url, str) or not isinstance(api_key, str):
+            raise AdultOmniRouteConfigError("Adult OmniRoute settings must be strings.")
+        base_url = base_url.strip()
+        api_key = api_key.strip()
         if not base_url and not api_key:
             return None
         if not base_url or not api_key:

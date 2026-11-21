@@ -1,6 +1,7 @@
 """Tests for Adult OmniRoute configuration and typed adapter contracts."""
 import os
 import unittest
+from dataclasses import asdict
 from unittest.mock import patch
 
 from agent.adult.integrations.omniroute_chat import (
@@ -23,6 +24,12 @@ class AdultOmniRouteAdapterTests(unittest.TestCase):
         self.assertEqual("https://adult.example/v1", config.base_url)
         self.assertNotIn("adult-secret", repr(config))
         self.assertNotIn("workspace-secret", repr(config))
+        self.assertEqual({"base_url": "https://adult.example/v1"}, config.to_dict())
+        with self.assertRaises(TypeError):
+            asdict(config)
+        self.assertFalse(hasattr(config, "__dict__"))
+        with self.assertRaises(AttributeError):
+            config.api_key = "replacement-secret"
         other = AdultOmniRouteConfig("https://adult.example/v1", "different-secret")
         self.assertEqual(config, other)
 
@@ -70,6 +77,15 @@ class AdultOmniRouteAdapterTests(unittest.TestCase):
         self.assertEqual("workspace-key", options["api_key"])
         self.assertEqual("workspace-model", options["model"])
         self.assertEqual("https://workspace.example/v1", options["base_url"])
+
+    def test_adapter_and_artifact_results_reject_unsafe_metadata(self):
+        from agent.adult.integrations.protocols import AdapterResult, ArtifactResult
+        with self.assertRaises(ValueError):
+            AdapterResult("output-reference-123456", {"tokens": True})
+        with self.assertRaises(ValueError):
+            ArtifactResult("artifact-1234567890", "image/svg+xml", 100, "a" * 64)
+        with self.assertRaises(ValueError):
+            ArtifactResult("artifact-1234567890", "image/png", 0, "a" * 64)
 
     def test_image_request_rejects_unsupported_mime_type(self):
         with self.assertRaises(ValueError):
