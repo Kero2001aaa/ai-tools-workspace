@@ -802,7 +802,8 @@ class AdultAttemptTracker:
         recovered = 0
         with self._transaction() as db:
             rows = db.execute(
-                """SELECT a.*,t.status AS task_status,t.lease_generation AS current_lease_generation,
+                """SELECT a.*,t.status AS task_status,t.state_version AS task_state_version,
+                          t.lease_generation AS current_lease_generation,
                           t.lease_owner AS current_lease_owner,t.lease_expires_at AS current_lease_expires_at
                    FROM adult_attempts a
                    JOIN adult_tasks t ON t.task_id=a.task_id
@@ -833,7 +834,7 @@ class AdultAttemptTracker:
                            last_error_code='PROVIDER_OUTCOME_UNKNOWN',
                            state_version=state_version+1,updated_at=?
                        WHERE task_id=? AND state_version=?""",
-                    (now, attempt["task_id"], attempt["state_version"]),
+                    (now, attempt["task_id"], attempt["task_state_version"]),
                 )
                 if task_cursor.rowcount != 1:
                     raise AttemptTrackerError("Task changed during uncertain-outcome recovery.")
