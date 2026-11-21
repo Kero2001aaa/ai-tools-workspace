@@ -146,11 +146,7 @@ class OmniRouteTextAdapter:
 
         try:
             envelope = decode_text_input(raw_input, request.task_type)
-        except TextInputError as exc:
-            safe_code = exc.error_code if exc.error_code in {
-                "input_invalid", "input_too_large", "input_malformed",
-                "input_schema_invalid", "input_task_mismatch", "input_policy_rejected",
-            } else "input_invalid"
+        except TextInputError:
             raise OmniRouteTextAdapterError("input_invalid") from None
 
         user_content = json.dumps(
