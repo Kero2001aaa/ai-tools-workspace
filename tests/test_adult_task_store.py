@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.adult.adult_task_store import (
-    AdultTaskStore, SCHEMA_NAME, ATTEMPT_SCHEMA_NAME, _SCHEMA,
+    AdultTaskStore, SCHEMA_NAME, ATTEMPT_SCHEMA_NAME,
+    CAPABILITY_SCHEMA_NAME, _SCHEMA,
 )
 
 

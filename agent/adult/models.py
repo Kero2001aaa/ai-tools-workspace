@@ -156,6 +156,276 @@ class AdultTaskRequest:
         _safe_metadata(self.requested_options, max_bytes=8192)
 
 
+CAPABILITY_MODALITIES = frozenset({"text", "image"})
+CAPABILITY_COST_CLASSES = frozenset({"local", "free_verified", "paid", "unknown"})
+_CAPABILITY_TASK_MODALITIES = {
+    "text.analyze": (("text",), ("text",)),
+    "text.generate": (("text",), ("text",)),
+    "text.rewrite": (("text",), ("text",)),
+    "image.analyze": (("image",), ("text",)),
+    "image.generate": (("text",), ("image",)),
+    "image.edit": (("image", "text"), ("image",)),
+}
+_MIME_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$")
+_CAPABILITY_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_EVIDENCE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
+
+
+def _evidence_reference(name: str, value: Any) -> None:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        raise AdultModelValidationError(f"{name} must be a bounded non-secret reference.")
+    if value.startswith("https://"):
+        from urllib.parse import urlsplit
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https" or not parsed.hostname or parsed.username
+            or parsed.password or parsed.query or parsed.fragment
+            or len(value) > 512
+        ):
+            raise AdultModelValidationError(f"{name} must be a sanitized HTTPS reference.")
+        return
+    if not _EVIDENCE_REF_RE.fullmatch(value) or ".." in value:
+        raise AdultModelValidationError(f"{name} must be a normalized evidence reference.")
+
+
+@dataclass(frozen=True)
+class ModelCapabilitySpec:
+    """Immutable capability contract supplied for registry registration/revision."""
+
+    adapter_id: str
+    adapter_version: str
+    task_type: str
+    input_modalities: tuple[str, ...]
+    output_modalities: tuple[str, ...]
+    cost_class: Literal["local", "free_verified", "paid", "unknown"]
+    provider_id: str | None = None
+    model_id: str | None = None
+    model_version: str | None = None
+    accepted_mime_types: tuple[str, ...] = ()
+    output_mime_types: tuple[str, ...] = ()
+    max_input_bytes: int | None = None
+    max_output_bytes: int | None = None
+    max_input_width: int | None = None
+    max_input_height: int | None = None
+    max_output_width: int | None = None
+    max_output_height: int | None = None
+
+    def __post_init__(self) -> None:
+        _identifier("adapter_id", self.adapter_id)
+        _identifier("adapter_version", self.adapter_version)
+        for name in ("provider_id", "model_id", "model_version"):
+            _identifier(name, getattr(self, name), optional=True)
+        if self.task_type not in TASK_TYPES:
+            raise AdultModelValidationError("Unsupported capability task_type.")
+        if self.cost_class not in CAPABILITY_COST_CLASSES:
+            raise AdultModelValidationError("Unsupported capability cost_class.")
+        expected_input, expected_output = _CAPABILITY_TASK_MODALITIES[self.task_type]
+        if (
+            not isinstance(self.input_modalities, tuple)
+            or len(self.input_modalities) != len(set(self.input_modalities))
+            or set(self.input_modalities) != set(expected_input)
+        ):
+            raise AdultModelValidationError("input_modalities must exactly match the task contract.")
+        if (
+            not isinstance(self.output_modalities, tuple)
+            or len(self.output_modalities) != len(set(self.output_modalities))
+            or set(self.output_modalities) != set(expected_output)
+        ):
+            raise AdultModelValidationError("output_modalities must exactly match the task contract.")
+        if self.cost_class == "free_verified" and (self.provider_id is None or self.model_id is None):
+            raise AdultModelValidationError("free_verified capabilities require provider_id and model_id.")
+        if not self.input_modalities or not self.output_modalities:
+            raise AdultModelValidationError("Capability modalities cannot be empty.")
+
+        has_image_input = "image" in self.input_modalities
+        if has_image_input:
+            if not isinstance(self.accepted_mime_types, tuple) or not 1 <= len(self.accepted_mime_types) <= 16:
+                raise AdultModelValidationError("Image input capabilities require a MIME allowlist.")
+            if len(set(self.accepted_mime_types)) != len(self.accepted_mime_types):
+                raise AdultModelValidationError("Duplicate input MIME types are not allowed.")
+            if any(not isinstance(v, str) or not _MIME_RE.fullmatch(v) for v in self.accepted_mime_types):
+                raise AdultModelValidationError("Input MIME types must be explicit and cannot be wildcards.")
+            _integer("max_input_bytes", self.max_input_bytes, 1, 15 * 1024 * 1024)
+            _integer("max_input_width", self.max_input_width, 1, 10000)
+            _integer("max_input_height", self.max_input_height, 1, 10000)
+        elif (
+            self.accepted_mime_types or self.max_input_bytes is not None
+            or self.max_input_width is not None or self.max_input_height is not None
+        ):
+            raise AdultModelValidationError("Image input constraints are invalid for a text-only input.")
+
+        has_image_output = "image" in self.output_modalities
+        if has_image_output:
+            if not isinstance(self.output_mime_types, tuple) or not 1 <= len(self.output_mime_types) <= 16:
+                raise AdultModelValidationError("Image output capabilities require a MIME allowlist.")
+            if len(set(self.output_mime_types)) != len(self.output_mime_types):
+                raise AdultModelValidationError("Duplicate output MIME types are not allowed.")
+            if any(not isinstance(v, str) or not _MIME_RE.fullmatch(v) for v in self.output_mime_types):
+                raise AdultModelValidationError("Output MIME types must be explicit and cannot be wildcards.")
+            _integer("max_output_bytes", self.max_output_bytes, 1, 20 * 1024 * 1024)
+            _integer("max_output_width", self.max_output_width, 1, 10000)
+            _integer("max_output_height", self.max_output_height, 1, 10000)
+        elif (
+            self.output_mime_types or self.max_output_bytes is not None
+            or self.max_output_width is not None or self.max_output_height is not None
+        ):
+            raise AdultModelValidationError("Image output constraints are invalid for text output.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "adapter_id": self.adapter_id, "adapter_version": self.adapter_version,
+            "provider_id": self.provider_id, "model_id": self.model_id,
+            "model_version": self.model_version, "task_type": self.task_type,
+            "input_modalities": list(self.input_modalities),
+            "output_modalities": list(self.output_modalities),
+            "accepted_mime_types": list(self.accepted_mime_types),
+            "output_mime_types": list(self.output_mime_types),
+            "max_input_bytes": self.max_input_bytes, "max_output_bytes": self.max_output_bytes,
+            "max_input_width": self.max_input_width, "max_input_height": self.max_input_height,
+            "max_output_width": self.max_output_width, "max_output_height": self.max_output_height,
+            "cost_class": self.cost_class,
+        }
+
+
+@dataclass(frozen=True)
+class CapabilityEvidence:
+    """Non-secret evidence metadata for capability support and, separately, zero-cost status."""
+
+    capability_source: Literal[
+        "official_provider_docs", "official_adapter_docs", "local_adapter_smoke_test"
+    ]
+    capability_reference: str
+    verified_at: str
+    expires_at: str
+    cost_source: Literal[
+        "official_provider_pricing", "official_free_tier_terms", "local_execution_contract"
+    ] | None = None
+    cost_reference: str | None = None
+    cost_verified_at: str | None = None
+    cost_expires_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.capability_source not in {
+            "official_provider_docs", "official_adapter_docs", "local_adapter_smoke_test"
+        }:
+            raise AdultModelValidationError("Unsupported capability evidence source.")
+        _evidence_reference("capability_reference", self.capability_reference)
+        _timestamp("verified_at", self.verified_at)
+        _timestamp("expires_at", self.expires_at)
+        if datetime.fromisoformat(self.expires_at[:-1] + "+00:00") <= datetime.fromisoformat(self.verified_at[:-1] + "+00:00"):
+            raise AdultModelValidationError("Capability evidence must expire after verification.")
+        cost_values = (self.cost_source, self.cost_reference, self.cost_verified_at, self.cost_expires_at)
+        if all(value is None for value in cost_values):
+            return
+        if any(value is None for value in cost_values):
+            raise AdultModelValidationError("Cost evidence fields must be supplied together.")
+        if self.cost_source not in {
+            "official_provider_pricing", "official_free_tier_terms", "local_execution_contract"
+        }:
+            raise AdultModelValidationError("Unsupported cost evidence source.")
+        _evidence_reference("cost_reference", self.cost_reference)
+        _timestamp("cost_verified_at", self.cost_verified_at)
+        _timestamp("cost_expires_at", self.cost_expires_at)
+        if datetime.fromisoformat(self.cost_expires_at[:-1] + "+00:00") <= datetime.fromisoformat(self.cost_verified_at[:-1] + "+00:00"):
+            raise AdultModelValidationError("Cost evidence must expire after verification.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "capability_source": self.capability_source,
+            "capability_reference": self.capability_reference,
+            "verified_at": self.verified_at, "expires_at": self.expires_at,
+            "cost_source": self.cost_source, "cost_reference": self.cost_reference,
+            "cost_verified_at": self.cost_verified_at, "cost_expires_at": self.cost_expires_at,
+        }
+
+
+@dataclass(frozen=True)
+class ModelCapability:
+    capability_id: str
+    spec: ModelCapabilitySpec
+    enabled: bool
+    verification_status: Literal["unverified", "verified", "revoked"]
+    capability_version: str
+    evidence: CapabilityEvidence | None
+    state_version: int
+    created_at: str
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        _identifier("capability_id", self.capability_id)
+        if not isinstance(self.spec, ModelCapabilitySpec):
+            raise AdultModelValidationError("spec must be a ModelCapabilitySpec.")
+        if not isinstance(self.enabled, bool):
+            raise AdultModelValidationError("enabled must be a boolean.")
+        if self.verification_status not in {"unverified", "verified", "revoked"}:
+            raise AdultModelValidationError("Invalid capability verification_status.")
+        if not isinstance(self.capability_version, str) or not _CAPABILITY_HASH_RE.fullmatch(self.capability_version):
+            raise AdultModelValidationError("capability_version must be a lowercase SHA-256 hash.")
+        if self.verification_status == "verified" and not isinstance(self.evidence, CapabilityEvidence):
+            raise AdultModelValidationError("Verified capabilities require evidence.")
+        if self.verification_status != "verified" and self.evidence is not None:
+            raise AdultModelValidationError("Unverified/revoked capabilities cannot retain active evidence.")
+        if self.enabled and self.verification_status != "verified":
+            raise AdultModelValidationError("Only verified capabilities can be enabled.")
+        _integer("state_version", self.state_version, 1)
+        _timestamp("created_at", self.created_at)
+        _timestamp("updated_at", self.updated_at)
+
+
+@dataclass(frozen=True)
+class CapabilityQuery:
+    task_type: str
+    input_modalities: tuple[str, ...]
+    output_modality: str
+    input_fingerprint: str
+    config_fingerprint: str
+    mime_type: str | None = None
+    input_bytes: int | None = None
+    width: int | None = None
+    height: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.task_type not in TASK_TYPES:
+            raise AdultModelValidationError("Unsupported capability query task_type.")
+        expected_input, expected_output = _CAPABILITY_TASK_MODALITIES[self.task_type]
+        if not isinstance(self.input_modalities, tuple) or set(self.input_modalities) != set(expected_input) or len(self.input_modalities) != len(set(self.input_modalities)):
+            raise AdultModelValidationError("Query input_modalities do not match task_type.")
+        if self.output_modality != expected_output[0]:
+            raise AdultModelValidationError("Query output_modality does not match task_type.")
+        _fingerprint("input_fingerprint", self.input_fingerprint)
+        _fingerprint("config_fingerprint", self.config_fingerprint)
+        if "image" in self.input_modalities:
+            if not isinstance(self.mime_type, str) or not _MIME_RE.fullmatch(self.mime_type):
+                raise AdultModelValidationError("Image queries require an explicit MIME type.")
+            _integer("input_bytes", self.input_bytes, 1, 15 * 1024 * 1024)
+            _integer("width", self.width, 1, 10000)
+            _integer("height", self.height, 1, 10000)
+        elif any(value is not None for value in (self.mime_type, self.input_bytes, self.width, self.height)):
+            raise AdultModelValidationError("Image metadata is not valid for a text-only input.")
+
+
+@dataclass(frozen=True)
+class CostPolicy:
+    max_provider_calls: int
+    max_cost_microusd: int = 0
+    allow_local: bool = True
+
+    def __post_init__(self) -> None:
+        _integer("max_provider_calls", self.max_provider_calls, 0, 20)
+        _integer("max_cost_microusd", self.max_cost_microusd, 0, 0)
+        if not isinstance(self.allow_local, bool):
+            raise AdultModelValidationError("allow_local must be a boolean.")
+
+    @classmethod
+    def from_budget(cls, budget: Any) -> "CostPolicy":
+        if not hasattr(budget, "max_provider_calls") or not hasattr(budget, "max_cost_microusd"):
+            raise AdultModelValidationError("A validated TaskBudget is required.")
+        return cls(
+            max_provider_calls=budget.max_provider_calls,
+            max_cost_microusd=budget.max_cost_microusd,
+        )
+
+
 @dataclass(frozen=True)
 class RouteCandidate:
     """Verified route descriptor shared by Stage 5 tracking and Stage 6 routing."""
