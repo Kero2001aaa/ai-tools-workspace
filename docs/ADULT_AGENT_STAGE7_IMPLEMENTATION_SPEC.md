@@ -1,7 +1,7 @@
 # Adult Agent — Stage 7 Implementation Specification
 ## Text Pipeline, Deterministic Evaluation, and Policy Gates
 
-**Status:** Design proposal — awaiting user approval  
+**Status:** Approved for implementation  
 **Branch:** feature/adult-agent-mvp  
 **Parent:** Stage 6 commit 541ff5e089f37216ad40716f3daecc4ed72da7c1  
 **Preconditions:** Stages 1–6 PASS; Stage 6 local validation confirmed on the parent branch  
