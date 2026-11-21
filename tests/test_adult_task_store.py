@@ -194,36 +194,61 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         with store._connect() as connection:
             self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM adult_tasks").fetchone()[0])
 
-    def test_task_creation_failure_rolls_back_all_rows(self):
-        from unittest.mock import patch
+    def test_task_creation_failure_after_each_insert_rolls_back_all_rows(self):
         from agent.adult.models import AdultTaskRequest, TaskBudget
         store = AdultTaskStore(self.db)
         original = store._connect
+        failure_points = (
+            "INSERT INTO ADULT_TASKS",
+            "INSERT INTO ADULT_STEPS",
+            "INSERT INTO ADULT_CHECKPOINTS",
+            "INSERT INTO ADULT_TASK_EVENTS",
+        )
 
         class FailingConnection:
-            def __init__(self, wrapped):
+            def __init__(self, wrapped, failure_point):
                 self.wrapped = wrapped
-                self.inserts = 0
+                self.failure_point = failure_point
             def __getattr__(self, name):
                 return getattr(self.wrapped, name)
             def execute(self, sql, parameters=()):
-                if sql.lstrip().upper().startswith("INSERT INTO ADULT_CHECKPOINTS"):
+                if sql.lstrip().upper().startswith(self.failure_point):
                     raise sqlite3.OperationalError("injected test failure")
                 return self.wrapped.execute(sql, parameters)
             def close(self):
                 self.wrapped.close()
 
-        with patch.object(store, "_connect", side_effect=lambda: FailingConnection(original())):
-            with self.assertRaises(sqlite3.OperationalError):
-                store.create_task(
-                    AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
-                    TaskBudget(),
-                )
-        with original() as connection:
-            for table in ("adult_tasks", "adult_steps", "adult_checkpoints", "adult_task_events"):
-                self.assertEqual(0, connection.execute(
-                    f"SELECT COUNT(*) FROM {table}"
-                ).fetchone()[0])
+        for failure_point in failure_points:
+            with self.subTest(failure_point=failure_point):
+                with patch.object(
+                    store, "_connect",
+                    side_effect=lambda point=failure_point: FailingConnection(original(), point),
+                ):
+                    with self.assertRaises(sqlite3.OperationalError):
+                        store.create_task(
+                            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+                            TaskBudget(),
+                        )
+                with original() as connection:
+                    for table in ("adult_tasks", "adult_steps", "adult_checkpoints", "adult_task_events"):
+                        self.assertEqual(0, connection.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0])
+                    self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
+                    self.assertEqual([], connection.execute("PRAGMA foreign_key_check").fetchall())
+
+    def test_task_can_be_reloaded_by_a_fresh_store_instance(self):
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        request = AdultTaskRequest(
+            "text.generate", "hmac-sha256:0123456789abcdef",
+            instruction_fingerprint="hmac-sha256:fedcba9876543210",
+        )
+        created = store.create_task(request, TaskBudget())
+        reopened = AdultTaskStore(self.db)
+        self.assertEqual(created, reopened.get_task(created.task_id))
+        self.assertEqual(request, reopened.get_task_request(created.task_id))
+        self.assertEqual("initial", reopened.get_latest_checkpoint(created.task_id).reason)
 
 
 if __name__ == "__main__":
