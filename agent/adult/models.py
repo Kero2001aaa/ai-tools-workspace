@@ -803,3 +803,71 @@ class TaskPage:
             raise AdultModelValidationError("Invalid task cursor.")
         if not isinstance(self.has_more, bool):
             raise AdultModelValidationError("has_more must be boolean.")
+
+
+_REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+_CHECK_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+
+
+@dataclass(frozen=True)
+class PolicyDecision:
+    """Bounded deterministic policy outcome; never contains source or output text."""
+
+    allowed: bool
+    reason_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.allowed, bool):
+            raise AdultModelValidationError("PolicyDecision.allowed must be boolean.")
+        if (
+            not isinstance(self.reason_codes, tuple)
+            or len(self.reason_codes) > 8
+            or len(self.reason_codes) != len(set(self.reason_codes))
+            or any(not isinstance(code, str) or not _REASON_CODE_RE.fullmatch(code)
+                   for code in self.reason_codes)
+        ):
+            raise AdultModelValidationError("PolicyDecision reason codes are invalid.")
+        if self.allowed and self.reason_codes:
+            raise AdultModelValidationError("An allowed policy decision cannot contain denial reasons.")
+        if not self.allowed and not self.reason_codes:
+            raise AdultModelValidationError("A denied policy decision requires a reason code.")
+
+
+@dataclass(frozen=True)
+class EvaluationResult:
+    """Deterministic output checks; score is a pass fraction, not semantic quality."""
+
+    accepted: bool
+    score: float
+    checks: tuple[str, ...]
+    reason_codes: tuple[str, ...]
+    needs_revision: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.accepted, bool) or not isinstance(self.needs_revision, bool):
+            raise AdultModelValidationError("Evaluation flags must be booleans.")
+        if (
+            isinstance(self.score, bool) or not isinstance(self.score, (int, float))
+            or not 0.0 <= float(self.score) <= 1.0
+        ):
+            raise AdultModelValidationError("Evaluation score must be between zero and one.")
+        if (
+            not isinstance(self.checks, tuple) or len(self.checks) > 16
+            or len(self.checks) != len(set(self.checks))
+            or any(not isinstance(item, str) or not _CHECK_ID_RE.fullmatch(item)
+                   for item in self.checks)
+        ):
+            raise AdultModelValidationError("Evaluation checks are invalid.")
+        if (
+            not isinstance(self.reason_codes, tuple) or len(self.reason_codes) > 8
+            or len(self.reason_codes) != len(set(self.reason_codes))
+            or any(not isinstance(code, str) or not _REASON_CODE_RE.fullmatch(code)
+                   for code in self.reason_codes)
+        ):
+            raise AdultModelValidationError("Evaluation reason codes are invalid.")
+        if self.accepted and (self.reason_codes or self.needs_revision):
+            raise AdultModelValidationError("Accepted evaluation cannot request revision or contain reasons.")
+        if not self.accepted and not self.reason_codes:
+            raise AdultModelValidationError("Rejected evaluation requires a reason code.")
+        if self.needs_revision and self.accepted:
+            raise AdultModelValidationError("Accepted evaluation cannot need revision.")
