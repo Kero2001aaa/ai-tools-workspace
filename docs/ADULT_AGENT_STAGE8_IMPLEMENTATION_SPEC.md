@@ -1,7 +1,7 @@
 # Adult Agent — Stage 8 Implementation Specification
 ## Image Input Validation, Image Adapters, Evaluator, and One-Attempt Pipeline
 
-**Status:** Approved design — Stage 8 implementation in progress (Step 1)
+**Status:** Approved design — Step 1 PASS; Step 2 implementation in progress
 **Branch:** `feature/adult-agent-mvp`  
 **Parent specification:** `docs/ADULT_AGENT_IMPLEMENTATION_SPEC.md`  
 **Precondition:** Stages 1–7 are PASS on the current branch head  
@@ -256,6 +256,12 @@ Stable error codes should reuse existing Stage 7/Stage 5 codes where semantics m
 - IMG-REG-05: tests and CI perform no live model/provider/network calls.
 
 ## 12. Required implementation order and gate
+
+### Step 2 — structural image validation and image policies (IN PROGRESS)
+
+Implement a standard-library-only validator for PNG, JPEG, and static WebP containers. Enforce the 15 MiB input / 20 MiB output limits, 8,192-pixel dimension limits, 40-megapixel cap, signatures, structural lengths, CRCs where defined, terminal container markers, and rejection of animation/unsupported features. Return only immutable metadata and SHA-256. Add deterministic input/output policy checks for MIME allowlists and route-specific byte/dimension limits. No raster decoding or new dependency is permitted.
+
+
 
 After explicit design approval, implement in this order:
 
