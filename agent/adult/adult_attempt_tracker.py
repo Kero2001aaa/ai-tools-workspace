@@ -23,7 +23,8 @@ _ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _SAFE_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .,;:_()'!-]{0,511}$")
 _UNSAFE_TEXT_RE = re.compile(
     r"(?i)(https?://|api[_-]?key|password|authorization|bearer|token|secret|"
-    r"credential|[\\/](?:home|root|users|tmp)[\\/])"
+    r"credential|prompt|instruction|base64|payload|provider request|provider response|"
+    r"request body|response body|[\\/](?:home|root|users|tmp)[\\/])"
 )
 _USAGE_KEYS = frozenset({
     "input_tokens", "output_tokens", "total_tokens",
@@ -578,12 +579,23 @@ class AdultAttemptTracker:
         if attempt["status"] != "running":
             raise AttemptAlreadyFinalized("Attempt already has a terminal outcome.")
         if (
-            handle.attempt_no != attempt["attempt_no"]
+            not isinstance(handle.attempt_no, int) or isinstance(handle.attempt_no, bool)
+            or not 1 <= handle.attempt_no <= 20
+            or not isinstance(handle.lease_generation, int)
+            or isinstance(handle.lease_generation, bool) or handle.lease_generation < 1
+            or not isinstance(handle.approach_key, str)
+            or not _HASH_RE.fullmatch(handle.approach_key)
+            or not isinstance(handle.started_at, str)
+            or handle.attempt_no != attempt["attempt_no"]
             or handle.approach_key != attempt["approach_key"]
             or handle.started_at != attempt["started_at"]
             or handle.lease_generation != attempt["lease_generation"]
         ):
             raise StaleAttemptHandle("Attempt handle fields do not match the stored attempt.")
+        try:
+            _parse_utc(handle.started_at)
+        except AttemptTrackerError as exc:
+            raise StaleAttemptHandle("Attempt handle timestamp is invalid.") from exc
         task = db.execute(
             "SELECT * FROM adult_tasks WHERE task_id=?", (handle.task_id,)
         ).fetchone()
