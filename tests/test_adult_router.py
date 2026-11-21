@@ -95,7 +95,7 @@ class AdultRouterTests(unittest.TestCase):
 
     def test_capability_version_is_part_of_stage5_approach_key(self):
         record = self.registry.register(free_text_spec("adapter-a", "provider-a", "model-a"))
-        verified = self.registry.verify(record.capability_id, evidence(), record.state_version)
+        verified = self.registry.verify(record.capability_id, evidence(record.spec), record.state_version)
         enabled = self.registry.enable(verified.capability_id, verified.state_version)
         route = self._router().choose_routes(self._query(), CostPolicy(max_provider_calls=2), set())[0]
         before, _ = AdultAttemptTracker.approach_keys("text.analyze", route, INPUT_FP, CONFIG_FP)
