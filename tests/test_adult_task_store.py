@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.adult.adult_task_store import AdultTaskStore, SCHEMA_NAME
+from agent.adult.adult_task_store import (
+    AdultTaskStore, SCHEMA_NAME, ATTEMPT_SCHEMA_NAME, _SCHEMA,
+)
 
 
 class AdultTaskStoreSchemaTests(unittest.TestCase):
@@ -17,7 +19,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_new_database_has_exact_stage3_tables_and_versioned_schema(self):
+    def test_new_database_has_exact_stage5_tables_and_versioned_schema(self):
         store = AdultTaskStore(self.db)
         with store._connect() as connection:
             tables = {
@@ -27,15 +29,64 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             }
             self.assertEqual({
                 "adult_schema_migrations", "adult_tasks", "adult_steps",
-                "adult_checkpoints", "adult_task_events",
+                "adult_checkpoints", "adult_task_events", "adult_attempts",
+                "adult_attempt_events",
             }, tables)
-            migration = connection.execute(
-                "SELECT version,name FROM adult_schema_migrations"
-            ).fetchone()
-            self.assertEqual((1, SCHEMA_NAME), tuple(migration))
+            migrations = connection.execute(
+                "SELECT version,name FROM adult_schema_migrations ORDER BY version"
+            ).fetchall()
+            self.assertEqual(
+                [(1, SCHEMA_NAME), (2, ATTEMPT_SCHEMA_NAME)],
+                [tuple(row) for row in migrations],
+            )
             self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
             self.assertEqual([], connection.execute("PRAGMA foreign_key_check").fetchall())
             self.assertEqual("delete", connection.execute("PRAGMA journal_mode").fetchone()[0])
+
+    def test_stage3_database_upgrades_additively_and_preserves_task_history(self):
+        store = AdultTaskStore(self.db)
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        created = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        with store._connect() as connection:
+            before = {
+                table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("adult_tasks", "adult_steps", "adult_checkpoints", "adult_task_events")
+            }
+            connection.execute("BEGIN IMMEDIATE")
+            for trigger in (
+                "validate_adult_attempt_update", "prevent_adult_attempts_delete",
+                "prevent_adult_attempt_events_update", "prevent_adult_attempt_events_delete",
+            ):
+                connection.execute(f"DROP TRIGGER {trigger}")
+            for index in (
+                "idx_adult_attempts_task_no", "idx_adult_attempts_approach",
+                "idx_adult_attempts_one_running", "idx_adult_attempt_events_task_created",
+            ):
+                connection.execute(f"DROP INDEX {index}")
+            connection.execute("DROP TABLE adult_attempt_events")
+            connection.execute("DROP TABLE adult_attempts")
+            connection.execute("DELETE FROM adult_schema_migrations WHERE version=2")
+            connection.commit()
+
+        upgraded = AdultTaskStore(self.db)
+        self.assertEqual(created.task_id, upgraded.get_task(created.task_id).task_id)
+        with upgraded._connect() as connection:
+            after = {
+                table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("adult_tasks", "adult_steps", "adult_checkpoints", "adult_task_events")
+            }
+            migrations = [
+                tuple(row) for row in connection.execute(
+                    "SELECT version,name FROM adult_schema_migrations ORDER BY version"
+                )
+            ]
+            self.assertEqual([(1, SCHEMA_NAME), (2, ATTEMPT_SCHEMA_NAME)], migrations)
+            self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
+            self.assertEqual([], connection.execute("PRAGMA foreign_key_check").fetchall())
+        self.assertEqual(before, after)
 
     def test_migration_is_idempotent_and_schema_objects_are_validated(self):
         AdultTaskStore(self.db)
