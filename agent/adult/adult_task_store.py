@@ -1270,13 +1270,12 @@ class AdultTaskStore:
             if existing is None:
                 if step.status != "pending":
                     raise InvalidTaskTransition("New steps must begin in pending state.")
-                if step.sequence_no != 0:
-                    maximum = db.execute(
-                        "SELECT COALESCE(MAX(sequence_no),-1) FROM adult_steps WHERE task_id=?",
-                        (task_id,),
-                    ).fetchone()[0]
-                    if step.sequence_no != maximum + 1:
-                        raise AdultModelValidationError("New step sequence_no must be the next task sequence.")
+                maximum = db.execute(
+                    "SELECT COALESCE(MAX(sequence_no),-1) FROM adult_steps WHERE task_id=?",
+                    (task_id,),
+                ).fetchone()[0]
+                if step.sequence_no != maximum + 1:
+                    raise AdultModelValidationError("New step sequence_no must be the next task sequence.")
                 db.execute(
                     """INSERT INTO adult_steps(
                         step_id,task_id,sequence_no,operation,status,adapter_id,provider_id,
@@ -1544,6 +1543,26 @@ class AdultTaskStore:
             self._require_current_lease(task, task_id, lease, now)
             if task["state_version"] != expected_state_version:
                 raise StaleTaskVersion("Task state version changed.")
+            if (
+                snapshot.task_type != task["task_type"]
+                or snapshot.input_fingerprint not in {None, task["input_fingerprint"]}
+                or snapshot.payload_id not in {None, task["payload_id"]}
+                or snapshot.total_attempts != task["total_attempts"]
+                or snapshot.provider_calls != task["provider_calls"]
+                or snapshot.spent_cost_microusd != task["spent_cost_microusd"]
+            ):
+                raise InvalidCheckpoint("Waiting-user snapshot does not match the current task.")
+            step_ids = set(snapshot.plan) | set(snapshot.completed_step_ids) | set(snapshot.pending_step_ids)
+            if snapshot.active_step_id is not None:
+                step_ids.add(snapshot.active_step_id)
+            if step_ids:
+                placeholders = ",".join("?" for _ in step_ids)
+                rows = db.execute(
+                    f"SELECT step_id FROM adult_steps WHERE task_id=? AND step_id IN ({placeholders})",
+                    (task_id, *sorted(step_ids)),
+                ).fetchall()
+                if {item["step_id"] for item in rows} != step_ids:
+                    raise InvalidCheckpoint("Waiting-user snapshot contains a step outside the task.")
             if task["failed_attempts_since_approval"] != 5:
                 raise UserApprovalRequired("Exactly five failed attempts are required.")
             if (
@@ -1602,8 +1621,8 @@ class AdultTaskStore:
                     """INSERT INTO adult_checkpoints(
                         checkpoint_id,task_id,revision,reason,schema_version,snapshot_json,
                         failed_attempts_since_approval,user_action_required,created_at
-                    ) VALUES(?,?,?,'approval_required',1,?,5,1,?)""",
-                    (checkpoint_id, task_id, revision, encoded, now),
+                    ) VALUES(?,?,?,'approval_required',?, ?,5,1,?)""",
+                    (checkpoint_id, task_id, revision, snapshot.schema_version, encoded, now),
                 )
                 cursor = db.execute(
                     """UPDATE adult_tasks
@@ -1965,8 +1984,9 @@ class AdultTaskStore:
                     "checkpoint_revision": revision,
                     "lease_generation": current["lease_generation"],
                 }
+                recovery_event_id = str(uuid.uuid4())
                 TaskEvent(
-                    event_id=str(uuid.uuid4()), task_id=current["task_id"],
+                    event_id=recovery_event_id, task_id=current["task_id"],
                     event_type=event_type, from_status=current["status"],
                     to_status=new_status, metadata=metadata, created_at=now,
                 )
@@ -1975,7 +1995,7 @@ class AdultTaskStore:
                         event_id,task_id,event_type,from_status,to_status,metadata_json,created_at
                     ) VALUES(?,?,?,?,?,?,?)""",
                     (
-                        str(uuid.uuid4()), current["task_id"], event_type,
+                        recovery_event_id, current["task_id"], event_type,
                         current["status"], new_status,
                         json.dumps(metadata, separators=(",", ":"), sort_keys=True), now,
                     ),
