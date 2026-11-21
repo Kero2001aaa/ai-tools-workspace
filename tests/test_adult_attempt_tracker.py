@@ -437,10 +437,17 @@ class AdultAttemptTrackerTests(unittest.TestCase):
         object.__setattr__(first, "lease_generation", True)
         with self.assertRaises(StaleAttemptHandle):
             self.tracker.succeed(first, None, None, 0)
-        second = self.begin(route(adapter_id="attempt-no-check"))
+
+        _store, task, _lease, tracker = self._isolated_task(
+            "boolean-attempt-number", TaskBudget(max_total_attempts=5, max_provider_calls=5)
+        )
+        second = tracker.begin(
+            task.task_id, task.current_step_id, route(),
+            INPUT_FP, CONFIG_FP,
+        )
         object.__setattr__(second, "attempt_no", True)
         with self.assertRaises(StaleAttemptHandle):
-            self.tracker.succeed(second, None, None, 0)
+            tracker.succeed(second, None, None, 0)
 
     def test_raw_prompt_and_provider_body_text_are_rejected_as_sanitized_errors(self):
         handle = self.begin()
