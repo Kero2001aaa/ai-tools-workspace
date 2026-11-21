@@ -422,7 +422,9 @@ class AdultTaskStore:
         self, status: str | None = None, limit: int = 20,
         cursor: str | None = None,
     ) -> TaskPage:
-        if status is not None and status not in TASK_STATUSES:
+        if status is not None and (
+            not isinstance(status, str) or status not in TASK_STATUSES
+        ):
             raise AdultModelValidationError("Unsupported task status filter.")
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 50:
             raise AdultModelValidationError("limit must be an integer from 1 through 50.")
