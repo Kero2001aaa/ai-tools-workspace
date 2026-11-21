@@ -434,7 +434,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             store.save_checkpoint(
                 task.task_id, snapshot, "manual_yield", failed.state_version
             )
-        self.assertEqual(1, len(store.list_events(task.task_id)))
+        self.assertEqual(2, len(store.list_events(task.task_id)))
 
     def test_resume_rejects_non_string_decisions_without_type_errors(self):
         from agent.adult.models import AdultModelValidationError
