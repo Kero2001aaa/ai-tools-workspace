@@ -993,7 +993,6 @@ New environment variables (document in .env.example; never put values in Git):
 | ADULT_MAX_IMAGE_OUTPUT_BYTES | 20971520 | Maximum decoded output image bytes |
 | ADULT_OMNIROUTE_BASE_URL | empty | Verified OmniRoute API root ending in /v1 |
 | ADULT_OMNIROUTE_API_KEY | empty | Server-side OmniRoute key; do not expose to tools |
-| ADULT_MAX_PROVIDER_CALLS | 0 | Default offline; explicit positive per-task opt-in for free_verified routes only |
 
 Rules:
 
