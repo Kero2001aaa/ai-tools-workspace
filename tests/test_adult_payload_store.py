@@ -217,16 +217,6 @@ class AdultArtifactStoreTests(unittest.TestCase):
             store.load_input(source.payload_id, "task-1")
         self.assertEqual(b"temporary output", store.read_chunk(output.artifact_id, 0).data)
 
-    def test_deleting_task_inputs_does_not_delete_memory_only_outputs(self):
-        store = AdultArtifactStore(self.root / "ephemeral-output")
-        source = store.save_input("task-1", b"private input", "text/plain", retain_encrypted=False)
-        output = store.save_output("task-1", "attempt-1", b"temporary output", "text/plain")
-        self.assertFalse(output.persisted)
-        self.assertEqual(1, store.delete_task_inputs("task-1"))
-        with self.assertRaises(PayloadUnavailable):
-            store.load_input(source.payload_id, "task-1")
-        self.assertEqual(b"temporary output", store.read_chunk(output.artifact_id, 0).data)
-
     def test_transient_cache_enforces_entry_and_byte_bounds(self):
         cache = TransientPayloadCache(max_entries=1, max_bytes=8, ttl_seconds=30)
         first = cache.put("task-1", b"1234")
