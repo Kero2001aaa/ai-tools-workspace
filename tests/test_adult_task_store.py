@@ -1,4 +1,5 @@
 """Tests for the isolated Adult operational database schema."""
+import base64
 import sqlite3
 import tempfile
 import unittest
@@ -181,7 +182,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             with self.subTest(cursor=invalid), self.assertRaises(Exception):
                 store.list_tasks(cursor=invalid)
 
-    def test_encrypted_retention_is_rejected_before_any_task_write(self):
+    def test_encrypted_retention_is_rejected_before_any_task_write_without_key(self):
         from agent.adult.adult_task_store import PayloadRetentionUnavailable
         from agent.adult.models import AdultTaskRequest, TaskBudget
         store = AdultTaskStore(self.db)
@@ -189,10 +190,36 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             "text.generate", "hmac-sha256:0123456789abcdef",
             retention_policy="encrypted",
         )
-        with self.assertRaises(PayloadRetentionUnavailable):
-            store.create_task(request, TaskBudget())
+        with patch.dict("os.environ", {"ADULT_PAYLOAD_ENCRYPTION_KEY": ""}, clear=False):
+            with self.assertRaises(PayloadRetentionUnavailable):
+                store.create_task(request, TaskBudget())
         with store._connect() as connection:
             self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM adult_tasks").fetchone()[0])
+
+    def test_encrypted_retention_requires_a_valid_key_and_accepts_one(self):
+        from agent.adult.adult_task_store import PayloadRetentionUnavailable
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        request = AdultTaskRequest(
+            "text.generate", "hmac-sha256:0123456789abcdef",
+            retention_policy="encrypted",
+        )
+        with patch.dict("os.environ", {"ADULT_PAYLOAD_ENCRYPTION_KEY": "not-a-valid-key"}, clear=False):
+            with self.assertRaises(PayloadRetentionUnavailable):
+                store.create_task(request, TaskBudget())
+        with store._connect() as connection:
+            self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM adult_tasks").fetchone()[0])
+
+        key = base64.urlsafe_b64encode(b"K" * 32).decode("ascii")
+        with patch.dict("os.environ", {"ADULT_PAYLOAD_ENCRYPTION_KEY": key}, clear=False):
+            task = store.create_task(request, TaskBudget())
+        self.assertEqual("queued", task.status)
+        with store._connect() as connection:
+            retention = connection.execute(
+                "SELECT retention_policy FROM adult_tasks WHERE task_id=?",
+                (task.task_id,),
+            ).fetchone()[0]
+        self.assertEqual("encrypted", retention)
 
     def test_task_creation_failure_after_each_insert_rolls_back_all_rows(self):
         from agent.adult.models import AdultTaskRequest, TaskBudget
