@@ -445,5 +445,93 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         self.assertEqual(("queued", 0), (current.status, current.state_version))
         self.assertEqual(1, len(store.list_events(task.task_id)))
 
+    def test_claim_task_issues_fenced_lease_and_records_atomic_event(self):
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        lease = store.claim_task(task.task_id, "worker-1", lease_seconds=45)
+        current = store.get_task(task.task_id)
+        self.assertEqual(("analyzing", 1), (current.status, current.state_version))
+        self.assertEqual(task.task_id, lease.task_id)
+        self.assertEqual("worker-1", lease.worker_id)
+        self.assertEqual(1, lease.lease_generation)
+        self.assertEqual(1, lease.state_version_at_grant)
+        events = store.list_events(task.task_id)
+        self.assertEqual("task_claimed", events[-1].event_type)
+        self.assertEqual({"lease_generation": 1, "state_version": 1}, events[-1].metadata)
+
+    def test_claim_task_rejects_second_worker_for_same_task(self):
+        from agent.adult.adult_task_store import LeaseNotAvailable
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"),
+            TaskBudget(),
+        )
+        store.claim_task(task.task_id, "worker-1")
+        with self.assertRaises(LeaseNotAvailable):
+            store.claim_task(task.task_id, "worker-2")
+        self.assertEqual(2, len(store.list_events(task.task_id)))
+
+    def test_claim_task_enforces_single_active_task_across_tasks(self):
+        from agent.adult.adult_task_store import TaskAlreadyActive
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        first = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"), TaskBudget()
+        )
+        second = store.create_task(
+            AdultTaskRequest("text.generate", "hmac-sha256:fedcba9876543210"), TaskBudget()
+        )
+        store.claim_task(first.task_id, "worker-1")
+        with self.assertRaises(TaskAlreadyActive):
+            store.claim_task(second.task_id, "worker-2")
+        self.assertEqual("queued", store.get_task(second.task_id).status)
+        self.assertEqual(1, len(store.list_events(second.task_id)))
+
+    def test_renew_lease_extends_expiry_without_changing_state_version(self):
+        from datetime import datetime, timedelta, timezone
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"), TaskBudget()
+        )
+        lease = store.claim_task(task.task_id, "worker-1", lease_seconds=5)
+        renewed = store.renew_lease(lease, lease_seconds=90)
+        current = store.get_task(task.task_id)
+        self.assertEqual(1, current.state_version)
+        self.assertEqual(lease.lease_generation, renewed.lease_generation)
+        self.assertEqual(lease.state_version_at_grant, renewed.state_version_at_grant)
+        self.assertGreater(
+            datetime.fromisoformat(renewed.expires_at.replace("Z", "+00:00")),
+            datetime.fromisoformat(lease.expires_at.replace("Z", "+00:00")),
+        )
+        self.assertEqual("lease_renewed", store.list_events(task.task_id)[-1].event_type)
+
+    def test_renew_lease_rejects_expired_lease_without_writes(self):
+        from datetime import datetime, timedelta, timezone
+        from agent.adult.adult_task_store import LeaseLost
+        from agent.adult.models import AdultTaskRequest, TaskBudget
+        store = AdultTaskStore(self.db)
+        task = store.create_task(
+            AdultTaskRequest("text.analyze", "hmac-sha256:0123456789abcdef"), TaskBudget()
+        )
+        lease = store.claim_task(task.task_id, "worker-1")
+        expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(
+            timespec="microseconds"
+        ).replace("+00:00", "Z")
+        with store._connect() as connection:
+            connection.execute(
+                "UPDATE adult_tasks SET lease_expires_at=? WHERE task_id=?",
+                (expired, task.task_id),
+            )
+        with self.assertRaises(LeaseLost):
+            store.renew_lease(lease)
+        self.assertEqual(2, len(store.list_events(task.task_id)))
+        self.assertEqual(1, store.get_task(task.task_id).state_version)
+
 if __name__ == "__main__":
     unittest.main()
