@@ -16,6 +16,7 @@ from agent.adult.adult_attempt_tracker import (
     AttemptNotAvailable,
     AttemptValidationError,
     DuplicateApproach,
+    PolicyRejectionStopsTask,
     RetryAuthorizationRequired,
     StaleAttemptHandle,
 )
@@ -124,10 +125,10 @@ class AdultAttemptTrackerTests(unittest.TestCase):
             result.status, result.failure_class, result.retryable
         ))
         self.assertEqual(0, self.tracker.failures_since_approval(self.task.task_id))
-        with self.assertRaises(AttemptValidationError):
+        with self.assertRaises(PolicyRejectionStopsTask):
             self.begin(route(adapter_id="another"))
-        # A policy-rejected identical route must never be routed around by a repeat.
-        with self.assertRaises(DuplicateApproach):
+        # A policy-rejected identical route is terminal, not a retry candidate.
+        with self.assertRaises(PolicyRejectionStopsTask):
             self.begin()
 
     def test_non_retryable_failure_classes_cannot_be_marked_retryable(self):
