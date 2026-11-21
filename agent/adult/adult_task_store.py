@@ -255,17 +255,12 @@ class AdultTaskStore:
             "SELECT name FROM sqlite_master WHERE type='trigger'"
         ).fetchall()
         triggers = {row["name"] for row in rows}
-        if not _EXPECTED_TABLES.issubset(tables):
+        if tables != _EXPECTED_TABLES:
             raise TaskStoreSchemaError("Adult task database is missing required tables.")
         if not _EXPECTED_INDEXES.issubset(indexes):
             raise TaskStoreSchemaError("Adult task database is missing required indexes.")
         if not _EXPECTED_TRIGGERS.issubset(triggers):
             raise TaskStoreSchemaError("Adult task database is missing required triggers.")
-
-    @property
-    def db_path(self) -> Path:
-        """Return the configured database path for internal diagnostics only."""
-        return self._db_path
 
     def _utc_now(self) -> str:
         return _utc_now()
