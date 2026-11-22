@@ -132,10 +132,10 @@ class AdultImagePolicies:
         for name, value, hard_limit in route_limits:
             if value is None:
                 reasons.append("route_policy_missing")
-                effective_limits[name] = hard_limit
+                effective_limits[name] = 0
             elif isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > hard_limit:
                 reasons.append("route_limit_invalid")
-                effective_limits[name] = hard_limit
+                effective_limits[name] = 0
             else:
                 effective_limits[name] = value
         byte_limit = effective_limits["max_bytes"]
