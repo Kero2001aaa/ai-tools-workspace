@@ -73,6 +73,10 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _reject_non_finite(value: str) -> None:
+    raise ValueError("Non-finite JSON values are not supported.")
+
+
 def _bounded_counter(value: object) -> int | None:
     if (
         not isinstance(value, int)
@@ -131,6 +135,8 @@ def _usage_from_payload(payload: dict[str, Any], headers: Any) -> dict[str, int]
 def _cost_from_payload(payload: dict[str, Any], headers: Any) -> int | None:
     raw_header = headers.get("x-omniroute-response-cost")
     if raw_header is not None:
+        if not isinstance(raw_header, str) or not 1 <= len(raw_header) <= 64:
+            raise OmniRouteImageAdapterError("metadata_invalid")
         try:
             usd = Decimal(raw_header)
         except (InvalidOperation, TypeError, ValueError):
@@ -183,7 +189,7 @@ class _OmniRouteImageAdapterBase:
         self._config = config
         self._route = route
         self._artifact_store = artifact_store
-        self._client_factory = client_factory or self._build_client
+        self._client_factory = client_factory if client_factory is not None else self._build_client
         self._client: object | None = None
 
     def _build_client(self) -> httpx.Client:
@@ -239,25 +245,23 @@ class _OmniRouteImageAdapterBase:
         *,
         response_limit: int,
     ) -> tuple[dict[str, Any], Any]:
-        return self._post(endpoint, response_limit=response_limit, json=body)
+        return self._post(endpoint, response_limit=response_limit, json_payload=body)
 
     def _post(
         self,
         endpoint: str,
         *,
         response_limit: int,
-        json_body: dict[str, Any] | None = None,
         data: dict[str, str] | None = None,
         files: dict[str, tuple[str, bytes, str]] | None = None,
-        json: dict[str, Any] | None = None,
+        json_payload: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], Any]:
-        del json_body  # Kept out of request assembly; callers use the explicit json argument.
         try:
             client = self._get_client()
             with client.stream(
                 "POST",
                 endpoint,
-                json=json,
+                json=json_payload,
                 data=data,
                 files=files,
             ) as response:
@@ -312,7 +316,7 @@ def json_module_loads(raw: bytes) -> Any:
     return json.loads(
         raw.decode("utf-8", "strict"),
         object_pairs_hook=_reject_duplicate_keys,
-        parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("Invalid JSON number.")),
+        parse_constant=_reject_non_finite,
     )
 
 
