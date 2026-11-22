@@ -269,6 +269,8 @@ Add `AdultImageEvaluator` with no semantic model, moderation call, OCR, network 
 
 - For `image.analyze`, accept only `ImageAnalysisResult`; enforce strict UTF-8, non-empty text, the 20,000-character / 80 KiB bounds, permitted whitespace controls, and the existing `AdultImagePolicies.validate_analysis_output` decision.
 - For `image.generate` and `image.edit`, accept only `ImageAdapterResult`; validate the actual returned bytes using `validate_image(..., output=True)`; require the declared MIME to match the detected MIME; enforce route output MIME, byte, width, height, and pixel constraints through `AdultImagePolicies.validate_image_output`.
+- The selected route's four output constraints (`output_mime_types`, `max_bytes`, `max_width`, `max_height`) are mandatory for `image.generate` and `image.edit`. If any is absent, evaluation terminates with `route_policy_missing`; no application-wide default may substitute for a missing route constraint.
+- Invalid route constraints (including booleans/non-integers/non-positive limits, limits above hard application ceilings, malformed/empty MIME allowlists, or unsupported MIME values) are terminal policy errors. Valid stricter route limits are enforced exactly.
 - Return only the existing bounded `EvaluationResult` DTO: accepted flag, pass-fraction score, normalized check IDs, normalized reason codes, and retryability classification. Never include output text, image bytes, or exception content.
 - Treat corrupt/invalid model output and route output-contract mismatches as revision candidates. Treat unsupported tasks, wrong adapter DTOs, unavailable/malformed policy decisions, and malformed route policy configuration as terminal. No output is semantically scored.
 
