@@ -25,7 +25,8 @@ def _decision(reasons: list[str]) -> PolicyDecision:
 
 def _mime_allowlist(value: object, reasons: list[str]) -> tuple[str, ...]:
     if value is None:
-        return tuple(sorted(SUPPORTED_IMAGE_MIME_TYPES))
+        reasons.append("route_policy_missing")
+        return ()
     if not isinstance(value, tuple) or not value or len(value) > len(SUPPORTED_IMAGE_MIME_TYPES):
         reasons.append("route_mime_policy_invalid")
         return ()
@@ -119,9 +120,24 @@ class AdultImagePolicies:
         if not isinstance(image, ValidatedImage):
             reasons.append("image_metadata_invalid")
         mime_types = _mime_allowlist(output_mime_types, reasons)
-        byte_limit = _effective_limit(max_bytes, MAX_IMAGE_OUTPUT_BYTES, reasons)
-        width_limit = _effective_limit(max_width, MAX_IMAGE_DIMENSION, reasons)
-        height_limit = _effective_limit(max_height, MAX_IMAGE_DIMENSION, reasons)
+        route_limits = (
+            ("max_bytes", max_bytes, MAX_IMAGE_OUTPUT_BYTES),
+            ("max_width", max_width, MAX_IMAGE_DIMENSION),
+            ("max_height", max_height, MAX_IMAGE_DIMENSION),
+        )
+        effective_limits: dict[str, int] = {}
+        for name, value, hard_limit in route_limits:
+            if value is None:
+                reasons.append("route_policy_missing")
+                effective_limits[name] = hard_limit
+            elif isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > hard_limit:
+                reasons.append("route_limit_invalid")
+                effective_limits[name] = hard_limit
+            else:
+                effective_limits[name] = value
+        byte_limit = effective_limits["max_bytes"]
+        width_limit = effective_limits["max_width"]
+        height_limit = effective_limits["max_height"]
         if not isinstance(declared_mime_type, str) or declared_mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
             reasons.append("declared_mime_invalid")
         if isinstance(image, ValidatedImage):
