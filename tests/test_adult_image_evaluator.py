@@ -67,6 +67,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
         self.evaluator = AdultImageEvaluator(self.policies)
         self.analysis = ImageAnalysisResult("A bounded image analysis.", {}, 0)
         self.image = ImageAdapterResult(_png(), "image/png", {}, 0)
+        self.route = {"output_mime_types": ("image/png",), "max_bytes": 20 * 1024 * 1024, "max_width": 8192, "max_height": 8192}
 
     def evaluate_image(self, task_type, output, **route):
         policy = {"output_mime_types": ("image/png", "image/jpeg", "image/webp"), "max_bytes": 20 * 1024 * 1024, "max_width": 8192, "max_height": 8192}
@@ -159,7 +160,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
         self.assertTrue(result.needs_revision)
 
         route_mismatch = self.evaluate_image(
-            "image.generate", self.image, output_mime_types=("image/webp",)
+            "image.generate", self.image, **{**self.route, "output_mime_types": ("image/webp",)}
         )
         self.assertFalse(route_mismatch.accepted)
         self.assertIn("output_mime_not_allowed", route_mismatch.reason_codes)
@@ -173,7 +174,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
         ):
             with self.subTest(kwargs=kwargs):
                 result = self.evaluate_image(
-                    "image.generate", self.image, **kwargs
+                    "image.generate", self.image, **{**self.route, **kwargs}
                 )
                 if reason is None:
                     self.assertTrue(result.accepted)
@@ -185,7 +186,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
     def test_route_dimension_limit_rejects_oversized_image(self):
         wider_image = ImageAdapterResult(_png(width=2, height=1), "image/png", {}, 0)
         result = self.evaluate_image(
-            "image.edit", wider_image, max_width=1
+            "image.edit", wider_image, **{**self.route, "max_width": 1}
         )
         self.assertFalse(result.accepted)
         self.assertIn("output_dimensions_exceed_route", result.reason_codes)
@@ -254,9 +255,29 @@ class AdultImageEvaluatorTests(unittest.TestCase):
                 self.assertIn("policy_blocked", result.reason_codes)
                 self.assertFalse(result.needs_revision)
 
+    def test_missing_route_constraints_are_terminal(self):
+        for missing in self.route:
+            kwargs = dict(self.route)
+            kwargs[missing] = None
+            result = self.evaluator.evaluate("image.generate", self.image, **kwargs)
+            self.assertFalse(result.accepted)
+            self.assertIn("route_policy_missing", result.reason_codes)
+            self.assertFalse(result.needs_revision)
+        result = self.evaluator.evaluate("image.edit", self.image)
+        self.assertFalse(result.accepted)
+        self.assertIn("route_policy_missing", result.reason_codes)
+        self.assertFalse(result.needs_revision)
+
+    def test_route_limits_above_application_hard_bounds_are_terminal(self):
+        for override in ({"max_bytes": 20 * 1024 * 1024 + 1}, {"max_width": 8193}, {"max_height": 8193}):
+            result = self.evaluator.evaluate("image.generate", self.image, **{**self.route, **override})
+            self.assertFalse(result.accepted)
+            self.assertIn("route_limit_invalid", result.reason_codes)
+            self.assertFalse(result.needs_revision)
+
     def test_invalid_route_mime_policy_fails_closed(self):
         result = self.evaluate_image(
-            "image.generate", self.image, output_mime_types=("image/*",)
+            "image.generate", self.image, **{**self.route, "output_mime_types": ("image/*",)}
         )
         self.assertFalse(result.accepted)
         self.assertIn("route_mime_policy_invalid", result.reason_codes)
