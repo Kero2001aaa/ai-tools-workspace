@@ -1,7 +1,7 @@
 # Adult Agent — Stage 8 Implementation Specification
 ## Image Input Validation, Image Adapters, Evaluator, and One-Attempt Pipeline
 
-**Status:** Approved design — Steps 1–2 PASS; Step 3 implementation in progress
+**Status:** Approved design — Steps 1–3 PASS; Step 4 implementation in progress
 **Branch:** `feature/adult-agent-mvp`  
 **Parent specification:** `docs/ADULT_AGENT_IMPLEMENTATION_SPEC.md`  
 **Precondition:** Stages 1–7 are PASS on the current branch head  
@@ -232,9 +232,14 @@ Stable error codes should reuse existing Stage 7/Stage 5 codes where semantics m
 - IMG-VAL-06: route-specific MIME/size/dimension restrictions enforced.
 
 ### Adapter and pipeline
-- IMG-ADAPTER-01: exact operation-to-adapter method mapping.
-- IMG-ADAPTER-02: exact adapter ID/version required; no fallback.
-- IMG-ADAPTER-03: one invocation only; SDK retries disabled; no URL fetching.
+- IMG-ADAPTER-01: exact operation-to-adapter method mapping for analyze, generate, and edit.
+- IMG-ADAPTER-02: exact `omniroute` adapter ID/version and verified operation/cost class required; no fallback or user-selected model/endpoint/credential.
+- IMG-ADAPTER-03: one invocation only; timeout and zero retries; redirects disabled; no URL fetching.
+- IMG-ADAPTER-04: images/prompts are loaded with task ownership checks; input image MIME is revalidated before dispatch.
+- IMG-ADAPTER-05: image analysis uses inline base64 image content; generation/edit use their exact image endpoints and return one inline base64 image.
+- IMG-ADAPTER-06: URL-only, malformed, duplicate-key, invalid-MIME, corrupt, and oversized provider outputs are rejected without exposing source content.
+- IMG-ADAPTER-07: usage/cost metadata is bounded and allowlisted; reported positive cost is preserved for pipeline enforcement.
+- IMG-ADAPTER-08: adapter/provider exceptions and timeouts are sanitized; tests make no live network calls.
 - IMG-PIPE-01: image.analyze succeeds with fake adapter and publishes text/plain only after evaluation.
 - IMG-PIPE-02: image.generate succeeds with valid synthetic image bytes.
 - IMG-PIPE-03: image.edit succeeds with valid image + prompt and publishes validated image bytes.
@@ -263,7 +268,7 @@ Implement a standard-library-only validator for PNG, JPEG, and static WebP conta
 
 
 
-### Step 3 — deterministic image evaluator (IN PROGRESS)
+### Step 3 — deterministic image evaluator (PASS)
 
 Add `AdultImageEvaluator` with no semantic model, moderation call, OCR, network access, or secondary provider invocation.
 
@@ -274,7 +279,29 @@ Add `AdultImageEvaluator` with no semantic model, moderation call, OCR, network 
 - Return only the existing bounded `EvaluationResult` DTO: accepted flag, pass-fraction score, normalized check IDs, normalized reason codes, and retryability classification. Never include output text, image bytes, or exception content.
 - Treat corrupt/invalid model output and route output-contract mismatches as revision candidates. Treat unsupported tasks, wrong adapter DTOs, unavailable/malformed policy decisions, and malformed route policy configuration as terminal. No output is semantically scored.
 
-The step gate requires focused evaluator tests, all Adult tests, the full suite, and `git diff --check` before Step 4 begins.
+Step 3 gate closed: the user confirmed the Adult suite (260 tests) and full repository suite (399 tests) passed; CI #367 passed unit tests, MCP inventory export, MCP definition scan, OSV Python audit, and optional browser audit.
+
+
+### Step 4 — image adapter boundaries and mocked Adult-only provider wrappers (IN PROGRESS)
+
+Implement three operation-specific adapters in `agent/adult/integrations/omniroute_image.py`:
+
+- `OmniRouteImageUnderstandingAdapter.analyze(ImageAnalysisRequest)` for `image.analyze`;
+- `OmniRouteImageGenerationAdapter.generate(ImageGenerationRequest)` for `image.generate`;
+- `OmniRouteImageEditingAdapter.edit(ImageEditRequest)` for `image.edit`.
+
+Adapter boundary requirements:
+
+1. Accept only the exact `omniroute` adapter ID/version `1`, the matching operation, a verified route with `free_verified` cost class, and a non-empty registered provider/model identity. Never accept caller-selected model, provider, endpoint, credentials, or route fields.
+2. Use only the supplied `AdultOmniRouteConfig`; do not read workspace `MODEL_*` settings or select a credential from payload content. Construct the HTTP client lazily with a 30-second timeout, explicit zero transport retries, and redirects disabled.
+3. Load each image and prompt through `AdultArtifactStore.load_input(payload_id, task_id)`. Revalidate input image structure and MIME against the request; decode prompt bytes using `decode_image_prompt`. Reject missing, cross-task, wrong-kind, malformed, or MIME-mismatched payloads before dispatch.
+4. `image.analyze` makes one `chat/completions` request with a fixed system instruction and an inline base64 data URL derived from the owned image bytes. The image is data, not an instruction source; never pass a remote image URL.
+5. `image.generate` makes one `images/generations` request. `image.edit` makes one multipart `images/edits` request with the owned image bytes and decoded prompt. Both request exactly one image.
+6. Accept one inline `data[0].b64_json` result only. Reject URL-only results; do not fetch URLs. Bound the streamed JSON response, decode base64 strictly, validate returned image bytes structurally, and derive the declared MIME from the bytes rather than a provider declaration.
+7. Copy only allowlisted usage counters and cost telemetry. Convert provider USD cost to microusd conservatively (round any positive fractional microusd upward); malformed reported cost metadata is a sanitized failure. Never assume a missing cost value is proof of zero-cost capability.
+8. Sanitize all provider, HTTP, and client errors to stable codes. No response body, prompt, image bytes, URL, secret, or raw exception may escape. One adapter method invocation causes one HTTP request; no retry, redirect, fallback, URL retrieval, or secondary provider call is allowed.
+
+Tests must use fake clients/responses only; no live provider/network call is permitted. Step 4 does not add `AdultImagePipeline`, retry orchestration, or task/lease mutations.
 
 
 After explicit design approval, implement in this order:
