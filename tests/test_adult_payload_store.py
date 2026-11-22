@@ -164,7 +164,11 @@ class AdultArtifactStoreTests(unittest.TestCase):
 
     def test_wrong_key_cannot_decrypt_after_store_restart(self):
         reference = self.store.save_input("task-1", b"restart-safe secret", "text/plain", retain_encrypted=True)
-        restarted = AdultArtifactStore(self.root, cipher=PayloadCipher(KEY_TWO))
+        restarted = AdultArtifactStore(
+            self.root,
+            cipher=PayloadCipher(KEY_TWO),
+            clock=lambda: self.now[0],
+        )
         with self.assertRaises(PayloadKeyMismatch):
             restarted.load_input(reference.payload_id, "task-1")
 
