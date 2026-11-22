@@ -17,6 +17,7 @@ class AdultImagePoliciesTests(unittest.TestCase):
             height=100,
             sha256="a" * 64,
         )
+        self.output_route = {"output_mime_types": ("image/png",), "max_bytes": 20 * 1024 * 1024, "max_width": 8192, "max_height": 8192}
 
     def validate_output_policy(self, **route):
         policy = {"output_mime_types": ("image/png", "image/jpeg", "image/webp"), "max_bytes": 20 * 1024 * 1024, "max_width": 8192, "max_height": 8192}
@@ -68,7 +69,7 @@ class AdultImagePoliciesTests(unittest.TestCase):
             self.policies.validate_image_output("image.analyze", "image/png", self.image, output_mime_types=("image/png",), max_bytes=1000, max_width=10, max_height=10),
             self.policies.validate_image_output("image.generate", "image/jpeg", self.image, output_mime_types=("image/png",), max_bytes=1000, max_width=10, max_height=10),
             self.policies.validate_image_output(
-                "image.edit", "image/png", self.image, output_mime_types=("image/webp",), max_bytes=1000, max_width=10, max_height=10
+                "image.edit", "image/png", self.image, **{**self.output_route, "output_mime_types": ("image/webp",)}, max_bytes=1000, max_width=10, max_height=10
             ),
         )
         for decision in decisions:
@@ -102,6 +103,17 @@ class AdultImagePoliciesTests(unittest.TestCase):
                 decision = self.validate_output_policy(**kwargs)
                 self.assertFalse(decision.allowed)
                 self.assertTrue({"route_limit_invalid", "route_mime_policy_invalid"}.intersection(decision.reason_codes))
+
+    def test_image_output_rejects_missing_or_invalid_route_constraints(self):
+        for missing in self.output_route:
+            kwargs = dict(self.output_route)
+            kwargs[missing] = None
+            decision = self.policies.validate_image_output("image.generate", "image/png", self.image, **kwargs)
+            self.assertFalse(decision.allowed)
+            self.assertIn("route_policy_missing", decision.reason_codes)
+        for invalid in ({"output_mime_types": ("image/*",)}, {"max_bytes": True}, {"max_bytes": 20 * 1024 * 1024 + 1}, {"max_width": 8193}, {"max_height": 8193}):
+            decision = self.policies.validate_image_output("image.generate", "image/png", self.image, **{**self.output_route, **invalid})
+            self.assertFalse(decision.allowed)
 
     def test_analysis_output_is_bounded_utf8_and_rejects_controls(self):
         self.assertTrue(self.policies.validate_analysis_output("image.analyze", "clear result").allowed)
