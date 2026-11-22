@@ -262,7 +262,7 @@ class AdultOmniRouteImageAdapterTests(unittest.TestCase):
 
     def test_wrong_route_type_cost_class_adapter_identity_and_version_are_rejected(self):
         cases = (
-            self._route("image.generate", task_type="image.analyze"),
+            self._route("image.analyze"),
             self._route("image.generate", cost_class="local"),
             self._route("image.generate", adapter_id="other-adapter"),
             self._route("image.generate", adapter_version="2"),
