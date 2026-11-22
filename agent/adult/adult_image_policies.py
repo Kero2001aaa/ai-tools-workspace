@@ -25,8 +25,7 @@ def _decision(reasons: list[str]) -> PolicyDecision:
 
 def _mime_allowlist(value: object, reasons: list[str]) -> tuple[str, ...]:
     if value is None:
-        reasons.append("route_policy_missing")
-        return ()
+        return tuple(sorted(SUPPORTED_IMAGE_MIME_TYPES))
     if not isinstance(value, tuple) or not value or len(value) > len(SUPPORTED_IMAGE_MIME_TYPES):
         reasons.append("route_mime_policy_invalid")
         return ()
@@ -119,7 +118,11 @@ class AdultImagePolicies:
             reasons.append("unsupported_image_output_task")
         if not isinstance(image, ValidatedImage):
             reasons.append("image_metadata_invalid")
-        mime_types = _mime_allowlist(output_mime_types, reasons)
+        if output_mime_types is None:
+            reasons.append("route_policy_missing")
+            mime_types = ()
+        else:
+            mime_types = _mime_allowlist(output_mime_types, reasons)
         route_limits = (
             ("max_bytes", max_bytes, MAX_IMAGE_OUTPUT_BYTES),
             ("max_width", max_width, MAX_IMAGE_DIMENSION),
