@@ -260,6 +260,45 @@ class AdultOmniRouteImageAdapterTests(unittest.TestCase):
         )
         self.assertNotIn("Authorization", repr(kwargs))
 
+    def test_default_http_client_is_lazy_adult_scoped_and_disables_redirects(self):
+        from unittest.mock import patch
+
+        with patch("agent.adult.integrations.omniroute_image.httpx.Client", return_value=FakeClient()) as factory:
+            adapter = OmniRouteImageGenerationAdapter(
+                self.config, self._route("image.generate"), self.store,
+            )
+            factory.assert_not_called()
+            adapter._get_client()
+        factory.assert_called_once()
+        options = factory.call_args.kwargs
+        self.assertEqual("https://adult.example/v1/", options["base_url"])
+        self.assertEqual("Bearer adult-secret", options["headers"]["Authorization"])
+        self.assertEqual("application/json", options["headers"]["Accept"])
+        self.assertFalse(options["follow_redirects"])
+        self.assertIsInstance(options["transport"], httpx.HTTPTransport)
+        self.assertIsInstance(options["timeout"], httpx.Timeout)
+
+    def test_duplicate_json_keys_and_redirect_responses_fail_closed(self):
+        prompt_id = self._save_input(b"A red car", "text/plain")
+        request = ImageGenerationRequest(
+            task_id=self.task_id, step_id=self.step_id,
+            prompt_payload_id=prompt_id,
+        )
+        duplicate = FakeClient(FakeResponse(
+            raw=b'{"data":[],"data":[]}',
+        ))
+        redirect = FakeClient(FakeResponse(
+            {"data": []}, status_code=302,
+        ))
+        for fake in (duplicate, redirect):
+            adapter = OmniRouteImageGenerationAdapter(
+                self.config, self._route("image.generate"), self.store,
+                client_factory=lambda fake=fake: fake,
+            )
+            with self.assertRaises(OmniRouteImageAdapterError):
+                adapter.generate(request)
+            self.assertEqual(1, len(fake.calls))
+
     def test_wrong_route_type_cost_class_adapter_identity_and_version_are_rejected(self):
         cases = (
             self._route("image.analyze"),
