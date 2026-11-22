@@ -429,7 +429,6 @@ class OmniRouteImageGenerationAdapter(_OmniRouteImageAdapterBase):
                 "model": self._route.model_id,
                 "prompt": prompt,
                 "n": 1,
-                "output_format": "png",
             },
             response_limit=_MAX_IMAGE_RESPONSE_BYTES,
         )
@@ -460,7 +459,6 @@ class OmniRouteImageEditingAdapter(_OmniRouteImageAdapterBase):
                 "model": self._route.model_id,
                 "prompt": prompt,
                 "n": "1",
-                "output_format": "png",
             },
             files={
                 "image": (f"input.{extension}", image_bytes, request.mime_type),
