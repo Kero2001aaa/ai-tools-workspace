@@ -86,6 +86,13 @@ class AdultImageEvaluator:
             )
         if task_type == "image.analyze":
             return self._evaluate_analysis(task_type, output)
+        if any(value is None for value in (
+            output_mime_types, max_bytes, max_width, max_height,
+        )):
+            return _result(
+                ["supported_task_type"], ["route_policy_missing"],
+                retryable=False, expected_checks=_IMAGE_CHECK_COUNT,
+            )
         return self._evaluate_image(
             task_type,
             output,
