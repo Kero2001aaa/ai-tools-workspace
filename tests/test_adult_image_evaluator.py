@@ -68,6 +68,11 @@ class AdultImageEvaluatorTests(unittest.TestCase):
         self.analysis = ImageAnalysisResult("A bounded image analysis.", {}, 0)
         self.image = ImageAdapterResult(_png(), "image/png", {}, 0)
 
+    def evaluate_image(self, task_type, output, **route):
+        policy = {"output_mime_types": ("image/png", "image/jpeg", "image/webp"), "max_bytes": 20 * 1024 * 1024, "max_width": 8192, "max_height": 8192}
+        policy.update(route)
+        return self.evaluator.evaluate(task_type, output, **policy)
+
     def test_accepts_all_three_image_operations(self):
         analysis = self.evaluator.evaluate("image.analyze", self.analysis)
         self.assertTrue(analysis.accepted)
@@ -96,7 +101,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
         self.assertIn("analysis_result_invalid", wrong_analysis.reason_codes)
         self.assertFalse(wrong_analysis.needs_revision)
 
-        wrong_image = self.evaluator.evaluate("image.generate", self.analysis)
+        wrong_image = self.evaluate_image("image.generate", self.analysis)
         self.assertFalse(wrong_image.accepted)
         self.assertIn("image_result_invalid", wrong_image.reason_codes)
         self.assertFalse(wrong_image.needs_revision)
@@ -186,11 +191,40 @@ class AdultImageEvaluatorTests(unittest.TestCase):
         self.assertIn("output_dimensions_exceed_route", result.reason_codes)
         self.assertTrue(result.needs_revision)
 
+
+    def test_missing_each_route_constraint_is_terminal(self):
+        complete = {"output_mime_types": ("image/png",), "max_bytes": 1000, "max_width": 10, "max_height": 10}
+        for missing in tuple(complete):
+            with self.subTest(missing=missing):
+                route = dict(complete)
+                del route[missing]
+                result = self.evaluator.evaluate("image.generate", self.image, **route)
+                self.assertFalse(result.accepted)
+                self.assertIn("route_policy_missing", result.reason_codes)
+                self.assertFalse(result.needs_revision)
+
+    def test_invalid_route_constraints_are_terminal(self):
+        for kwargs in ({"max_bytes": True}, {"max_bytes": 20 * 1024 * 1024 + 1}, {"max_width": 0}, {"max_height": 8193}, {"output_mime_types": ("image/*",)}):
+            with self.subTest(kwargs=kwargs):
+                result = self.evaluate_image("image.generate", self.image, **kwargs)
+                self.assertFalse(result.accepted)
+                self.assertTrue({"route_limit_invalid", "route_mime_policy_invalid"}.intersection(result.reason_codes))
+                self.assertFalse(result.needs_revision)
+
+    def test_stricter_route_limits_are_enforced(self):
+        result = self.evaluate_image("image.generate", self.image, max_bytes=10)
+        self.assertFalse(result.accepted)
+        self.assertIn("output_image_too_large", result.reason_codes)
+        wider = ImageAdapterResult(_png(width=2, height=1), "image/png", {}, 0)
+        result = self.evaluate_image("image.edit", wider, max_width=1)
+        self.assertFalse(result.accepted)
+        self.assertIn("output_dimensions_exceed_route", result.reason_codes)
+
     def test_policy_exceptions_and_malformed_decisions_fail_closed(self):
         for policies in (RaisingPolicies(), MalformedPolicies()):
             evaluator = AdultImageEvaluator(policies)
             analysis = evaluator.evaluate("image.analyze", self.analysis)
-            image = evaluator.evaluate("image.generate", self.image)
+            image = evaluator.evaluate("image.generate", self.image, output_mime_types=("image/png",), max_bytes=1000, max_width=10, max_height=10)
             for result in (analysis, image):
                 self.assertFalse(result.accepted)
                 self.assertIn("policy_unavailable", result.reason_codes)
@@ -203,7 +237,7 @@ class AdultImageEvaluatorTests(unittest.TestCase):
             ("image.generate", self.image),
         ):
             with self.subTest(task_type=task_type):
-                result = evaluator.evaluate(task_type, output)
+                result = evaluator.evaluate(task_type, output, **({"output_mime_types": ("image/png",), "max_bytes": 1000, "max_width": 10, "max_height": 10} if task_type != "image.analyze" else {}))
                 self.assertFalse(result.accepted)
                 self.assertIn("policy_unavailable", result.reason_codes)
                 self.assertFalse(result.needs_revision)
