@@ -215,7 +215,6 @@ class AdultOmniRouteImageAdapterTests(unittest.TestCase):
                 "model": "verified-model",
                 "prompt": "A red car",
                 "n": 1,
-                "output_format": "png",
             },
             kwargs["json"],
         )
@@ -250,7 +249,6 @@ class AdultOmniRouteImageAdapterTests(unittest.TestCase):
                 "model": "verified-model",
                 "prompt": "Make the car blue",
                 "n": "1",
-                "output_format": "png",
             },
             kwargs["data"],
         )
