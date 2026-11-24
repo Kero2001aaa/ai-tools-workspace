@@ -16,7 +16,9 @@ Open forwarded port **8000** in Codespaces and keep its visibility set to **Priv
 - `GET /api/tasks`
 - `GET /api/memories`
 
-These endpoints are read-only. Memory contents may include personal project notes; do not expose the forwarded port publicly.
+All three require the same bearer token as actions. The page initially shows a locked shell, without private data requests. Enter the token and select **Load private data**. Successful reads then refresh every 30 seconds while the token remains present. Editing or clearing the token clears displayed monitoring data; it is not stored across reloads. Memory contents may include personal project notes; do not expose the forwarded port publicly.
+
+Every GET and POST checks the Host against exact local authorities for the bound port. In Codespaces, the exact forwarded authority is derived from CODESPACE_NAME and GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN at startup. No arbitrary Host, wildcard domain, X-Forwarded-Host, or Forwarded header is trusted. If a different reverse proxy is used, it must be separately designed and tested, not enabled by disabling Host checks. API reads also reject cross-origin Origin and Sec-Fetch-Site requests. The HTML shell contains no token or private snapshots.
 
 ## Authenticated task actions
 
