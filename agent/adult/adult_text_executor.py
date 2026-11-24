@@ -127,6 +127,9 @@ class AdultTextExecutor:
         # make a second call. Recovery/five-failure orchestration is a later slice.
         if task.attempt_count:
             return TextExecutionResult(task_id, task.status, error_code='prior_attempt_requires_recovery')
+        checkpoint = self.tasks.get_latest_checkpoint(task_id) if task.status == 'checkpointed' else None
+        recovered_pre_attempt = bool(checkpoint and checkpoint.reason == 'lease_recovered'
+                                     and checkpoint.snapshot.total_attempts == 0)
         lease = self.tasks.claim_task(task_id, worker_id, lease_seconds=300)
         try:
             task = self.tasks.get_task(task_id)
@@ -138,7 +141,7 @@ class AdultTextExecutor:
                 self.intake.attach(task_id, canonical_input, lease, task.state_version)
                 task = self.tasks.get_task(task_id)
                 request = self.tasks.get_task_request(task_id)
-            intake_step = self.tasks.get_step(task_id, task.current_step_id)
+            intake_step = self.tasks.get_step(task_id, task.current_step_id) if task.current_step_id else None
             if intake_step and intake_step.operation == 'intake':
                 self.tasks.save_step(task_id, replace(intake_step, status='skipped',
                                       started_at=None, completed_at=None), lease, task.state_version)
@@ -149,7 +152,15 @@ class AdultTextExecutor:
                                   input_payload_id=request.payload_id, config_fingerprint=config_fingerprint)
                 self.tasks.save_step(task_id, step, lease, task.state_version)
                 task = self.tasks.get_task(task_id)
-            if step.status != 'pending' or step.config_fingerprint != config_fingerprint:
+            # A durable zero-attempt counter means begin() never committed, so no
+            # adapter could have been invoked by this executor. Preserve the step
+            # identity and require an actual expired-lease recovery checkpoint.
+            runnable_step = step.status == 'pending' or (
+                step.status == 'running' and recovered_pre_attempt
+                and checkpoint.snapshot.active_step_id == step.step_id
+                and checkpoint.snapshot.payload_id == request.payload_id
+            )
+            if not runnable_step or step.config_fingerprint != config_fingerprint:
                 raise ValueError('step_requires_recovery')
             step = self.tasks.save_step(task_id, replace(step, status='running', started_at=None,
                                          completed_at=None), lease, task.state_version)
@@ -157,7 +168,7 @@ class AdultTextExecutor:
             if task.status == 'analyzing':
                 task = self.tasks.transition(task_id, {'analyzing'}, 'running', 'state_transition',
                                              task.state_version, lease=lease)
-            outcome = self.pipeline.run_one_attempt(task, step.step_id, request, config_fingerprint, set())
+            outcome = self.pipeline.run_one_attempt(task, step.step_id, request, config_fingerprint, set(), lease=lease)
             task = self.tasks.get_task(task_id)
             if task.cancel_requested:
                 self.tasks.release_lease(lease, task.state_version, 'cancelled', 'cancel_observed')
