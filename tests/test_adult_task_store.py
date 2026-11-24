@@ -795,6 +795,37 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         with self.assertRaises(TaskStoreSchemaError):
             AdultTaskStore(self.db)
 
+    def test_schema_rejects_same_name_noop_history_trigger(self):
+        store = AdultTaskStore(self.db)
+        with store._connect() as connection:
+            connection.execute('DROP TRIGGER prevent_adult_task_events_update')
+            connection.execute('CREATE TRIGGER prevent_adult_task_events_update BEFORE UPDATE ON adult_task_events BEGIN SELECT 1; END')
+        with self.assertRaises(TaskStoreSchemaError):
+            AdultTaskStore(self.db)
+
+    def test_schema_rejects_same_name_nonunique_active_task_index(self):
+        store = AdultTaskStore(self.db)
+        with store._connect() as connection:
+            connection.execute('DROP INDEX idx_adult_single_active_task')
+            connection.execute('CREATE INDEX idx_adult_single_active_task ON adult_tasks(status)')
+        with self.assertRaises(TaskStoreSchemaError):
+            AdultTaskStore(self.db)
+
+    def test_canonical_owned_definitions_validate_for_each_supported_schema_version(self):
+        from agent.adult.adult_task_store import _ATTEMPT_SCHEMA, _CAPABILITY_SCHEMA
+        statements = ()
+        for version, additions in ((1, _SCHEMA), (2, _ATTEMPT_SCHEMA), (3, _CAPABILITY_SCHEMA)):
+            statements += additions
+            with self.subTest(version=version):
+                connection = sqlite3.connect(':memory:')
+                connection.row_factory = sqlite3.Row
+                try:
+                    for statement in statements:
+                        connection.execute(statement)
+                    AdultTaskStore._validate_schema(connection, schema_version=version)
+                finally:
+                    connection.close()
+
     def test_every_connection_enables_foreign_keys_and_delete_journal(self):
         store = AdultTaskStore(self.db)
         connection = store._connect()
