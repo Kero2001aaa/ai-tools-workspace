@@ -172,3 +172,99 @@ class ExecutorTests(unittest.TestCase):
             with self.assertRaises(Exception):executor.stage_encrypted('text.analyze',self.data)
         task=self.tasks.list_tasks().items[0];self.assertEqual('cancelled',task.status)
         self.assertEqual(0,self.adapter.calls)
+
+    def test_expired_lease_before_attempt_reuses_running_step_without_replay(self):
+        from dataclasses import replace
+        from agent.adult.models import StepRecord
+        self.enable();task=self.executor.create('text.analyze',self.data)
+        lease=self.tasks.claim_task(task.task_id,'interrupted-worker',lease_seconds=1)
+        task=self.tasks.get_task(task.task_id)
+        self.executor.intake.attach(task.task_id,self.data,lease,task.state_version)
+        task=self.tasks.get_task(task.task_id)
+        intake=self.tasks.get_step(task.task_id,task.current_step_id)
+        self.tasks.save_step(task.task_id,replace(intake,status='skipped'),lease,task.state_version)
+        task=self.tasks.get_task(task.task_id);request=self.tasks.get_task_request(task.task_id)
+        step=StepRecord('interrupted-step',task.task_id,1,task.task_type,'pending',
+                        input_payload_id=request.payload_id,config_fingerprint=CONFIG)
+        self.tasks.save_step(task.task_id,step,lease,task.state_version)
+        task=self.tasks.get_task(task.task_id)
+        self.tasks.save_step(task.task_id,replace(step,status='running'),lease,task.state_version)
+        later=(datetime.now(timezone.utc)+timedelta(seconds=2)).isoformat().replace('+00:00','Z')
+        with patch('agent.adult.adult_task_store._utc_now',return_value=later):
+            self.assertEqual(1,AdultTaskStore(self.root/'tasks.sqlite3').recover_expired_leases())
+        result=self.executor.run(task.task_id,None,CONFIG)
+        self.assertEqual('completed',result.status);self.assertEqual(1,self.adapter.calls)
+        self.assertEqual(1,self.tasks.get_task(task.task_id).attempt_count)
+        self.assertEqual('succeeded',self.tasks.get_step(task.task_id,step.step_id).status)
+
+    def test_actual_crash_after_begin_never_replays_on_lease_recovery(self):
+        self.enable();task=self.executor.create('text.analyze',self.data)
+        class ProcessExit(BaseException):pass
+        with patch.object(self.adapter,'invoke',side_effect=ProcessExit):
+            with self.assertRaises(ProcessExit):self.executor.run(task.task_id,self.data,CONFIG)
+        later=(datetime.now(timezone.utc)+timedelta(seconds=301)).isoformat().replace('+00:00','Z')
+        with patch('agent.adult.adult_task_store._utc_now',return_value=later):
+            self.assertEqual(1,self.tasks.recover_expired_leases())
+        result=self.executor.run(task.task_id,None,CONFIG)
+        self.assertEqual('prior_attempt_requires_recovery',result.error_code)
+        self.assertEqual(1,self.tasks.get_task(task.task_id).attempt_count)
+        self.assertEqual(0,self.adapter.calls)
+
+    def test_stale_worker_cannot_begin_under_replacement_workers_lease(self):
+        self.enable();task=self.executor.create('text.analyze',self.data)
+        original=self.pipeline.run_one_attempt
+        replacement=[]
+        def recover_then_run(task,step_id,request,config,excluded,**kwargs):
+            later=(datetime.now(timezone.utc)+timedelta(seconds=301)).isoformat().replace('+00:00','Z')
+            with patch('agent.adult.adult_task_store._utc_now',return_value=later):
+                self.assertEqual(1,self.tasks.recover_expired_leases())
+                replacement.append(self.tasks.claim_task(task.task_id,'replacement-worker',lease_seconds=30))
+            return original(task,step_id,request,config,excluded,**kwargs)
+        with patch.object(self.pipeline,'run_one_attempt',side_effect=recover_then_run):
+            with self.assertRaises(Exception):self.executor.run(task.task_id,self.data,CONFIG)
+        self.assertEqual(0,self.adapter.calls)
+        self.assertEqual(0,self.tasks.get_task(task.task_id).attempt_count)
+        self.assertEqual('analyzing',self.tasks.get_task(task.task_id).status)
+        self.assertEqual(1,len(replacement))
+
+    def test_manual_checkpoint_does_not_authorize_running_step_recovery(self):
+        from dataclasses import replace
+        from agent.adult.models import StepRecord
+        self.enable();task=self.executor.create('text.analyze',self.data)
+        lease=self.tasks.claim_task(task.task_id,'manual-worker',lease_seconds=300)
+        task=self.tasks.get_task(task.task_id)
+        self.executor.intake.attach(task.task_id,self.data,lease,task.state_version)
+        task=self.tasks.get_task(task.task_id)
+        intake=self.tasks.get_step(task.task_id,task.current_step_id)
+        self.tasks.save_step(task.task_id,replace(intake,status='skipped'),lease,task.state_version)
+        task=self.tasks.get_task(task.task_id);request=self.tasks.get_task_request(task.task_id)
+        step=StepRecord('manual-step',task.task_id,1,task.task_type,'pending',
+                        input_payload_id=request.payload_id,config_fingerprint=CONFIG)
+        self.tasks.save_step(task.task_id,step,lease,task.state_version)
+        task=self.tasks.get_task(task.task_id)
+        self.tasks.save_step(task.task_id,replace(step,status='running'),lease,task.state_version)
+        task=self.tasks.get_task(task.task_id)
+        self.executor._checkpoint(task,step,request,lease)
+        task=self.tasks.get_task(task.task_id)
+        self.tasks.release_lease(lease,task.state_version,'checkpointed','yielded')
+        with self.assertRaisesRegex(ValueError,'step_requires_recovery'):
+            self.executor.run(task.task_id,None,CONFIG)
+        self.assertEqual(0,self.adapter.calls)
+        self.assertEqual(0,self.tasks.get_task(task.task_id).attempt_count)
+
+    def test_expired_lease_between_intake_and_text_step_preserves_input(self):
+        from dataclasses import replace
+        self.enable();task=self.executor.create('text.analyze',self.data)
+        lease=self.tasks.claim_task(task.task_id,'interrupted-intake',lease_seconds=1)
+        task=self.tasks.get_task(task.task_id)
+        self.executor.intake.attach(task.task_id,self.data,lease,task.state_version)
+        task=self.tasks.get_task(task.task_id)
+        intake=self.tasks.get_step(task.task_id,task.current_step_id)
+        self.tasks.save_step(task.task_id,replace(intake,status='skipped'),lease,task.state_version)
+        self.assertIsNone(self.tasks.get_task(task.task_id).current_step_id)
+        later=(datetime.now(timezone.utc)+timedelta(seconds=2)).isoformat().replace('+00:00','Z')
+        with patch('agent.adult.adult_task_store._utc_now',return_value=later):
+            self.assertEqual(1,self.tasks.recover_expired_leases())
+        result=self.executor.run(task.task_id,None,CONFIG)
+        self.assertEqual('completed',result.status);self.assertEqual(1,self.adapter.calls)
+        self.assertEqual(1,self.tasks.get_task(task.task_id).attempt_count)
