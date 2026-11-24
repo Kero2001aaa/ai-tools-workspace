@@ -101,22 +101,23 @@ class PlanStoreTests(unittest.TestCase):
         self.assertEqual(["running", "pending"], [s["status"] for s in current["steps"]])
 
 
-    def test_plan_does_not_start_another_step_while_one_is_running(self):
-        plan = self.store.create_plan("Serialized", [
+    def test_expired_running_step_recovers_after_store_reopen(self):
+        from datetime import datetime, timezone
+        plan = self.store.create_plan("Restart recovery", [
             {"task_type": "workspace_status"},
             {"task_type": "workspace_status"},
         ])
-        first_step = plan["steps"][0]
+        first = plan["steps"][0]
         with self.store._connect() as db:
-            db.execute(
-                "UPDATE plan_steps SET status='running',started_at=? WHERE id=?",
-                ("2099-01-01T00:00:00+00:00", first_step["id"]),
-            )
-        blocked = self.store.run_next_step(plan["id"])
-        self.assertEqual("running", blocked["status"])
-        self.assertEqual("Another step is already running", blocked["reason"])
-        current = self.store.get_plan(plan["id"])
-        self.assertEqual(["running", "pending"], [s["status"] for s in current["steps"]])
+            db.execute("UPDATE plan_steps SET status='running',started_at=? WHERE id=?",
+                       ("2026-01-01T00:00:00+00:00", first["id"]))
+        reopened = PlanStore(Path(self.temp.name) / "plans.sqlite3")
+        with patch("agent.plan_store._now", return_value=datetime(2026, 1, 1, 0, 11, tzinfo=timezone.utc)), patch("agent.task_worker.execute_task", return_value={"workspace":"ready"}) as execute:
+            outcome = reopened.run_next_step(plan["id"])
+        self.assertEqual("step_succeeded", outcome["status"])
+        execute.assert_called_once()
+        checkpoint = PlanStore(Path(self.temp.name) / "plans.sqlite3").get_plan(plan["id"])
+        self.assertEqual(["succeeded", "pending"], [s["status"] for s in checkpoint["steps"]])
 
     def test_plan_persists_across_store_instances(self):
         plan = self.store.create_plan("Persistent", [{"task_type": "workspace_status"}])
