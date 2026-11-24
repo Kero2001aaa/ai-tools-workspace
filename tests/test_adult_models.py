@@ -13,6 +13,7 @@ from agent.adult.models import (
     TaskBudget,
     TaskLease,
     TaskPage,
+    TaskEvent,
 )
 
 STAMP = "2026-11-21T00:00:00.000000Z"
@@ -165,6 +166,35 @@ class AdultModelTests(unittest.TestCase):
                 schema_version=1, task_id="task-1", task_type="text.analyze",
                 status="queued", plan=("raw prompt text",),
             )
+
+    def test_checkpoint_and_recursive_event_metadata_reject_explicit_local_paths(self):
+        paths = ['/workspaces/synthetic/private', '/var/synthetic/private',
+                 '/etc/synthetic', '//server/private', '~/private', '../private',
+                 './private', r'C:\private\file', 'C:/private/file', r'\\server\private']
+        for path in paths:
+            for text in (path, 'Inspect '+path, 'path="'+path+'"', '('+path+')'):
+                with self.subTest(text=text):
+                    with self.assertRaises(AdultModelValidationError):
+                        CheckpointSnapshot(1, 'task-1', 'text.analyze', 'queued', sanitized_summary=text)
+                    for metadata in ({'diagnostic':text}, {'diagnostic':[text]}, {'diagnostic':{'nested':text}}):
+                        with self.assertRaises(AdultModelValidationError):
+                            TaskEvent('event-1', 'task-1', 'state_transition', 'queued', 'failed', metadata, STAMP)
+
+    def test_checkpoint_and_event_metadata_preserve_technical_slash_identifiers(self):
+        for value in ('owner/repo', 'text/generate', 'provider.example/v1', 'application/json'):
+            with self.subTest(value=value):
+                snapshot = CheckpointSnapshot(1, 'task-1', 'text.analyze', 'queued', sanitized_summary='Normalize '+value)
+                event = TaskEvent('event-1', 'task-1', 'state_transition', 'queued', 'failed', {'component':value}, STAMP)
+                self.assertIn(value, snapshot.to_json())
+                self.assertEqual(value, event.metadata['component'])
+
+    def test_checkpoint_only_current_serialization_version_is_supported(self):
+        import dataclasses
+        snapshot = CheckpointSnapshot(1, 'task-1', 'text.analyze', 'queued')
+        for version in (0, 2, 999, True):
+            with self.subTest(version=version):
+                with self.assertRaises(AdultModelValidationError):
+                    dataclasses.replace(snapshot, schema_version=version)
 
     def test_task_page_is_immutable_and_type_checked(self):
         with self.assertRaises(AdultModelValidationError):
