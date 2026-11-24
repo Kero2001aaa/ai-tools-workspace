@@ -238,11 +238,62 @@ class AdultTextPipelineTests(unittest.TestCase):
 
     def test_finalization_failure_discards_uncommitted_artifact(self):
         self.tracker.succeed.side_effect = RuntimeError("finalization failed")
-        with self.assertRaisesRegex(RuntimeError, "finalization failed"):
+        with self.assertRaises(TextPipelineError) as raised:
             self.run_pipeline()
+        self.assertEqual("finalization_failed", raised.exception.error_code)
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
         self.artifact_store.discard_output.assert_called_once_with(
             self.artifact.artifact_id, TASK_ID, ATTEMPT_ID,
         )
+
+    def test_evaluator_exception_and_malformed_results_finalize_fail_closed(self):
+        for malformed in (None, True, {"accepted": True}, RuntimeError("private-output-marker")):
+            with self.subTest(malformed=type(malformed).__name__):
+                self.setUp()
+                self.pipeline._evaluator.evaluate = Mock()
+                if isinstance(malformed, Exception):
+                    self.pipeline._evaluator.evaluate.side_effect = malformed
+                else:
+                    self.pipeline._evaluator.evaluate.return_value = malformed
+                outcome = self.run_pipeline()
+                self.assertEqual("MODEL_OUTPUT_INVALID", outcome.error_code)
+                self.assertNotIn("private-output-marker", repr(outcome))
+                self.tracker.fail.assert_called_once()
+                self.assertFalse(self.tracker.fail.call_args.args[3])
+                self.artifact_store.save_output.assert_not_called()
+                self.tracker.succeed.assert_not_called()
+
+    def test_finalization_and_cleanup_errors_have_no_public_private_details(self):
+        import traceback
+        for phase in ("success", "failure"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                marker = "private-output-marker-/tmp/private-path"
+                if phase == "success":
+                    self.tracker.succeed.side_effect = RuntimeError(marker)
+                    self.artifact_store.discard_output.side_effect = RuntimeError(marker)
+                else:
+                    self.adapter.invoke.side_effect = RuntimeError(marker)
+                    self.tracker.fail.side_effect = RuntimeError(marker)
+                with self.assertRaises(TextPipelineError) as raised:
+                    self.run_pipeline()
+                self.assertEqual("finalization_failed", raised.exception.error_code)
+                self.assertIsNone(raised.exception.__cause__)
+                self.assertTrue(raised.exception.__suppress_context__)
+                self.assertNotIn(marker, "".join(traceback.format_exception(raised.exception)))
+                if phase == "success":
+                    self.artifact_store.discard_output.assert_called_once_with(self.artifact.artifact_id, TASK_ID, ATTEMPT_ID)
+                else:
+                    self.artifact_store.save_output.assert_not_called()
+
+    def test_terminal_evaluation_decision_is_not_reclassified_retryable(self):
+        from agent.adult.models import EvaluationResult
+        self.pipeline._evaluator.evaluate = Mock(return_value=EvaluationResult(
+            accepted=False, score=0.0, checks=(), reason_codes=("output_invalid",), needs_revision=False,
+        ))
+        self.assertEqual("MODEL_OUTPUT_INVALID", self.run_pipeline().error_code)
+        self.assertFalse(self.tracker.fail.call_args.args[3])
 
     def test_step_operation_mismatch_is_rejected_before_payload_read(self):
         self.task_store.get_step.return_value = StepRecord(
