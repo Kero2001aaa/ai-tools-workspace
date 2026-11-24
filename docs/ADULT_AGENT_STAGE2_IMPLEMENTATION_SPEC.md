@@ -475,3 +475,22 @@ bare relative filenames, encoded/obfuscated paths, and identifier-like private
 strings cannot reliably be distinguished from permitted technical identifiers.
 The caller remains responsible for producing sanitized feedback. No runtime
 memory database or migration was operated during this follow-up.
+
+
+## Named acceptance follow-up, 2026-11-24
+
+New regressions make existing behavior explicit: MEM-MIG-12 injects a backup
+digest mismatch and checks source bytes unchanged with no retained partial backup;
+MEM-ACL-06 checks migrated legacy rows remain hidden from Adult; MEM-ACL-12
+captures actual SELECT SQL and asserts scope/ACL predicates in WHERE; MEM-ACL-07
+checks startup fails after policy tampering; MEM-ACL-10 covers extra fields and
+oversized publication prose. These are evidence additions, not newly implemented
+isolation features. All fixtures use temporary synthetic databases.
+
+One genuine validation fix also rejects explicit credential assignments in metadata
+string values, recursively: password/passwd/pwd, API key, access/refresh token,
+client secret, and Authorization Bearer assignments. Technical terms without an
+assignment remain allowed, including password-policy, api_key_rotation and
+provider/version IDs. This conservative lexical guard does not identify all secrets:
+unlabelled values, obfuscation, other credential forms and contextual private data
+remain the caller's responsibility. No universal secret-detection claim is made.
