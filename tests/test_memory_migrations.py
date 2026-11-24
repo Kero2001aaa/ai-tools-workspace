@@ -180,6 +180,28 @@ class MemoryMigrationTests(unittest.TestCase):
         self.assertEqual([(1,)], version_rows)
         self.assertEqual(6, acl_rows)
 
+    def test_mem_mig_12_failed_backup_verification_preserves_source_bytes(self):
+        original = make_legacy_database(self.db_path)
+        before = self.db_path.read_bytes()
+        with patch('agent.memory_migrations._legacy_digest', side_effect=[
+            (2, 7, 12, 'synthetic-source'), (2, 7, 12, 'synthetic-mismatch')
+        ]):
+            with self.assertRaises(MemoryBackupVerificationFailed):
+                MemoryMigrationManager().backup_and_migrate_configured_database(confirmed=True)
+        self.assertEqual(before, self.db_path.read_bytes())
+        with sqlite3.connect(self.db_path) as db:
+            self.assertEqual(original, db.execute('SELECT id,content,tags,created_at FROM memories ORDER BY id').fetchall())
+        self.assertEqual([], list((self.root/'.data'/'backups').iterdir()))
+
+    def test_mem_acl_06_migrated_legacy_rows_hidden_from_adult(self):
+        make_legacy_database(self.db_path)
+        MemoryMigrationManager().backup_and_migrate_configured_database(confirmed=True)
+        store = MemoryStore(self.db_path)
+        self.assertEqual(2, len(store.recent()))
+        self.assertEqual([], store.adult_scope().recent())
+        self.assertEqual([], store.adult_scope().recall('Legacy'))
+        self.assertEqual([], store.adult_scope().recall_shareable_workspace('Legacy'))
+
     def test_migration_failure_rolls_back_source_and_retains_verified_backup(self):
         original = make_legacy_database(self.db_path)
         with patch("agent.memory_migrations._create_indexes", side_effect=RuntimeError("injected")):
