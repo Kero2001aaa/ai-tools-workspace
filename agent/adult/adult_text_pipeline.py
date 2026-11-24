@@ -27,6 +27,7 @@ from agent.adult.models import (
     PolicyDecision,
     RouteCandidate,
     StepRecord,
+    TaskLease,
 )
 from agent.adult.payload_store import (
     AdultArtifactStore,
@@ -225,6 +226,7 @@ class AdultTextPipeline:
         task_request: AdultTaskRequest,
         config_fingerprint: str,
         excluded_approach_keys: set[str],
+        *, lease: TaskLease | None = None,
     ) -> TextPipelineOutcome:
         """Execute no more than one adapter call; the caller retains lease ownership."""
         if not isinstance(task, AdultTaskSnapshot) or not isinstance(task_request, AdultTaskRequest):
@@ -314,6 +316,7 @@ class AdultTextPipeline:
             handle = self._attempt_tracker.begin(
                 task.task_id, step_id, route, task_request.input_fingerprint,
                 config_fingerprint,
+                **({"lease": lease} if lease is not None else {}),
             )
         except Exception:
             return self._outcome(task, step_id, "unavailable", "ATTEMPT_UNAVAILABLE", route)
@@ -401,4 +404,4 @@ class AdultTextPipeline:
         return self._outcome(
             task, step_id, "succeeded", route=route, attempt=attempt,
             evaluation=evaluation, artifact=artifact,
-                                )
+            )
