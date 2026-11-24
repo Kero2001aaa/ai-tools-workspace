@@ -160,7 +160,7 @@ StepRecord:
 - No raw input/output body.
 
 CheckpointSnapshot:
-- schema_version: positive integer.
+- schema_version: the supported checkpoint serialization version, currently exactly 1. Unknown versions are rejected by both write DTOs and readers; no up-converter is implemented.
 - task_id, task_type, status, active_step_id.
 - input fingerprint and opaque payload reference only.
 - current plan represented as bounded identifiers and step references.
@@ -843,3 +843,42 @@ Implement in this order:
 Stage 3 PASS requires every TASK-* acceptance test, all Stage 2 MEM-* tests, and the complete repository test suite to pass. The implementation must contain no provider call, no MCP registration, no payload plaintext persistence, no automatic retries, and no destructive history cleanup.
 
 Stage 4 may begin only after Stage 3 PASS is recorded and reviewed.
+
+
+## Persistence privacy and checkpoint-version follow-up, 2026-11-24
+
+Synthetic temporary fixtures showed that explicit local paths outside the small
+original directory list could enter checkpoint summaries and recursive task-event
+metadata. A shared lexical validator in the DTO layer now rejects explicit POSIX
+absolute paths, network paths, Windows drive/UNC paths, home-prefixed paths, and
+dot-relative paths at recognized whitespace/punctuation boundaries in both places.
+Technical strings such as `owner/repo`, `text/generate`, `provider.example/v1`, and
+`application/json` remain accepted. This does not detect every secret, identity,
+encoded path, bare relative filename, or free-form private text. Callers remain
+responsible for supplying sanitized summaries and bounded safe event metadata.
+No real private-data publication was established; all reproduction and regression
+fixtures were synthetic and no live database was opened or migrated.
+
+This review intentionally resolves a version-contract conflict: the earlier DTO
+prose accepted any positive integer, while TASK-CP-04 required unsupported-version
+rejection. Source review found only one serializer and matching readers for v1,
+with no v2 representation or conversion logic and no demonstrated valid non-v1
+fixture. CheckpointSnapshot and Checkpoint now explicitly accept only version 1.
+This is a contract amendment, not a claim that both earlier wordings already
+agreed. The SQLite schema remains additive and unchanged; raw SQL can still store
+unknown versions, but application readers fail closed with a sanitized error.
+
+Compatibility: all existing v1 serialization fields and valid technical identifiers
+are retained. Existing stored unsupported-version or explicit-path summaries/events
+will now be refused by application readers instead of returned. No automatic
+rewrite or deletion is performed. This is intentional fail-closed behavior and
+not evidence that such live rows exist. The five new permanent regressions cover
+path forms in summaries and nested event values, identifier compatibility,
+unsupported DTO versions, sanitized persisted-version reader errors, and atomic
+no-write rejection of unsafe transition metadata.
+
+Stage3-only table/retention absence requirements describe that historical stage.
+The assembled branch includes later Stage4/5 migrations and encrypted retention
+when a valid key is configured; their presence is not a Stage3 regression. This
+follow-up does not retroactively approve historical stage gates or complete the
+whole TASK-* acceptance map.
