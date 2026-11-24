@@ -4,7 +4,7 @@ This patch adds a fail-closed transport to the shared chat-model factory, not me
 
 No provider success is claimed. Existing key authenticated; its quota reported50remaining before a single generic probe. That probe returned429 despite available quota metadata. No retry or privacy relaxation followed. Dashboard remains disabled. An existing malformed.env was preserved privately and repaired; key equality verified without printing values. No secrets are in this patch.
 
-Baseline exact PR2 SHA1f808f31:815tests passed locally10.319s, total12.166s. User Codespace at same SHA:815tests passed15.010s. Patched isolated suite831tests passed10.270s, total11.047s. Test duration does not measure autonomous engineering throughput or establish a calendar deadline.
+Baseline exact PR2 SHA1f808f31:815tests passed locally10.319s, total12.166s. User Codespace at same SHA:815tests passed15.010s. Patched isolated suite834tests passed10.302s, total11.099s. Published exact code also passed834tests in15.286s in the preserved Codespace. Test duration does not measure autonomous engineering throughput or establish a calendar deadline.
 
 Existing Codespace:2cores,7941MB RAM,27GBavailable disk,Python3.12.11. Monthly reported usage26.97two-core wallhours; included120corehours implies about33.03two-core hours remaining, subject to billing lag/current usage. Storage3.16GB-month consumed, not current disk size. $0overage cap preserved. Not enough for24/7continuous execution all month.
 
@@ -18,4 +18,4 @@ Sources inspected:
 - https://openrouter.ai/docs/guides/routing/provider-selection
 - https://openrouter.ai/docs/faq
 
-Limits: no live model inference accepted, no image generation/training path validated, no offline model installed, no always-on daemon. User local hardware pending. Existing image adapters are separate and retain their own cost-class checks; this patch does not certify them. Direct use of an unrelated HTTP library elsewhere is outside this shared chat boundary. Diagnostic response body/key details are never returned; diagnostic redirects are denied too.
+Limits: no live model inference accepted, no image generation/training path validated, no offline model installed, no always-on daemon. User local hardware pending. Existing image adapters are separate and retain their own cost-class checks; this patch does not certify them. Direct use of an unrelated HTTP library elsewhere is outside this shared chat boundary. Diagnostic response body/key details are never returned; diagnostic redirects are denied too. Additional actual sync/async SDK429tests verify sanitized error text and exactly one network attempt. Unknown modalities, message parts and request extensions fail closed.

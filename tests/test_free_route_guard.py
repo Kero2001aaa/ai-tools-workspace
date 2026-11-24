@@ -92,3 +92,37 @@ class FreeRouteGuardTests(unittest.TestCase):
             response=client.post(URL,json=self.body())
         self.assertEqual(307,response.status_code)
         self.assertEqual(1,len(seen))
+
+    def test_sdk_429_is_sanitized_and_not_retried(self):
+        import os
+        import openai
+        seen=[]
+        def inner(req):
+            seen.append(req)
+            return httpx.Response(429,json={'error':{'message':'private-provider-details'}})
+        with patch.dict(os.environ,{'MODEL_API_KEY':'test','MODEL_NAME':'openrouter/free','MODEL_BASE_URL':'https://openrouter.ai/api/v1'},clear=True),patch('agent.model.load_dotenv'):
+            model=load_chat_model()
+        model.http_client._transport.inner=httpx.MockTransport(inner)
+        with self.assertRaises(openai.RateLimitError) as raised:
+            model.invoke('test',max_tokens=24)
+        self.assertNotIn('private-provider-details',str(raised.exception))
+        self.assertEqual(1,len(seen))
+
+    def test_async_sdk_valid_and_429_no_retry(self):
+        import os
+        import openai
+        async def run():
+            seen=[]
+            async def inner(req):
+                seen.append(req)
+                return httpx.Response(429,text='private-provider-details')
+            with patch.dict(os.environ,{'MODEL_API_KEY':'test','MODEL_NAME':'openrouter/free','MODEL_BASE_URL':'https://openrouter.ai/api/v1'},clear=True),patch('agent.model.load_dotenv'):
+                model=load_chat_model()
+            model.http_async_client._transport.inner=httpx.MockTransport(inner)
+            with self.assertRaises(openai.RateLimitError) as raised:
+                await model.ainvoke('test',max_tokens=24)
+            self.assertNotIn('private-provider-details',str(raised.exception))
+            self.assertEqual(1,len(seen))
+            await model.http_async_client.aclose()
+            model.http_client.close()
+        asyncio.run(run())
