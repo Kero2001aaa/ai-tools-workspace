@@ -164,6 +164,53 @@ class MemoryMigrationTests(unittest.TestCase):
         self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
         connection.close()
 
+    def test_concurrent_creator_delayed_after_open_does_not_look_like_legacy_empty_file(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        import agent.memory_store as module
+        opened = threading.Event()
+        observed_empty = threading.Event()
+        release = threading.Event()
+        original_connect = module._connect_database
+        original_tables = module._table_names
+        creator_id = []
+        def delayed_connect(path, **kwargs):
+            connection = original_connect(path, **kwargs)
+            if threading.get_ident() in creator_id:
+                opened.set()
+                if not release.wait(3):
+                    connection.close()
+                    raise AssertionError('creator release timed out')
+            return connection
+        def observed_tables(connection):
+            tables = original_tables(connection)
+            if not tables and threading.get_ident() not in creator_id:
+                observed_empty.set()
+            return tables
+        def creator():
+            creator_id.append(threading.get_ident())
+            return MemoryStore(self.db_path)
+        with patch.object(module, '_connect_database', side_effect=delayed_connect), patch.object(module, '_table_names', side_effect=observed_tables):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(creator)
+                try:
+                    self.assertTrue(opened.wait(3))
+                    second = pool.submit(MemoryStore, self.db_path)
+                    self.assertTrue(observed_empty.wait(3))
+                finally:
+                    release.set()
+                self.assertIsInstance(first.result(timeout=3), MemoryStore)
+                self.assertIsInstance(second.result(timeout=3), MemoryStore)
+        self.assertEqual([], MemoryStore(self.db_path).recent())
+
+    def test_preexisting_empty_database_is_still_refused_without_changes(self):
+        from agent.memory_store import UnsupportedLegacySchema
+        self.db_path.touch()
+        before = self.db_path.read_bytes()
+        with self.assertRaises(UnsupportedLegacySchema):
+            MemoryStore(self.db_path)
+        self.assertEqual(before, self.db_path.read_bytes())
+
     def test_migration_is_idempotent(self):
         make_legacy_database(self.db_path)
         manager = MemoryMigrationManager()
