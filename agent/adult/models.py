@@ -51,6 +51,20 @@ _FORBIDDEN_VALUE_RE = re.compile(
 )
 
 
+SUPPORTED_CHECKPOINT_VERSION = 1
+
+
+def _contains_local_path(value: str) -> bool:
+    """Detect explicit path forms while preserving technical slash identifiers.
+
+    This lexical guard is not a universal private-data or secret detector.
+    """
+    return bool(re.search(
+        r"(?:^|[\s=:\x22\x27(<\[{])(?:/|~[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\]|\\\\)",
+        value,
+    ))
+
+
 class AdultModelValidationError(ValueError):
     """A caller supplied a DTO value outside the Stage 3 contract."""
 
@@ -123,7 +137,7 @@ def _safe_metadata(value: dict[str, Any], *, max_bytes: int) -> dict[str, Any]:
     if len(encoded.encode("utf-8")) > max_bytes:
         raise AdultModelValidationError("Metadata exceeds its encoded size limit.")
     def inspect(item: Any) -> None:
-        if isinstance(item, str) and _FORBIDDEN_VALUE_RE.search(item):
+        if isinstance(item, str) and (_FORBIDDEN_VALUE_RE.search(item) or _contains_local_path(item)):
             raise AdultModelValidationError("Metadata contains a prohibited value.")
         if isinstance(item, dict):
             for child in item.values():
@@ -760,7 +774,7 @@ class CheckpointSnapshot:
     allowed_decisions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        _integer("schema_version", self.schema_version, 1)
+        _integer("schema_version", self.schema_version, SUPPORTED_CHECKPOINT_VERSION, SUPPORTED_CHECKPOINT_VERSION)
         _identifier("task_id", self.task_id)
         if self.task_type not in TASK_TYPES or self.status not in TASK_STATUSES:
             raise AdultModelValidationError("Invalid checkpoint task type or status.")
@@ -784,6 +798,7 @@ class CheckpointSnapshot:
         if self.sanitized_summary is not None and (
             not isinstance(self.sanitized_summary, str) or len(self.sanitized_summary) > 1000
             or _FORBIDDEN_VALUE_RE.search(self.sanitized_summary)
+            or _contains_local_path(self.sanitized_summary)
         ):
             raise AdultModelValidationError("Checkpoint summary is not sanitized.")
         if self.pending_user_action is not None and (
@@ -847,7 +862,7 @@ class Checkpoint:
         _integer("revision", self.revision, 1)
         if self.reason not in CHECKPOINT_REASONS:
             raise AdultModelValidationError("Invalid checkpoint reason.")
-        _integer("schema_version", self.schema_version, 1)
+        _integer("schema_version", self.schema_version, SUPPORTED_CHECKPOINT_VERSION, SUPPORTED_CHECKPOINT_VERSION)
         _integer("failed_attempts_since_approval", self.failed_attempts_since_approval, 0, 5)
         _timestamp("created_at", self.created_at)
         if not isinstance(self.snapshot, CheckpointSnapshot) or self.snapshot.task_id != self.task_id:
