@@ -31,8 +31,7 @@ It reads bounded UTF-8 from stdin, returns JSON containing counts and safe task
 metadata, and removes its temporary state on exit. Input text is not echoed into
 stdout, errors or persistent logs. Do not paste secrets into shell arguments.
 
-The command is ephemeral by design. Durable user-request submission, encrypted
-restartable input, five-failure wait/resume, lasting lessons, semantic quality,
+The command is ephemeral by design. Durable user-request submission, five-failure wait/resume, lasting lessons, semantic quality,
 production inference and web execution endpoints are later acceptance gates.
 The generic executor only validates structural/policy acceptance already provided
 by TextPipeline; it does not claim semantic correctness of an AI result.
@@ -64,3 +63,20 @@ Staging is multiple fenced commits, not one crash-atomic operation. An uncertain
 readback preserves committed input and pauses for reconciliation. Cancellation
 wins; no model runs during staging. Neither paused corrective recovery nor
 five-failure orchestration is implemented by this method.
+
+## Interrupted pre-attempt recovery
+
+After the existing store has recovered an expired lease, the executor can reuse
+its running text step only when the persisted attempt count is zero and the
+latest lease-recovery checkpoint names the same step and input. It preserves
+the step ID, configuration and original deadline. The executor passes its own
+TaskStore-issued lease through TextPipeline to atomic attempt creation, so an
+old worker cannot start an attempt under a replacement worker's lease. Existing
+direct pipeline/tracker callers retain their old API; they are not upgraded to
+this fenced-executor contract merely by importing these modules.
+
+No attempt after an unknown or committed prior attempt is replayed. No paused
+task becomes resumable, no provider retry or five-failure loop is added, and a
+manual-yield checkpoint alone cannot authorize a running-step recovery. Tests
+simulate process loss both before and after begin(), plus a stale worker racing
+a replacement lease. These checks are offline plumbing, not live inference.
