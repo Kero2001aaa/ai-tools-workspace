@@ -299,6 +299,149 @@ class AdultImagePipelineTests(unittest.TestCase):
         self.assertEqual("ATTEMPT_UNAVAILABLE", self.run_once().error_code)
         self.adapter.generate.assert_not_called()
 
+    def test_task_owned_subpayload_failures_never_route(self):
+        import tempfile
+        from agent.adult.payload_store import TransientPayloadCache
+        for failure in ("cross_task", "wrong_kind", "expired", "missing"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
+                self.build("image.edit")
+                clock = [0.0]
+                cache = TransientPayloadCache(ttl_seconds=10, clock=lambda: clock[0])
+                store = AdultArtifactStore(folder, cache=cache)
+                if failure != "missing":
+                    cache._put_reference(
+                        "other-task-123456" if failure == "cross_task" else TASK_ID,
+                        IMAGE_ID, png_bytes(), kind="output" if failure == "wrong_kind" else "input",
+                    )
+                if failure == "expired":
+                    clock[0] = 11.0
+                cache._put_reference(TASK_ID, PAYLOAD_ID, encode_image_input(ImageInputEnvelope(
+                    task_type="image.edit", image_payload_id=IMAGE_ID, prompt_payload_id=PROMPT_ID,
+                )))
+                cache._put_reference(TASK_ID, PROMPT_ID, encode_image_prompt("a square"))
+                self.pipeline._artifact_store = store
+                self.assertEqual("INVALID_INPUT", self.run_once().error_code)
+                self.router.choose_routes.assert_not_called()
+                self.tracker.begin.assert_not_called()
+                self.adapter.edit.assert_not_called()
+
+    def test_input_policy_exceptions_and_malformed_decisions_fail_closed(self):
+        for decision in (None, True, "allowed"):
+            with self.subTest(decision=decision):
+                self.build("image.edit")
+                self.pipeline._image_policies.validate_image_input = Mock(return_value=decision)
+                self.assertEqual("INVALID_INPUT", self.run_once().error_code)
+                self.router.choose_routes.assert_not_called()
+        self.build("image.edit")
+        self.pipeline._image_policies.validate_image_input = Mock(side_effect=RuntimeError("private detail"))
+        self.assertEqual("INVALID_INPUT", self.run_once().error_code)
+        self.tracker.begin.assert_not_called()
+
+    def test_output_policy_denial_is_terminal_and_never_persisted(self):
+        from agent.adult.models import PolicyDecision
+        self.build("image.generate")
+        self.pipeline._image_policies.validate_image_output = Mock(
+            return_value=PolicyDecision(False, ("policy_rejected",)),
+        )
+        outcome = self.run_once()
+        self.assertEqual("rejected", outcome.status)
+        self.assertEqual("POLICY_REJECTED", outcome.error_code)
+        self.assertFalse(self.tracker.fail.call_args.args[3])
+        self.store.save_output.assert_not_called()
+
+    def test_adapter_exception_is_sanitized_in_outcome_and_tracker(self):
+        self.build("image.generate")
+        marker = "private-provider-response-content"
+        self.adapter.generate.side_effect = RuntimeError(marker)
+        outcome = self.run_once()
+        self.assertNotIn(marker, repr(outcome))
+        self.assertNotIn(marker, repr(self.tracker.fail.call_args))
+        self.assertEqual("PROVIDER_ERROR", outcome.error_code)
+        self.adapter.generate.assert_called_once()
+
+    def test_real_store_and_tracker_lifecycle_for_all_operations(self):
+        self._real_lifecycle()
+
+    def test_real_cancellation_during_adapter_call_cannot_publish_success(self):
+        self._real_lifecycle(cancel_during_call=True)
+
+    def test_real_expired_lease_during_adapter_call_cannot_publish_success(self):
+        self._real_lifecycle(expire_during_call=True)
+
+    def _real_lifecycle(self, cancel_during_call=False, expire_during_call=False):
+        import tempfile
+        from pathlib import Path
+        from agent.adult.models import TaskBudget
+        for operation in ("image.analyze", "image.generate", "image.edit"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as folder:
+                self.build(operation)
+                store = AdultTaskStore(Path(folder) / "tasks.sqlite3")
+                artifacts = AdultArtifactStore(Path(folder) / "artifacts")
+                task = store.create_task(self.request, TaskBudget(max_provider_calls=1))
+                lease = store.claim_task(task.task_id, "test-worker", lease_seconds=300)
+                task = store.get_task(task.task_id)
+                step_id = "image-step-123456789"
+                step = StepRecord(
+                    step_id=step_id, task_id=task.task_id, sequence_no=1,
+                    operation=operation, status="pending", input_payload_id=PAYLOAD_ID,
+                    config_fingerprint=CONFIG_FP,
+                )
+                store.save_step(task.task_id, step, lease, task.state_version)
+                task = store.get_task(task.task_id)
+                store.save_step(task.task_id, replace(step, status="running"), lease, task.state_version)
+                task = store.get_task(task.task_id)
+                envelope = ImageInputEnvelope(
+                    task_type=operation,
+                    image_payload_id=None if operation == "image.generate" else IMAGE_ID,
+                    prompt_payload_id=None if operation == "image.analyze" else PROMPT_ID,
+                )
+                for pid, data in (
+                    (PAYLOAD_ID, encode_image_input(envelope)),
+                    (IMAGE_ID, png_bytes()), (PROMPT_ID, encode_image_prompt("a red square")),
+                ):
+                    artifacts.cache._put_reference(task.task_id, pid, data)
+                tracker = AdultAttemptTracker(store)
+                policies = AdultImagePolicies()
+                pipeline = AdultImagePipeline(
+                    artifacts, store, self.router, tracker, policies,
+                    AdultImageEvaluator(policies), {("img_adapter", "1.0.0"): self.adapter},
+                )
+                if cancel_during_call or expire_during_call:
+                    method = {"image.analyze": "analyze", "image.generate": "generate", "image.edit": "edit"}[operation]
+                    result = getattr(self.adapter, method).return_value
+                    def cancel_and_return(request):
+                        if cancel_during_call:
+                            store.request_cancel(task.task_id)
+                        else:
+                            from datetime import datetime, timedelta, timezone
+                            tracker._clock = lambda: datetime.now(timezone.utc) + timedelta(minutes=10)
+                        return result
+                    getattr(self.adapter, method).side_effect = cancel_and_return
+                    artifacts.discard_output = Mock(wraps=artifacts.discard_output)
+                    with self.assertRaises(Exception):
+                        pipeline.run_one_attempt(task, step_id, self.request, CONFIG_FP, set())
+                    artifacts.discard_output.assert_called_once()
+                    artifact_id = artifacts.discard_output.call_args.args[0]
+                    from agent.adult.payload_store import PayloadNotFound
+                    with self.assertRaises(PayloadNotFound):
+                        artifacts.read_chunk(artifact_id, 0)
+                    continue
+                outcome = pipeline.run_one_attempt(task, step_id, self.request, CONFIG_FP, set())
+                self.assertEqual("succeeded", outcome.status)
+                self.assertEqual("succeeded", outcome.attempt.status)
+                self.assertEqual(1, tracker.total_attempts(task.task_id))
+                self.assertEqual(1, store.get_task(task.task_id).provider_calls)
+                chunk = artifacts.read_chunk(outcome.artifact.artifact_id, 0)
+                expected = b"A small image." if operation == "image.analyze" else self.output
+                self.assertEqual(expected, chunk.data)
+                db = store._connect()
+                try:
+                    metadata = "\n".join(db.iterdump())
+                finally:
+                    db.close()
+                for private_value in ("a red square", "A small image.", IMAGE_ID, PROMPT_ID):
+                    self.assertNotIn(private_value, metadata)
+
     def test_non_success_outcome_cannot_carry_artifact(self):
         self.build("image.generate")
         with self.assertRaises(Exception):
