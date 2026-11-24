@@ -35,3 +35,12 @@ Tests exercise real stores, pagination, zero-call submission, explicit retention
 no-route pause, cancellation, bounded task-owned artifact reads and a patched
 fake-client completion with no duplicate call. No live AI result or provider
 availability is claimed. No image generation or editing success is claimed.
+
+Cross-stack HTTP contract tests also run the real SDK through the unchanged
+production FreeRouteTransport. Only its lowest network transport is replaced
+with an in-process HTTP mock. They inspect the serialized exact model, fixed
+zero-price/privacy provider policy, non-streaming and no-tools/plugins request.
+A mocked success becomes an encrypted task-owned result. Mocked 429 and 307
+responses are sanitized, never followed/retried and never yield completion.
+Terminal reruns remain one attempt. This closes an offline wiring check, not
+live provider certification, semantic-quality evaluation or a real AI success.
