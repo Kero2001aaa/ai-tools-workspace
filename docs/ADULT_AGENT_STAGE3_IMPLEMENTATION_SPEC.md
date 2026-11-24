@@ -882,3 +882,20 @@ The assembled branch includes later Stage4/5 migrations and encrypted retention
 when a valid key is configured; their presence is not a Stage3 regression. This
 follow-up does not retroactively approve historical stage gates or complete the
 whole TASK-* acceptance map.
+
+
+### Owned schema-definition validation
+
+A synthetic no-op replacement of an append-only task-event trigger kept its
+expected name and previously passed startup validation. Owned indexes and triggers
+are now compared with the normalized canonical definitions in the versioned
+schema statements, not merely checked for presence. Each supported operational
+schema version (v1, v2, v3) is validated against only its applicable migrations.
+Tests cover no-op history-trigger replacement, non-unique active-task-index
+replacement, and all three canonical historical layouts. Existing additive-upgrade
+and idempotency tests remain in the suite. No SQLite table change is introduced.
+This catches accidental or unsupported schema drift at initialization. It is not
+containment against code or a person with direct same-user database access, who
+could also alter the file after validation. Equivalent hand-edited definitions
+outside the owned canonical form may now fail closed and require operator review;
+no automatic repair, history rewrite, or deletion is performed.
