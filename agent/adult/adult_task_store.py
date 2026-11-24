@@ -610,18 +610,25 @@ class AdultTaskStore:
             raise TaskStoreSchemaError("Adult task database is missing required indexes.")
         if not expected_triggers.issubset(triggers):
             raise TaskStoreSchemaError("Adult task database is missing required triggers.")
-        if schema_version == LATEST_SCHEMA_VERSION:
-            actual_index = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
-                ("idx_adult_capability_identity",),
+        # Validate owned definitions, not only names. A same-name no-op trigger
+        # or non-unique replacement index must not silently disable invariants.
+        statements = _SCHEMA
+        if schema_version >= ATTEMPT_SCHEMA_VERSION:
+            statements += _ATTEMPT_SCHEMA
+        if schema_version >= LATEST_SCHEMA_VERSION:
+            statements += _CAPABILITY_SCHEMA
+        normalize_sql = lambda value: " ".join(value.split()).casefold()
+        for statement in statements:
+            match = re.match(r"CREATE\s+(?:UNIQUE\s+)?(INDEX|TRIGGER)\s+(\w+)", statement, re.I)
+            if match is None:
+                continue
+            kind, name = match.groups()
+            actual = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type=? AND name=?",
+                (kind.casefold(), name),
             ).fetchone()
-            expected_index_sql = _CAPABILITY_SCHEMA[2]
-            normalize_sql = lambda value: " ".join(value.split()).casefold()
-            if (
-                actual_index is None
-                or normalize_sql(actual_index["sql"]) != normalize_sql(expected_index_sql)
-            ):
-                raise TaskStoreSchemaError("Adult capability identity index definition is invalid.")
+            if actual is None or normalize_sql(actual["sql"]) != normalize_sql(statement):
+                raise TaskStoreSchemaError("An owned Adult schema definition is invalid.")
 
     def claim_task(
         self, task_id: str, worker_id: str, lease_seconds: int = 30
