@@ -90,6 +90,10 @@ def _integer(name: str, value: Any, minimum: int, maximum: int | None = None) ->
 def _identifier(name: str, value: Any, *, optional: bool = False) -> None:
     if value is None and optional:
         return
+    # The sole wire model permitted by the free-route transport contains a slash.
+    # Keep opaque IDs strict; do not broaden paths or arbitrary provider models.
+    if name in {"model_id", "selected_model"} and value == "openrouter/free":
+        return
     if not isinstance(value, str) or not _OPAQUE_ID_RE.fullmatch(value):
         raise AdultModelValidationError(f"{name} must be a normalized opaque identifier.")
 
