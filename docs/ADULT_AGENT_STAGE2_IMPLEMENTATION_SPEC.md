@@ -456,3 +456,22 @@ Implement in this exact order:
 Stage 2 PASS requires every MEM-* acceptance test and the existing full test suite to pass, migration validation to be repeatable on temporary databases, and code review to find no namespace or principal selection path exposed outside fixed factories.
 
 Stage 3 may not begin until this gate is recorded as PASS. The live memory database remains untouched until a separately reviewed migration operation is authorized and a consistent backup/restore plan is executed.
+
+
+## Path privacy follow-up, 2026-11-24
+
+Synthetic temporary-database checks reproduced acceptance of `/tmp/...` and
+`/workspaces/...` in feedback prose and allowed metadata strings. No actual
+private-data publication was established. A shared lexical validator now rejects
+explicit POSIX absolute paths, Windows drive and UNC paths, home-prefixed paths,
+and dot-relative local paths in feedback lesson/action and metadata string values,
+including nested arrays/objects. Recognized boundaries include whitespace,
+assignment punctuation, quotes and opening brackets. Technical identifiers such as
+`owner/repo`, `text/generate`, `provider.example/v1`, and `application/json` remain
+allowed. Feedback still separately rejects URLs and secret markers.
+
+This is a bounded lexical privacy guard, not proof of complete de-identification:
+bare relative filenames, encoded/obfuscated paths, and identifier-like private
+strings cannot reliably be distinguished from permitted technical identifiers.
+The caller remains responsible for producing sanitized feedback. No runtime
+memory database or migration was operated during this follow-up.
