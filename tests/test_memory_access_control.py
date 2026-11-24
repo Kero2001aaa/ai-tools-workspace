@@ -105,6 +105,29 @@ class MemoryAccessControlTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.publisher.publish_sanitized_feedback(feedback)
 
+    def test_local_path_forms_rejected_in_feedback_and_metadata(self):
+        paths = ['/tmp/synthetic.txt', '/workspaces/project/private.md', '/etc/synthetic',
+                 '/var/data/private', '~/private', '../private', './private',
+                 r'C:\private\file', 'C:/private/file', r'\\server\private']
+        for path in paths:
+            for text in (path, 'Inspect '+path, 'path="'+path+'"', '('+path+')'):
+                with self.subTest(text=text):
+                    for field in ('lesson', 'recommended_action'):
+                        feedback = SanitizedFeedback(**{**VALID_FEEDBACK.__dict__, field:text})
+                        with self.assertRaises(ValueError):
+                            self.publisher.publish_sanitized_feedback(feedback)
+                    with self.assertRaises(ValueError):
+                        self.adult_scope.remember('synthetic fact', metadata={'component_id':text})
+        with sqlite3.connect(self.db_path) as db:
+            self.assertEqual(0, db.execute('SELECT COUNT(*) FROM memories').fetchone()[0])
+
+    def test_technical_slash_identifiers_remain_allowed(self):
+        for value in ('owner/repo', 'text/generate', 'provider.example/v1', 'application/json'):
+            with self.subTest(value=value):
+                self.adult_scope.remember('synthetic fact', metadata={'component_id':value})
+                feedback = SanitizedFeedback(**{**VALID_FEEDBACK.__dict__, 'lesson':'Normalize '+value+' before parsing.'})
+                self.publisher.publish_sanitized_feedback(feedback)
+
     def test_feedback_publication_writes_only_sanitized_shareable_lesson(self):
         ref = self.publisher.publish_sanitized_feedback(VALID_FEEDBACK)
         connection = sqlite3.connect(self.db_path)
