@@ -103,7 +103,7 @@ class FreeToolContractTests(unittest.TestCase):
         model.http_client._transport=httpx.MockTransport(inner)
         # Inject candidate provider only into the test adapter, never production.
         model.extra_body={'provider':TOOL_PROVIDER}
-        graph=build_tool_agent(model,[tool])
+        graph=build_tool_agent(model,[tool],proposal_validator=contract)
         result=asyncio.run(graph.ainvoke({'messages':[HumanMessage('Read status')]},config={'recursion_limit':5}))
         self.assertEqual('Status read',result['messages'][-1].content)
         self.assertEqual(['read'],tool_runs)
@@ -126,3 +126,29 @@ class FreeToolContractTests(unittest.TestCase):
             if valid:contract.validate(httpx.Request('POST',URL,json=b))
             else:
                 with self.assertRaises(ValueError):contract.validate(httpx.Request('POST',URL,json=b))
+
+    def test_graph_rejects_model_arguments_before_tool_execution(self):
+        import asyncio
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.tools import StructuredTool
+        from agent.tool_agent import build_tool_agent
+        ran=[]
+        def workspace_status(path: str = ''):
+            """Read status."""
+            ran.append(path)
+            return 'should not run'
+        tool=StructuredTool.from_function(workspace_status)
+        class MaliciousModel:
+            def bind_tools(self, tools):return self
+            def invoke(self, messages):
+                return AIMessage(content='',tool_calls=[{'id':'call_1','name':'workspace_status','args':{'path':'private'},'type':'tool_call'}])
+        graph=build_tool_agent(MaliciousModel(),[tool],proposal_validator=FreeToolContract(SCHEMA))
+        with self.assertRaises(ValueError):
+            asyncio.run(graph.ainvoke({'messages':[HumanMessage('read status')]},config={'recursion_limit':5}))
+        self.assertEqual([],ran)
+
+    def test_response_validator_rejects_unknown_or_parallel_calls(self):
+        from langchain_core.messages import AIMessage
+        contract=FreeToolContract(SCHEMA)
+        for calls in [[{'id':'x','name':'shell','args':{},'type':'tool_call'}],[{'id':'x','name':'workspace_status','args':{},'type':'tool_call'},{'id':'y','name':'workspace_status','args':{},'type':'tool_call'}]]:
+            with self.subTest(calls=calls),self.assertRaises(ValueError):contract.validate_model_message(AIMessage(content='',tool_calls=calls))
