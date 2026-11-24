@@ -1,7 +1,7 @@
 # Adult Agent — Stage 8 Implementation Specification
 ## Image Input Validation, Image Adapters, Evaluator, and One-Attempt Pipeline
 
-**Status:** Approved design — Steps 1–3 PASS; Step 4 implementation in progress
+**Status:** Stage 8 not closed. Pipeline implementation, hardening and acceptance tests pushed; final acceptance CI and review remain pending. See the evidence reconciliation below.
 **Branch:** `feature/adult-agent-mvp`  
 **Parent specification:** `docs/ADULT_AGENT_IMPLEMENTATION_SPEC.md`  
 **Precondition:** Stages 1–7 are PASS on the current branch head  
@@ -282,7 +282,7 @@ Add `AdultImageEvaluator` with no semantic model, moderation call, OCR, network 
 Step 3 gate closed: the user confirmed the Adult suite (260 tests) and full repository suite (399 tests) passed; CI #367 passed unit tests, MCP inventory export, MCP definition scan, OSV Python audit, and optional browser audit.
 
 
-### Step 4 — image adapter boundaries and mocked Adult-only provider wrappers (IN PROGRESS)
+### Step 4 — image adapter boundaries and mocked Adult-only provider wrappers (IMPLEMENTED; STAGE CLOSURE PENDING)
 
 Implement three operation-specific adapters in `agent/adult/integrations/omniroute_image.py`:
 
@@ -319,6 +319,61 @@ After explicit design approval, implement in this order:
 11. Record Stage 8 PASS only when every IMG-* test, all prior-stage regression, full suite, and CI/security checks pass.
 
 No Stage 9 implementation is included in Stage 8.
+
+---
+
+## Evidence reconciliation, 2026-11-24
+
+Stage 8 is **not PASS**. This section separates changes verified on the remote branch from additional local-only acceptance checks. A passing local suite does not establish that those checks have been committed, pushed, or run in CI.
+
+### Remote implementation baseline
+
+Branch: `feature/adult-agent-mvp`. No merge to `main` is part of this work.
+
+| Work | Remote commit | Verification |
+|---|---|---|
+| Image adapter Decimal overflow handling | `1c85feb` | Earlier full suite: 412 tests OK; CI #377 succeeded |
+| RouteCandidate output-constraint propagation | `7553b7c64cb3ccee1278c5f4ab6ff5164504203f` | Full suite: 414 tests OK; CI #378 succeeded |
+| One-attempt image pipeline and initial tests | `510235b84044287086d6fc6071703e0684a1f652` | Full suite: 430 tests OK; CI #379 succeeded |
+| Prompt validation and attempt-finalization hardening | `6e56e550da0cc7aea8998adbdc183d1d6f4fe050` | 24 pipeline tests and full suite of 438 tests OK in Codespace; CI #380 succeeded |
+
+Verified CI pages:
+
+- #377: https://github.com/Kero2001aaa/ai-tools-workspace/actions/runs/45381630391
+- #378: https://github.com/Kero2001aaa/ai-tools-workspace/actions/runs/45388892392
+- #379: https://github.com/Kero2001aaa/ai-tools-workspace/actions/runs/45392719766
+- #380: https://github.com/Kero2001aaa/ai-tools-workspace/actions/runs/45393993104
+
+The remote pipeline dispatches analyze/generate/edit through the exact adapter ID/version, validates task-owned image and prompt input before routing, passes explicit route output constraints to the evaluator, rejects positive reported cost before persistence, and saves output only after acceptance. Follow-up hardening validates prompt bytes before routing, maps provider timeout codes, finalizes evaluator failures, and preserves non-retryable evaluator decisions.
+
+CI uses the repository quality/security workflow, including unit tests, MCP inventory/definition checks, and dependency audits. These successful runs apply to their listed commits, not to later local changes.
+
+### Acceptance-test delivery and local validation
+
+Additional changes to `tests/test_adult_image_pipeline.py`, based on remote `6e56e55`, were delivered through the authenticated repository file editor in commit `52216dfa6fdf2be7d14856345367f5b089cae228`. The fetched remote file exactly matches the locally tested file. The test change adds 143 lines and no production-code changes. CI for this newer commit is not yet recorded here. Validation in a temporary local checkout used Python 3.12 and SQLite 3.53.1:
+
+- Pipeline module: **31 tests OK**.
+- Full repository suite: **445 tests OK**.
+- `git diff --check`: clean.
+
+These additional tests add:
+
+- Real SQLite TaskStore, AttemptTracker and ArtifactStore lifecycle checks for all three operations, with fake adapters and synthetic images.
+- Cancellation and expired-lease checks during adapter execution, with no successful finalization and matching artifact cleanup.
+- Task-owned input failures for cross-task, wrong-kind, expired and missing image references, before routing or attempts.
+- Fail-closed input policy exceptions/malformed decisions, terminal output-policy denial and sanitized adapter errors.
+- Operational SQLite checks excluding prompt text, analysis text and image/prompt sub-payload IDs.
+
+Existing component tests separately cover envelope and prompt validation, PNG/JPEG/WebP structural validation, image policy/evaluator rules, provider response parsing and bounded transport behavior, exact router input restrictions, positive provider-call budgets, expired cost evidence, and paid/unknown route rejection. They passed as part of the local full suite. Component coverage is not represented as a new integrated test where no such test was added.
+
+### Remaining closure gates
+
+1. Verify CI for acceptance-test commit `52216dfa6fdf2be7d14856345367f5b089cae228` and for this documentation update on the exact resulting branch head. Local focused/full validation is 31/445 tests OK; do not infer CI from local results.
+2. Complete the requested final ChatGPT review. The review was not obtained during the latest attempt because both the existing chat and profile/history remained loading after bounded recovery.
+3. Keep Hindsight Memory verification open. A prior ChatGPT response claimed retrieval calls, but visible tool activity was not inspected, so actual invocation is not independently confirmed. Think UI selection was observed; that does not verify Hindsight.
+4. Reconcile the complete IMG-* acceptance matrix and update this evidence section before recording Stage 8 PASS. No Stage 9 work is included.
+
+Codespace remote-connection/setup failures interrupted delivery, but the separate authenticated github.com file editor delivered the acceptance tests successfully. The implementation baseline has successful CI; newer acceptance-test CI and final review remain separate closure gates. No Codespace stop, protected-path edit, live-data change, new dependency, paid route, or live model/provider test is part of these pending changes.
 
 ---
 
