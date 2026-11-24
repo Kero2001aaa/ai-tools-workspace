@@ -41,14 +41,55 @@ class AdultTextExecutor:
             raise ValueError('Executor fingerprint keys must match.')
         self.tasks, self.intake, self.pipeline, self.fingerprinter = tasks, intake, pipeline, fingerprinter
 
-    def create(self, task_type: str, canonical_input: bytes, budget: TaskBudget | None = None):
+    def create(self, task_type: str, canonical_input: bytes, budget: TaskBudget | None = None, *,
+               retention_policy: str = "ephemeral"):
         # Validate before creating a durable task; private text never enters its DTO.
         from agent.adult.adult_text_input import decode_text_input
         decode_text_input(canonical_input, task_type)
+        if retention_policy == "encrypted":
+            configured = PayloadCipher.from_environment()
+            if configured.key_id != self.fingerprinter.key_id:
+                raise ValueError("configured_key_mismatch")
+            if (self.intake.artifacts.cipher is None
+                    or self.intake.artifacts.cipher.key_id != configured.key_id):
+                raise ValueError("artifact_key_mismatch")
         return self.tasks.create_task(
-            AdultTaskRequest(task_type, self.fingerprinter.fingerprint(canonical_input)),
+            AdultTaskRequest(task_type, self.fingerprinter.fingerprint(canonical_input),
+                             retention_policy=retention_policy),
             budget if budget is not None else TaskBudget(),
         )
+
+    def stage_encrypted(self, task_type: str, canonical_input: bytes,
+                        budget: TaskBudget | None = None, *, worker_id="text-intake-worker") -> TextExecutionResult:
+        """Persist input/checkpoint and yield without selecting or invoking a model.
+
+        Requires the caller's configured key. No generated persistent secret,
+        replacement input or implicit resume. The existing wall deadline starts
+        at creation and is not reset by staging or reopening.
+        """
+        task = self.create(task_type, canonical_input, budget, retention_policy="encrypted")
+        lease = self.tasks.claim_task(task.task_id, worker_id, lease_seconds=300)
+        try:
+            task = self.tasks.get_task(task.task_id)
+            self.intake.attach(task.task_id, canonical_input, lease, task.state_version)
+            task = self.tasks.get_task(task.task_id)
+            request = self.tasks.get_task_request(task.task_id)
+            step = self.tasks.get_step(task.task_id, task.current_step_id)
+            self._checkpoint(task, step, request, lease)
+            task = self.tasks.get_task(task.task_id)
+            self.tasks.release_lease(lease, task.state_version, "checkpointed", "yielded")
+            return TextExecutionResult(task.task_id, "checkpointed")
+        except Exception:
+            # Preserve any committed input; a later read reconciles unknown state.
+            current = self.tasks.get_task(task.task_id)
+            if current and current.status in {"analyzing", "running", "evaluating"}:
+                try:
+                    self.tasks.release_lease(lease, current.state_version,
+                        "cancelled" if current.cancel_requested else "paused",
+                        "cancel_observed" if current.cancel_requested else "worker_released")
+                except Exception:
+                    pass
+            raise
 
     def _checkpoint(self, task, step, request, lease, *, artifact_id=None, completed=False):
         remaining = max(0, int((datetime.fromisoformat(task.deadline_at.replace('Z', '+00:00'))
