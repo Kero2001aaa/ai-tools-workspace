@@ -326,7 +326,7 @@ Graphify is an optional, local-first code knowledge graph. Its upstream project 
 1. Install the official package with the MCP extra:
 
 ```bash
-uv tool install "graphifyy[mcp]"
+uv tool install --with "mcp==1.30.0" "graphifyy[mcp]==0.9.118"
 ```
 
 2. Build a local code-only graph without invoking an LLM:
@@ -354,9 +354,9 @@ GRAPHIFY_GRAPH_PATH=/workspaces/ai-tools-workspace/graphify-out/graph.json
 .venv/bin/python -m agent.mcp_client
 ```
 
-The discovered tool list should include Graphify tools. If the graph path is blank, the workspace keeps Graphify disconnected. An unavailable executable or invalid graph path fails closed during configuration. The graph file is local project data; review it before sharing or committing it.
+The discovered list contains only graphify_graph_stats, graphify_get_node and graphify_query_graph from the local restricted bridge, not the upstream tool catalog. If the graph path is blank, Graphify stays disconnected. Missing executable, malformed/oversized graph or unsupported version fails closed. No tool can choose another project_path, repo, source file or graph. See docs/GRAPHIFY_BOUNDARY.md for the reviewed pin, protocol limits and deliberate compatibility changes. The installed Codespace version has not been verified by this code change.
 
-The optional server exposes graph query capabilities over the selected graph file. It is not permission to run arbitrary shell commands or analyze other filesystem paths. Keep the generated graph out of Git unless you explicitly want to version it. The existing Cisco MCP Scanner CI inventory covers this workspace's exported tool definitions; it does not automatically audit the external Graphify package or its runtime implementation. Review and pin the upstream package version before enabling it.
+The local bridge exposes three graph-data operations over a temporary validated snapshot of the selected graph. It excludes upstream get_section, PR tools, resources, multi-project paths and adjacent sidecars. The subprocess still runs as the server user, so this is not OS filesystem/network isolation. Keep the generated graph out of Git unless you explicitly want to version it. The existing Cisco MCP Scanner CI inventory covers this workspace's exported tool definitions; it does not automatically audit the external Graphify package or its runtime implementation. Review and pin the upstream package version before enabling it.
 
 Official project and install reference: https://github.com/Graphify-Labs/graphify
 
