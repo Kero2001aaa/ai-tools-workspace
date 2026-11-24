@@ -770,6 +770,14 @@ class AdultAttemptTracker:
             raise AttemptTrackerError("Attempt failure did not produce a result.")
         return result
 
+    def list_summaries(self, task_id: str) -> tuple[AttemptSummary, ...]:
+        """Read this task's bounded attempt metadata, never input/output bytes."""
+        _validate_identifier("task_id", task_id)
+        with self._store._connect() as db:
+            rows = db.execute("SELECT * FROM adult_attempts WHERE task_id=? ORDER BY attempt_no LIMIT 20",
+                              (task_id,)).fetchall()
+            return tuple(self._summary(row) for row in rows)
+
     def find_prior_approach(
         self, task_id: str, approach_key: str
     ) -> AttemptSummary | None:
