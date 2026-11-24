@@ -850,6 +850,25 @@ class AdultArtifactStore:
             self._transient_artifacts.pop(artifact_id, None)
             return True
 
+    def discard_input(self, payload_id: str, task_id: str) -> bool:
+        """Remove one uncommitted input, never an output or another task's data."""
+        _validate_payload_id(payload_id)
+        _validate_task_id(task_id)
+        with self._lock:
+            record = self._get_record(payload_id)
+            if record is not None:
+                if record["task_id"] != task_id or record["kind"] != "input":
+                    raise PayloadNotFound("Input does not belong to this task.")
+                try:
+                    self._payload_path(payload_id).unlink(missing_ok=True)
+                except OSError as exc:
+                    raise PayloadStorageError("Uncommitted input could not be discarded safely.") from exc
+                self._remove_records([payload_id])
+                return True
+            if self.cache.get_input(task_id, payload_id) is None:
+                return False
+            return self.cache.discard_ref(task_id, payload_id)
+
     def delete_task_inputs(self, task_id: str) -> int:
         """Delete retained and transient inputs after task completion or cancellation."""
         _validate_task_id(task_id)
