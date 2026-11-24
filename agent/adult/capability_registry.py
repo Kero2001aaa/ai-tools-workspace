@@ -543,6 +543,10 @@ class ModelCapabilityRegistry:
                 task_type=spec.task_type, cost_class=spec.cost_class,
                 capability_version=row["capability_version"],
                 verified_at=row["capability_verified_at"],
+                output_mime_types=spec.output_mime_types or None,
+                max_output_bytes=spec.max_output_bytes,
+                max_output_width=spec.max_output_width,
+                max_output_height=spec.max_output_height,
             ))
         eligible.sort(key=lambda r: (
             0 if r.cost_class == "local" else 1,

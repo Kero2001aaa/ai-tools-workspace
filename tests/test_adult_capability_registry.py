@@ -225,6 +225,42 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
         with self.assertRaises(CapabilityRegistryError):
             self.registry.list_eligible(query, CostPolicy(max_provider_calls=1))
 
+    def test_list_eligible_preserves_image_output_constraints(self):
+        spec = ModelCapabilitySpec(
+            adapter_id="local-image", adapter_version="1", task_type="image.generate",
+            input_modalities=("text",), output_modalities=("image",), cost_class="local",
+            output_mime_types=("image/png", "image/webp"), max_output_bytes=8 * 1024 * 1024,
+            max_output_width=2048, max_output_height=1536,
+        )
+        record = self.registry.register(spec)
+        verified = self.registry.verify(record.capability_id, local_evidence(spec), record.state_version)
+        self.registry.enable(verified.capability_id, verified.state_version)
+        query = CapabilityQuery(
+            task_type="image.generate", input_modalities=("text",), output_modality="image",
+            input_fingerprint=INPUT_FP, config_fingerprint=CONFIG_FP,
+        )
+        routes = self.registry.list_eligible(query, CostPolicy(max_provider_calls=1))
+        self.assertEqual(1, len(routes))
+        route = routes[0]
+        self.assertEqual(("image/png", "image/webp"), route.output_mime_types)
+        self.assertEqual(8 * 1024 * 1024, route.max_output_bytes)
+        self.assertEqual(2048, route.max_output_width)
+        self.assertEqual(1536, route.max_output_height)
+
+    def test_text_route_has_no_image_output_constraints(self):
+        spec = text_spec()
+        record = self.registry.register(spec)
+        verified = self.registry.verify(record.capability_id, provider_evidence(spec), record.state_version)
+        self.registry.enable(verified.capability_id, verified.state_version)
+        query = CapabilityQuery(
+            task_type="text.analyze", input_modalities=("text",), output_modality="text",
+            input_fingerprint=INPUT_FP, config_fingerprint=CONFIG_FP,
+        )
+        routes = self.registry.list_eligible(query, CostPolicy(max_provider_calls=1))
+        self.assertEqual(1, len(routes))
+        for name in ("output_mime_types", "max_output_bytes", "max_output_width", "max_output_height"):
+            self.assertIsNone(getattr(routes[0], name))
+
     def test_local_capability_requires_local_smoke_evidence(self):
         record = self.registry.register(local_spec())
         with self.assertRaises(CapabilityEvidenceError):

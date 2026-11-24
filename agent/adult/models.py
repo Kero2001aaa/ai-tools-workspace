@@ -550,6 +550,10 @@ class RouteCandidate:
     cost_class: Literal["local", "free_verified", "paid", "unknown"]
     capability_version: str
     verified_at: str
+    output_mime_types: tuple[str, ...] | None = None
+    max_output_bytes: int | None = None
+    max_output_width: int | None = None
+    max_output_height: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("adapter_id", "adapter_version", "capability_version"):
@@ -561,6 +565,23 @@ class RouteCandidate:
         if self.cost_class not in {"local", "free_verified", "paid", "unknown"}:
             raise AdultModelValidationError("Route cost_class is unsupported.")
         _timestamp("verified_at", self.verified_at)
+        if self.output_mime_types is not None and (
+            not isinstance(self.output_mime_types, tuple)
+            or not 1 <= len(self.output_mime_types) <= 16
+            or len(set(self.output_mime_types)) != len(self.output_mime_types)
+            or any(
+                not isinstance(v, str) or v not in SUPPORTED_IMAGE_MIME_TYPES
+                for v in self.output_mime_types
+            )
+        ):
+            raise AdultModelValidationError("Route output_mime_types must be an image MIME allowlist.")
+        for name, value, maximum in (
+            ("max_output_bytes", self.max_output_bytes, MAX_IMAGE_OUTPUT_BYTES),
+            ("max_output_width", self.max_output_width, MAX_IMAGE_DIMENSION),
+            ("max_output_height", self.max_output_height, MAX_IMAGE_DIMENSION),
+        ):
+            if value is not None:
+                _integer(name, value, 1, maximum)
 
 
 @dataclass(frozen=True)
