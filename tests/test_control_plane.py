@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from http.server import ThreadingHTTPServer
 
-from agent.control_plane import Handler, status_snapshot, task_snapshot, memory_snapshot
+from agent.control_plane import Handler, allowed_authorities, _page, status_snapshot, task_snapshot, memory_snapshot
 from agent.memory_store import MemoryStore
 from agent.task_queue import TaskQueue
 
@@ -201,8 +201,66 @@ class ControlPlaneTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=3)
 
+    def test_private_gets_and_host_validation(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.control_token = "test-token"
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def request(path, headers=None, method="GET"):
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            conn.request(method, path, headers=headers or {})
+            response = conn.getresponse()
+            result = response.status, response.read()
+            conn.close()
+            return result
+        auth = {"Authorization": "Bearer test-token"}
+        try:
+            with patch("agent.control_plane.memory_snapshot", return_value=["private-marker"]) as memory, \
+                 patch("agent.control_plane.task_snapshot", return_value=["private-task"]) as tasks, \
+                 patch("agent.control_plane.status_snapshot", return_value={"status": "online"}) as status:
+                for path in ("/api/memories", "/api/tasks", "/api/status"):
+                    self.assertEqual(401, request(path)[0])
+                    self.assertEqual(401, request(path, {"Authorization": "Bearer wrong"})[0])
+                    self.assertEqual(403, request(path, {**auth, "Origin": "https://evil.invalid"})[0])
+                    self.assertEqual(403, request(path, {**auth, "Sec-Fetch-Site": "cross-site"})[0])
+                self.assertEqual(403, request("/api/memories", {**auth, "Origin": "http://["})[0])
+                memory.assert_not_called()
+                tasks.assert_not_called()
+                status.assert_not_called()
+                for path in ("/", "/api/memories", "/not-found", "/api/tasks/enqueue"):
+                    for host in ("evil.invalid", "127.0.0.1.evil.invalid", "localhost:1", "127.0.0.1:80@evil.invalid"):
+                        self.assertEqual(403, request(path, {**auth, "Host": host}, "POST" if "enqueue" in path else "GET")[0])
+                self.assertIn(b"private-marker", request("/api/memories", auth)[1])
+                local = f"http://127.0.0.1:{server.server_port}"
+                self.assertEqual(200, request("/api/tasks", {**auth, "Origin": local, "Sec-Fetch-Site": "same-origin"})[0])
+                forwarded = "example-space-8000.app.github.dev"
+                server.allowed_authorities = {forwarded}
+                self.assertEqual(200, request("/api/status", {**auth, "Host": forwarded, "Origin": "https://" + forwarded})[0])
+                self.assertEqual(403, request("/api/status", {**auth, "Host": "another-space-8000.app.github.dev"})[0])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_host_allowlist_is_exact_and_proxy_headers_are_not_trusted(self):
+        self.assertEqual({"localhost:8123", "127.0.0.1:8123"}, allowed_authorities(8123, {}))
+        hosts = allowed_authorities(8000, {"CODESPACE_NAME": "example-space", "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN": "app.github.dev"})
+        self.assertIn("example-space-8000.app.github.dev", hosts)
+        self.assertNotIn("other-space-8000.app.github.dev", hosts)
+        self.assertEqual(2, len(allowed_authorities(8000, {"CODESPACE_NAME": "evil/a", "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN": "app.github.dev"})))
+
+    def test_dashboard_reads_require_explicit_token_and_do_not_persist_it(self):
+        page = _page()
+        self.assertEqual(1, page.count('id="control-token"'))
+        self.assertIn("Authorization:'Bearer '+token", page)
+        self.assertIn("if(!response.ok)", page)
+        self.assertIn("addEventListener('input',clearPrivateData)", page)
+        self.assertNotIn("localStorage", page)
+        self.assertNotIn("sessionStorage", page)
+
     def test_http_dashboard_and_json_endpoints(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.control_token = "test-token"
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -211,7 +269,7 @@ class ControlPlaneTests(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(200, response.status)
             self.assertIn("AI Workspace Control Plane", response.read().decode())
-            connection.request("GET", "/api/status")
+            connection.request("GET", "/api/status", headers={"Authorization": "Bearer test-token"})
             response = connection.getresponse()
             payload = json.loads(response.read())
             self.assertEqual(200, response.status)
