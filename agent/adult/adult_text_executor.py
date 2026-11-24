@@ -104,6 +104,8 @@ class AdultTextExecutor:
             completed_step_ids=(step.step_id,) if completed else (),
             pending_step_ids=() if completed else (step.step_id,),
             latest_result_artifact_id=artifact_id,
+            selected_adapter=task.selected_adapter, selected_provider=task.selected_provider,
+            selected_model=task.selected_model, selected_tool=task.selected_tool,
             attempted_approach_keys=tuple(item.approach_key for item in attempts),
             excluded_approach_keys=tuple(item.approach_key for item in attempts
                 if item.status in {'failed', 'timed_out', 'rejected', 'unknown_outcome'}),
@@ -201,7 +203,7 @@ class AdultTextExecutor:
                         and task.max_provider_calls > 0 and task.provider_calls >= task.max_provider_calls):
                     self._checkpoint(task, step, request, lease)
                     task = self.tasks.get_task(task_id)
-                    self.tasks.transition(task_id, {'running'}, 'failed', 'budget_exhausted',
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'state_transition',
                                           task.state_version, lease=lease)
                     return TextExecutionResult(task_id, 'failed', error_code='execution_budget_exhausted')
                 if supervised and task.failed_attempts_since_approval == 5:
@@ -240,7 +242,7 @@ class AdultTextExecutor:
                         and task.provider_calls >= task.max_provider_calls):
                     self._checkpoint(task, step, request, lease)
                     task = self.tasks.get_task(task_id)
-                    self.tasks.transition(task_id, {'running'}, 'failed', 'budget_exhausted',
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'state_transition',
                                           task.state_version, lease=lease)
                     return TextExecutionResult(task_id, 'failed', error_code=outcome.error_code)
                 if task.failed_attempts_since_approval == 5:
@@ -262,7 +264,7 @@ class AdultTextExecutor:
                     or datetime.now(timezone.utc) >= datetime.fromisoformat(task.deadline_at.replace('Z', '+00:00'))
                     or task.provider_calls >= task.max_provider_calls and task.max_provider_calls > 0)
                 if exhausted:
-                    self.tasks.transition(task_id, {'running'}, 'failed', 'budget_exhausted',
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'state_transition',
                                           task.state_version, lease=lease)
                     return TextExecutionResult(task_id, 'failed', error_code=outcome.error_code)
                 if not retryable:
