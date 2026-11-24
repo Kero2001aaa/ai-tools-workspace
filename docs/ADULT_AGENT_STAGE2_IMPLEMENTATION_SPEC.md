@@ -494,3 +494,20 @@ assignment remain allowed, including password-policy, api_key_rotation and
 provider/version IDs. This conservative lexical guard does not identify all secrets:
 unlabelled values, obfuscation, other credential forms and contextual private data
 remain the caller's responsibility. No universal secret-detection claim is made.
+
+
+## Concurrent first-open follow-up, 2026-11-24
+
+CI exposed an initialization race: a second initializer can observe the file
+created by the first connection before the first obtains its writer reservation.
+If the second obtains the reservation first, it must not permanently classify the
+still-empty file as an unsupported existing database. Initialization now releases
+its transaction/connection and retries an empty existing file for at most one
+second (20 intervals of 50 ms), allowing the creating initializer to commit.
+A genuinely pre-existing empty file still raises UnsupportedLegacySchema and is
+not initialized, migrated, or modified. Existing legacy-schema refusal is unchanged.
+A deterministic regression holds the creator after opening, lets the second
+initializer inspect the empty file first, then releases the creator and checks
+both succeed. Another regression checks a standalone pre-existing empty file
+remains byte-unchanged and refused. This is a concurrency correctness fix, not a
+relaxation allowing existing empty or legacy files to be silently initialized.
