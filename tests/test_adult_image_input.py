@@ -168,6 +168,14 @@ class ImageMetadataAndAdapterDtoTests(unittest.TestCase):
         with self.assertRaises(AdultModelValidationError):
             ImageAnalysisResult(text="\ud800", usage={})
 
+    def test_invalid_analysis_unicode_has_no_public_raw_error_cause(self):
+        import traceback
+        with self.assertRaises(AdultModelValidationError) as raised:
+            ImageAnalysisResult(text="private-analysis-marker-\ud800", usage={})
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+        self.assertNotIn("private-analysis-marker", "".join(traceback.format_exception(raised.exception)))
+
     def test_image_adapter_result_hides_bytes_and_bounds_type_size_and_mime(self):
         private_bytes = b"distinctive private image bytes"
         result = ImageAdapterResult(
