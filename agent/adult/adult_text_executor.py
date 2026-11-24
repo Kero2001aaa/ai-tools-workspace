@@ -8,8 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import uuid
+import time
 
-from agent.adult.adult_task_store import AdultTaskStore
+from agent.adult.adult_task_store import AdultTaskStore, TaskBudgetExhausted
 from agent.adult.adult_text_intake import AdultTextIntake
 from agent.adult.adult_text_pipeline import AdultTextPipeline
 from agent.adult.models import AdultTaskRequest, CheckpointSnapshot, StepRecord, TaskBudget
@@ -91,17 +92,23 @@ class AdultTextExecutor:
                     pass
             raise
 
-    def _checkpoint(self, task, step, request, lease, *, artifact_id=None, completed=False):
+    def _checkpoint(self, task, step, request, lease, *, artifact_id=None, completed=False, waiting=False):
         remaining = max(0, int((datetime.fromisoformat(task.deadline_at.replace('Z', '+00:00'))
                                 - datetime.now(timezone.utc)).total_seconds()))
+        attempts = self.pipeline._attempt_tracker.list_summaries(task.task_id)
         snapshot = CheckpointSnapshot(
-            1, task.task_id, task.task_type, task.status,
+            1, task.task_id, task.task_type, 'waiting_user' if waiting else task.status,
             active_step_id=task.current_step_id,
             input_fingerprint=request.input_fingerprint, payload_id=request.payload_id,
             plan=(step.step_id,),
             completed_step_ids=(step.step_id,) if completed else (),
             pending_step_ids=() if completed else (step.step_id,),
             latest_result_artifact_id=artifact_id,
+            attempted_approach_keys=tuple(item.approach_key for item in attempts),
+            excluded_approach_keys=tuple(item.approach_key for item in attempts
+                if item.status in {'failed', 'timed_out', 'rejected', 'unknown_outcome'}),
+            pending_user_action='approval_required' if waiting else None,
+            allowed_decisions=('continue', 'cancel') if waiting else (),
             total_attempts=task.attempt_count,
             failed_attempts_since_approval=task.failed_attempts_since_approval,
             provider_calls=task.provider_calls, spent_cost_microusd=task.spent_cost_microusd,
@@ -110,12 +117,20 @@ class AdultTextExecutor:
             remaining_provider_calls=max(0, task.max_provider_calls-task.provider_calls),
             remaining_cost_microusd=0, last_error_code=task.last_error_code,
         )
-        self.tasks.save_checkpoint(task.task_id, snapshot,
-                                   'step_completed' if completed else 'manual_yield',
-                                   task.state_version, lease)
+        if waiting:
+            self.tasks.set_waiting_user(task.task_id, snapshot, lease, task.state_version)
+        else:
+            self.tasks.save_checkpoint(task.task_id, snapshot,
+                                       'step_completed' if completed else 'manual_yield',
+                                       task.state_version, lease)
 
     def run(self, task_id: str, canonical_input: bytes | None,
             config_fingerprint: str, *, worker_id='bounded-text-worker') -> TextExecutionResult:
+        return self._execute(task_id, canonical_input, config_fingerprint, worker_id=worker_id)
+
+    def _execute(self, task_id, canonical_input, config_fingerprint, *, worker_id,
+                 supervised=False, max_attempts=1, max_seconds=300):
+        started = time.monotonic()
         task = self.tasks.get_task(task_id)
         if task is None:
             raise ValueError('task_unavailable')
@@ -123,14 +138,25 @@ class AdultTextExecutor:
             return TextExecutionResult(task_id, task.status, task.latest_result_artifact_id)
         if task.status not in {'queued', 'checkpointed'}:
             return TextExecutionResult(task_id, task.status, error_code='task_not_runnable')
-        # A prior call may have succeeded before process death. Do not guess or
-        # make a second call. Recovery/five-failure orchestration is a later slice.
-        if task.attempt_count:
+        # Unknown, successful or nonretryable prior attempts are never replayed.
+        # Supervision may continue only known terminal retryable failures.
+        prior = self.pipeline._attempt_tracker.list_summaries(task_id)
+        safe_prior = (supervised and bool(prior) and len(prior) == task.attempt_count
+                      and all(item.status in {'failed', 'timed_out'} and item.retryable
+                              and item.failure_class not in {'policy_rejection', 'budget_exhaustion'}
+                              for item in prior))
+        if task.attempt_count and not safe_prior:
             return TextExecutionResult(task_id, task.status, error_code='prior_attempt_requires_recovery')
-        checkpoint = self.tasks.get_latest_checkpoint(task_id) if task.status == 'checkpointed' else None
+        checkpoint = self.tasks.get_latest_checkpoint(task_id)
         recovered_pre_attempt = bool(checkpoint and checkpoint.reason == 'lease_recovered'
                                      and checkpoint.snapshot.total_attempts == 0)
-        lease = self.tasks.claim_task(task_id, worker_id, lease_seconds=300)
+        try:
+            lease = self.tasks.claim_task(task_id, worker_id, lease_seconds=300)
+        except TaskBudgetExhausted:
+            if not supervised:
+                raise
+            return TextExecutionResult(task_id, self.tasks.get_task(task_id).status,
+                                       error_code='execution_budget_exhausted')
         try:
             task = self.tasks.get_task(task_id)
             request = self.tasks.get_task_request(task_id)
@@ -156,7 +182,8 @@ class AdultTextExecutor:
             # adapter could have been invoked by this executor. Preserve the step
             # identity and require an actual expired-lease recovery checkpoint.
             runnable_step = step.status == 'pending' or (
-                step.status == 'running' and recovered_pre_attempt
+                step.status == 'running' and (recovered_pre_attempt or (supervised and safe_prior))
+                and checkpoint is not None
                 and checkpoint.snapshot.active_step_id == step.step_id
                 and checkpoint.snapshot.payload_id == request.payload_id
             )
@@ -168,29 +195,82 @@ class AdultTextExecutor:
             if task.status == 'analyzing':
                 task = self.tasks.transition(task_id, {'analyzing'}, 'running', 'state_transition',
                                              task.state_version, lease=lease)
-            outcome = self.pipeline.run_one_attempt(task, step.step_id, request, config_fingerprint, set(), lease=lease)
-            task = self.tasks.get_task(task_id)
-            if task.cancel_requested:
-                self.tasks.release_lease(lease, task.state_version, 'cancelled', 'cancel_observed')
-                return TextExecutionResult(task_id, 'cancelled')
-            if outcome.status == 'succeeded':
-                # Only the pipeline's evaluated, committed artifact can become a task result.
-                self.tasks.save_step(task_id, replace(step, status='succeeded',
-                    output_artifact_id=outcome.artifact.artifact_id, started_at=None, completed_at=None),
-                    lease, task.state_version)
+            excluded = {item.approach_key for item in prior}
+            for segment_index in range(max_attempts):
+                if (supervised and task.failed_attempts_since_approval == 5
+                        and task.max_provider_calls > 0 and task.provider_calls >= task.max_provider_calls):
+                    self._checkpoint(task, step, request, lease)
+                    task = self.tasks.get_task(task_id)
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'budget_exhausted',
+                                          task.state_version, lease=lease)
+                    return TextExecutionResult(task_id, 'failed', error_code='execution_budget_exhausted')
+                if supervised and task.failed_attempts_since_approval == 5:
+                    try:
+                        self._checkpoint(task, step, request, lease, waiting=True)
+                    except TaskBudgetExhausted:
+                        pass
+                    current = self.tasks.get_task(task_id)
+                    return TextExecutionResult(task_id, current.status, error_code='approval_required')
+                outcome = self.pipeline.run_one_attempt(task, step.step_id, request, config_fingerprint, excluded, lease=lease)
                 task = self.tasks.get_task(task_id)
-                task = self.tasks.transition(task_id, {'running'}, 'evaluating', 'state_transition',
-                                             task.state_version, lease=lease)
-                self._checkpoint(task, step, request, lease, artifact_id=outcome.artifact.artifact_id, completed=True)
+                if task.cancel_requested:
+                    self.tasks.release_lease(lease, task.state_version, 'cancelled', 'cancel_observed')
+                    return TextExecutionResult(task_id, 'cancelled')
+                if outcome.status == 'succeeded':
+                    # Only the pipeline's evaluated, committed artifact can become a task result.
+                    self.tasks.save_step(task_id, replace(step, status='succeeded',
+                        output_artifact_id=outcome.artifact.artifact_id, started_at=None, completed_at=None),
+                        lease, task.state_version)
+                    task = self.tasks.get_task(task_id)
+                    task = self.tasks.transition(task_id, {'running'}, 'evaluating', 'state_transition',
+                                                 task.state_version, lease=lease)
+                    self._checkpoint(task, step, request, lease, artifact_id=outcome.artifact.artifact_id, completed=True)
+                    task = self.tasks.get_task(task_id)
+                    task = self.tasks.transition(task_id, {'evaluating'}, 'completed', 'state_transition',
+                                                 task.state_version, lease=lease)
+                    return TextExecutionResult(task_id, task.status, task.latest_result_artifact_id)
+                if not supervised:
+                    self._checkpoint(task, step, request, lease)
+                    task = self.tasks.get_task(task_id)
+                    self.tasks.release_lease(lease, task.state_version, 'paused')
+                    return TextExecutionResult(task_id, 'paused', error_code=outcome.error_code)
+                attempts = self.pipeline._attempt_tracker.list_summaries(task_id)
+                excluded.update(item.approach_key for item in attempts)
+                if (task.failed_attempts_since_approval == 5 and task.max_provider_calls > 0
+                        and task.provider_calls >= task.max_provider_calls):
+                    self._checkpoint(task, step, request, lease)
+                    task = self.tasks.get_task(task_id)
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'budget_exhausted',
+                                          task.state_version, lease=lease)
+                    return TextExecutionResult(task_id, 'failed', error_code=outcome.error_code)
+                if task.failed_attempts_since_approval == 5:
+                    try:
+                        self._checkpoint(task, step, request, lease, waiting=True)
+                    except TaskBudgetExhausted:
+                        pass
+                    current = self.tasks.get_task(task_id)
+                    return TextExecutionResult(task_id, current.status, error_code=outcome.error_code)
+                if outcome.status == 'rejected':
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'state_transition',
+                                          task.state_version, lease=lease)
+                    return TextExecutionResult(task_id, 'failed', error_code=outcome.error_code)
+                retryable = (outcome.attempt is not None and outcome.attempt.retryable
+                             and outcome.attempt.status in {'failed', 'timed_out'})
+                self._checkpoint(task, step, request, lease)
                 task = self.tasks.get_task(task_id)
-                task = self.tasks.transition(task_id, {'evaluating'}, 'completed', 'state_transition',
-                                             task.state_version, lease=lease)
-                return TextExecutionResult(task_id, task.status, task.latest_result_artifact_id)
-            self._checkpoint(task, step, request, lease)
-            task = self.tasks.get_task(task_id)
-            # No-route is not an attempt and never triggers provider retry here.
-            self.tasks.release_lease(lease, task.state_version, 'paused')
-            return TextExecutionResult(task_id, 'paused', error_code=outcome.error_code)
+                exhausted = (task.attempt_count >= task.max_total_attempts
+                    or datetime.now(timezone.utc) >= datetime.fromisoformat(task.deadline_at.replace('Z', '+00:00'))
+                    or task.provider_calls >= task.max_provider_calls and task.max_provider_calls > 0)
+                if exhausted:
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'budget_exhausted',
+                                          task.state_version, lease=lease)
+                    return TextExecutionResult(task_id, 'failed', error_code=outcome.error_code)
+                if not retryable:
+                    self.tasks.release_lease(lease, task.state_version, 'paused')
+                    return TextExecutionResult(task_id, 'paused', error_code=outcome.error_code)
+                if segment_index + 1 >= max_attempts or time.monotonic() - started >= max_seconds:
+                    self.tasks.release_lease(lease, task.state_version, 'checkpointed', 'yielded')
+                    return TextExecutionResult(task_id, 'checkpointed', error_code=outcome.error_code)
         except Exception:
             # Best effort cancellation/yield never invents success. Failed or
             # unknown writes remain visible and require reconciliation.
