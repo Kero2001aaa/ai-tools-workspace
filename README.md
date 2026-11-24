@@ -51,3 +51,9 @@ The gateway exposes an explicit read-only tool allowlist and rejects
 non-loopback binding. It has no authentication or OAuth and must not be
 exposed remotely. See [docs/UNIVERSAL_MCP_GATEWAY.md](docs/UNIVERSAL_MCP_GATEWAY.md)
 for its tool inventory, configuration, security boundaries, and roadmap.
+
+### Public Agent Reach process boundary
+
+The optional GitHub/V2EX bridge uses a fixed public API backend and an allowlisted child environment. It does not inherit model/cloud tokens, proxies, Python paths, user Git config, or XDG session paths. A temporary HOME and XDG directories are discarded after each request. Custom proxy/certificate environment settings are intentionally not supported by this public bridge. POSIX process-group support is required; unsupported systems fail closed.
+
+Combined stdout and stderr are capped at 200 KB during reads, with a 20-second wall timeout and process-group cleanup, including descendants holding pipes open. Nonzero exits cannot return a successful result. These controls are not an OS sandbox: the installed executable still runs as the server user, and can access filesystem/network resources that user can access. No live Agent Reach request is needed by the regression tests.
