@@ -145,8 +145,10 @@ class ToolAgentTests(unittest.IsolatedAsyncioTestCase):
                 "GRAPHIFY_MCP_COMMAND": command_path,
                 "GRAPHIFY_GRAPH_PATH": graph_path,
             })
-        self.assertEqual(servers["graphify"]["command"], command_path)
-        self.assertEqual(servers["graphify"]["args"], [graph_path])
+        self.assertEqual(servers["graphify"]["command"], os.sys.executable)
+        self.assertEqual(servers["graphify"]["env"]["GRAPHIFY_MCP_COMMAND"], command_path)
+        self.assertEqual(servers["graphify"]["args"], ["-m", "agent.graphify_mcp_server"])
+        self.assertEqual(servers["graphify"]["env"]["GRAPHIFY_GRAPH_PATH"], graph_path)
 
     async def test_explicitly_forbidden_tools_are_removed_before_model_binding(self):
         approved = restrict_tools_for_request(
