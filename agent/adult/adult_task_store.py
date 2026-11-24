@@ -220,11 +220,45 @@ _SCHEMA: Final[tuple[str, ...]] = (
        BEGIN SELECT RAISE(ABORT, 'adult task events are append-only'); END""",
 )
 
-LATEST_SCHEMA_VERSION: Final = 3
+LATEST_SCHEMA_VERSION: Final = 4
 ATTEMPT_SCHEMA_VERSION: Final = 2
 ATTEMPT_SCHEMA_NAME: Final = "adult_attempt_tracking_v2"
 CAPABILITY_SCHEMA_VERSION: Final = 3
 CAPABILITY_SCHEMA_NAME: Final = "adult_capability_registry_v3"
+
+FEEDBACK_SCHEMA_VERSION: Final = 4
+FEEDBACK_SCHEMA_NAME: Final = "adult_feedback_proposals_v4"
+_FEEDBACK_SCHEMA: Final[tuple[str, ...]] = (
+    """CREATE TABLE adult_feedback_proposals (
+        feedback_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
+        feedback_type TEXT NOT NULL CHECK(length(feedback_type) BETWEEN 1 AND 64),
+        sanitized_summary TEXT NOT NULL CHECK(length(sanitized_summary) BETWEEN 1 AND 1000),
+        recommendation_json TEXT NOT NULL CHECK(json_valid(recommendation_json)
+            AND json_type(recommendation_json)='object' AND length(CAST(recommendation_json AS BLOB))<=4096),
+        status TEXT NOT NULL CHECK(status IN ('proposed','published')),
+        source_fingerprint TEXT NOT NULL CHECK(length(source_fingerprint)=64 AND source_fingerprint NOT GLOB '*[^0-9a-f]*'),
+        private_memory_id INTEGER NOT NULL UNIQUE CHECK(private_memory_id>0),
+        published_memory_id INTEGER CHECK(published_memory_id>0),
+        created_at TEXT NOT NULL,
+        published_at TEXT,
+        CHECK((status='proposed' AND published_memory_id IS NULL AND published_at IS NULL)
+           OR (status='published' AND published_memory_id IS NOT NULL AND published_at IS NOT NULL))
+    )""",
+    "CREATE INDEX idx_adult_feedback_task_created ON adult_feedback_proposals(task_id,created_at)",
+    """CREATE TRIGGER validate_adult_feedback_update BEFORE UPDATE ON adult_feedback_proposals
+       WHEN NEW.feedback_id IS NOT OLD.feedback_id OR NEW.task_id IS NOT OLD.task_id
+         OR NEW.feedback_type IS NOT OLD.feedback_type OR NEW.sanitized_summary IS NOT OLD.sanitized_summary
+         OR NEW.recommendation_json IS NOT OLD.recommendation_json
+         OR NEW.source_fingerprint IS NOT OLD.source_fingerprint
+         OR NEW.private_memory_id IS NOT OLD.private_memory_id OR NEW.created_at IS NOT OLD.created_at
+         OR NOT ((OLD.status='proposed' AND NEW.status='published')
+           OR (OLD.status='published' AND NEW.status='published'
+             AND NEW.published_memory_id IS OLD.published_memory_id AND NEW.published_at IS OLD.published_at))
+       BEGIN SELECT RAISE(ABORT, 'invalid adult feedback mutation'); END""",
+    """CREATE TRIGGER prevent_adult_feedback_delete BEFORE DELETE ON adult_feedback_proposals
+       BEGIN SELECT RAISE(ABORT, 'adult feedback history is immutable'); END""",
+)
 
 _ATTEMPT_SCHEMA: Final[tuple[str, ...]] = (
     """CREATE TABLE adult_attempts (
@@ -482,7 +516,8 @@ class AdultTaskStore:
                 ).fetchall()]
                 expected = [(SCHEMA_VERSION, SCHEMA_NAME),
                             (ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME),
-                            (CAPABILITY_SCHEMA_VERSION, CAPABILITY_SCHEMA_NAME)]
+                            (CAPABILITY_SCHEMA_VERSION, CAPABILITY_SCHEMA_NAME),
+                            (FEEDBACK_SCHEMA_VERSION, FEEDBACK_SCHEMA_NAME)]
                 if history != expected:
                     raise TaskStoreSchemaError("Read-only store requires current schema.")
                 self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
@@ -548,47 +583,29 @@ class AdultTaskStore:
 
     def _migrate(self) -> None:
         connection = self._connect()
+        migrations = ((SCHEMA_VERSION, SCHEMA_NAME, _SCHEMA),
+                      (ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME, _ATTEMPT_SCHEMA),
+                      (CAPABILITY_SCHEMA_VERSION, CAPABILITY_SCHEMA_NAME, _CAPABILITY_SCHEMA),
+                      (FEEDBACK_SCHEMA_VERSION, FEEDBACK_SCHEMA_NAME, _FEEDBACK_SCHEMA))
         try:
             connection.execute("BEGIN IMMEDIATE")
             exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='adult_schema_migrations'"
             ).fetchone()
-            if not exists:
-                for statement in _SCHEMA:
+            history = [] if not exists else [(row['version'], row['name']) for row in connection.execute(
+                "SELECT version,name FROM adult_schema_migrations ORDER BY version")]
+            expected = [(version, name) for version, name, _ in migrations]
+            if history != expected[:len(history)] or len(history)>len(expected) or (exists and not history):
+                raise TaskStoreSchemaError("Unsupported Adult task database migration history.")
+            if history:
+                self._validate_schema(connection, schema_version=history[-1][0])
+            for version, name, statements in migrations[len(history):]:
+                for statement in statements:
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO adult_schema_migrations(version,name,applied_at) VALUES(?,?,?)",
-                    (SCHEMA_VERSION, SCHEMA_NAME, _utc_now()),
-                )
-                self._validate_schema(connection, schema_version=SCHEMA_VERSION)
-                self._apply_attempt_migration(connection)
-                self._validate_schema(connection, schema_version=ATTEMPT_SCHEMA_VERSION)
-                self._apply_capability_migration(connection)
-                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
-                connection.commit()
-                return
-
-            rows = connection.execute(
-                "SELECT version,name FROM adult_schema_migrations ORDER BY version"
-            ).fetchall()
-            history = [(row["version"], row["name"]) for row in rows]
-            expected_v1 = [(SCHEMA_VERSION, SCHEMA_NAME)]
-            expected_v2 = expected_v1 + [(ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME)]
-            expected_v3 = expected_v2 + [(CAPABILITY_SCHEMA_VERSION, CAPABILITY_SCHEMA_NAME)]
-            if history == expected_v1:
-                self._validate_schema(connection, schema_version=SCHEMA_VERSION)
-                self._apply_attempt_migration(connection)
-                self._validate_schema(connection, schema_version=ATTEMPT_SCHEMA_VERSION)
-                self._apply_capability_migration(connection)
-                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
-            elif history == expected_v2:
-                self._validate_schema(connection, schema_version=ATTEMPT_SCHEMA_VERSION)
-                self._apply_capability_migration(connection)
-                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
-            elif history == expected_v3:
-                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
-            else:
-                raise TaskStoreSchemaError("Unsupported Adult task database migration history.")
+                    (version,name,_utc_now()))
+                self._validate_schema(connection,schema_version=version)
             connection.commit()
         except Exception:
             if connection.in_transaction:
@@ -609,10 +626,14 @@ class AdultTaskStore:
             expected_tables = _EXPECTED_TABLES_V2
             expected_indexes = _EXPECTED_INDEXES_V2
             expected_triggers = _EXPECTED_TRIGGERS_V2
-        elif schema_version == LATEST_SCHEMA_VERSION:
+        elif schema_version == CAPABILITY_SCHEMA_VERSION:
             expected_tables = _EXPECTED_TABLES_V3
             expected_indexes = _EXPECTED_INDEXES_V3
             expected_triggers = _EXPECTED_TRIGGERS_V3
+        elif schema_version == FEEDBACK_SCHEMA_VERSION:
+            expected_tables = _EXPECTED_TABLES_V3 | {"adult_feedback_proposals"}
+            expected_indexes = _EXPECTED_INDEXES_V3 | {"idx_adult_feedback_task_created"}
+            expected_triggers = _EXPECTED_TRIGGERS_V3 | {"validate_adult_feedback_update", "prevent_adult_feedback_delete"}
         else:
             raise TaskStoreSchemaError("Unsupported Adult task schema version.")
 
@@ -639,11 +660,13 @@ class AdultTaskStore:
         statements = _SCHEMA
         if schema_version >= ATTEMPT_SCHEMA_VERSION:
             statements += _ATTEMPT_SCHEMA
-        if schema_version >= LATEST_SCHEMA_VERSION:
+        if schema_version >= CAPABILITY_SCHEMA_VERSION:
             statements += _CAPABILITY_SCHEMA
+        if schema_version >= FEEDBACK_SCHEMA_VERSION:
+            statements += _FEEDBACK_SCHEMA
         normalize_sql = lambda value: " ".join(value.split()).casefold()
         for statement in statements:
-            match = re.match(r"CREATE\s+(?:UNIQUE\s+)?(INDEX|TRIGGER)\s+(\w+)", statement, re.I)
+            match = re.match(r"CREATE\s+(?:UNIQUE\s+)?(INDEX|TRIGGER|TABLE)\s+(\w+)", statement, re.I)
             if match is None:
                 continue
             kind, name = match.groups()
