@@ -1,7 +1,7 @@
 # Adult Agent — Stage 8 Implementation Specification
 ## Image Input Validation, Image Adapters, Evaluator, and One-Attempt Pipeline
 
-**Status:** Stage 8 not closed. Pipeline implementation, hardening and acceptance tests pushed; final acceptance CI and review remain pending. See the evidence reconciliation below.
+**Status:** Stage 8 not closed. Pipeline implementation, hardening and acceptance tests pushed; exact-head CI and final review evidence remain separate gates. See the evidence reconciliation below.
 **Branch:** `feature/adult-agent-mvp`  
 **Parent specification:** `docs/ADULT_AGENT_IMPLEMENTATION_SPEC.md`  
 **Precondition:** Stages 1–7 are PASS on the current branch head  
@@ -324,7 +324,7 @@ No Stage 9 implementation is included in Stage 8.
 
 ## Evidence reconciliation, 2026-11-24
 
-Stage 8 is **not PASS**. This section separates changes verified on the remote branch from additional local-only acceptance checks. A passing local suite does not establish that those checks have been committed, pushed, or run in CI.
+Stage 8 is **not PASS**. This section separates remote commits, local test evidence, CI evidence, and external review. A passing local suite does not establish CI or completion of every acceptance requirement.
 
 ### Remote implementation baseline
 
@@ -366,14 +366,67 @@ These additional tests add:
 
 Existing component tests separately cover envelope and prompt validation, PNG/JPEG/WebP structural validation, image policy/evaluator rules, provider response parsing and bounded transport behavior, exact router input restrictions, positive provider-call budgets, expired cost evidence, and paid/unknown route rejection. They passed as part of the local full suite. Component coverage is not represented as a new integrated test where no such test was added.
 
+### Acceptance reconciliation follow-up
+
+The explicit coverage follow-up is remote commit `23c32c3b32449cb71cf6435e1232fd8ea53a3dda`. The fetched test file matches the locally tested file byte-for-byte. No production code changed. It expands task-owned reference failures to prompt references and directly tests BMP/TIFF/AVIF/GIF/SVG signatures, unknown-cost routes, corrupt output, declared/detected MIME disagreement, and route output-byte limits. Local validation: **34 pipeline tests OK**, **448 full-suite tests OK**, clean `git diff --check`, Python 3.12. The full suite includes prior Adult stages and payload-store tests.
+
+CI #381 (`52216df`) and #382 (`31a803bf`) completed successfully, including unit tests, MCP inventory/definition checks, Python dependency audit and optional browser dependency audit:
+
+- https://github.com/Kero2001aaa/ai-tools-workspace/actions/runs/45402078669
+- https://github.com/Kero2001aaa/ai-tools-workspace/actions/runs/45402359104
+- New test follow-up CI #383: https://github.com/Kero2001aaa/ai-tools-workspace/actions/runs/45404410864. In progress when this reconciliation was prepared; do not infer its result or the result of this documentation commit.
+
+### IMG matrix evidence map
+
+This is a coverage map, not a declaration that Stage 8 passed. All test names below are in the repository and were inspected. Component and integrated checks are distinguished. The test modules share the prefix `tests/test_adult_`.
+
+| Requirement | Evidence and scope |
+|---|---|
+| IMG-ENV-01 | `image_input`: canonical round-trip for all operations. |
+| IMG-ENV-02 | `image_input`: duplicate/unknown/missing keys, bool version, wrong operation/value types, UTF-8/JSON/trailing/noncanonical data. |
+| IMG-ENV-03 | `image_pipeline.test_task_owned_subpayload_failures_never_route`: real transient cache, image and prompt references, cross-task/wrong-kind/expired/missing. Adapter tests separately check ownership. |
+| IMG-ENV-04 | `image_input`: empty/overlong/control prompts, UTF-8 and byte overflow; pipeline rejects invalid prompt before routing. |
+| IMG-ENV-05 | Real pipeline lifecycle inspects SQLite dump for prompt/analysis text and sub-payload IDs; DTO repr checks in `image_input`. This is not exhaustive dynamic logging instrumentation. |
+| IMG-VAL-01 | `image_validator.test_valid_png_jpeg_and_webp_return_detected_metadata_and_digest`: synthetic structural fixtures, MIME/dimensions/hash presence. Not full raster decoding. |
+| IMG-VAL-02 | Pipeline unsupported-signature cases; validator animation, spoofing and unsupported-feature cases. |
+| IMG-VAL-03 | Validator PNG CRC/chunk/truncation, JPEG segment/scan, WebP RIFF/padding/header/dimension cases. |
+| IMG-VAL-04 | Validator global input/output byte, dimension/pixel bounds; router exact input limits; pipeline invalid input before routing. Combined component coverage, not every limit in a separate integrated case. |
+| IMG-VAL-05 | Input pipeline policy exception/malformed-decision checks; evaluator output policy exception/malformed-decision checks. |
+| IMG-VAL-06 | `router.test_image_routes_enforce_exact_mime_byte_and_dimension_constraints`; evaluator and pipeline route output constraints. |
+| IMG-ADAPTER-01 | Pipeline operation dispatch and adapter analyze/generate/edit endpoint tests. |
+| IMG-ADAPTER-02 | `omniroute_image_adapters.test_wrong_route_type_cost_class_adapter_identity_and_version_are_rejected`; fixed route/model inspection. |
+| IMG-ADAPTER-03 | Lazy HTTP client no-retry/redirect configuration; single-call and timeout/redirect/URL-only response tests. |
+| IMG-ADAPTER-04 | Adapter image/prompt ownership and declared/detected MIME checks before fake-client call. |
+| IMG-ADAPTER-05 | Adapter request tests inspect inline analysis base64, generation payload and edit multipart endpoint/body. |
+| IMG-ADAPTER-06 | Strict duplicate-key, malformed/base64/URL-only/corrupt/oversized response tests. MIME is recomputed from bytes, never trusted from provider claims. |
+| IMG-ADAPTER-07 | Adapter usage allowlist/bounds and positive tiny-cost rounding; DTO counter bounds and Decimal overflow sanitization. |
+| IMG-ADAPTER-08 | Fake-client provider error/timeout tests, stable codes, single call; no live provider requests. |
+| IMG-PIPE-01 | Analyze success and real store/tracker lifecycle publish accepted `text/plain`. |
+| IMG-PIPE-02 | Generate success with synthetic PNG and real store/tracker lifecycle. |
+| IMG-PIPE-03 | Edit dispatch and real store/tracker lifecycle. |
+| IMG-PIPE-04 | Invalid image/prompt/reference cases assert router/attempt/adapter not called. |
+| IMG-PIPE-05 | Empty route creates no attempt; tracker refusal prevents adapter; real router positive-provider-budget requirement covered separately. Budget-zero is component coverage, not a separate real-router pipeline test. |
+| IMG-PIPE-06 | Explicit paid/unknown pipeline routes and positive result cost rejection; tracker/router cost evidence tests separately. |
+| IMG-PIPE-07 | Pipeline corrupt/declared-MIME/route-byte/dimension/MIME-allowlist output cases assert no storage. |
+| IMG-PIPE-08 | Pipeline output policy denial terminal and never persisted. |
+| IMG-PIPE-09 | Pipeline exception marker absent from outcome/tracker arguments; stable provider/timeout codes. |
+| IMG-PIPE-10 | Storage failure prevents success; finalization failure calls matching task/attempt-bound discard. Payload-store tests check discard ownership. |
+| IMG-PIPE-11 | Real TaskStore/AttemptTracker cancellation and expired-lease cases for all operations discard saved output and cannot finalize success. |
+| IMG-PIPE-12 | DTO hidden fields, bounded outcome, sanitized adapter errors and real SQLite metadata checks. Static code inspection complements tests; no exhaustive log/exception instrumentation claim. |
+| IMG-REG-01 | Fresh-process full suite includes prior-stage and payload-store tests, 448 OK locally. |
+| IMG-REG-02 | Fresh-process focused pipeline 34 and full suite 448 OK locally; full suite includes all Adult modules. |
+| IMG-REG-03 | CI381/382 all workflow checks succeeded. Follow-up test/doc exact-head CI remains to be verified. |
+| IMG-REG-04 | Stage8 changed-path review contains only Adult source/tests and Stage8 documentation. No protected path, live database, credential, dependency or provider configuration change was made in this follow-up. |
+| IMG-REG-05 | Image tests use synthetic fixtures/fake adapters and clients. CI security audits access package/audit services; no live model/provider call is made. The broader full suite uses local loopback HTTP test servers. |
+
 ### Remaining closure gates
 
-1. Verify CI for acceptance-test commit `52216dfa6fdf2be7d14856345367f5b089cae228` and for this documentation update on the exact resulting branch head. Local focused/full validation is 31/445 tests OK; do not infer CI from local results.
-2. Complete the requested final ChatGPT review. The review was not obtained during the latest attempt because both the existing chat and profile/history remained loading after bounded recovery.
-3. Keep Hindsight Memory verification open. A prior ChatGPT response claimed retrieval calls, but visible tool activity was not inspected, so actual invocation is not independently confirmed. Think UI selection was observed; that does not verify Hindsight.
-4. Reconcile the complete IMG-* acceptance matrix and update this evidence section before recording Stage 8 PASS. No Stage 9 work is included.
+1. Verify CI for test commit `23c32c3b32449cb71cf6435e1232fd8ea53a3dda` and for the exact resulting documentation head.
+2. Complete the requested final ChatGPT code review. A normal New chat submission was accepted visibly with Think selected, but ended in a connection/no-response alert without an assistant answer. Existing-chat and New chat routes have had bounded recovery; no review result was obtained.
+3. Keep Hindsight Memory verification open. Prior response prose claimed retrieval calls, but actual visible tool activity has not been independently confirmed. Think selection is verified separately and proves no Hindsight invocation.
+4. Resolve the explicitly qualified matrix evidence limits before recording Stage8 PASS. No Stage9 implementation or main merge is included.
 
-Codespace remote-connection/setup failures interrupted delivery, but the separate authenticated github.com file editor delivered the acceptance tests successfully. The implementation baseline has successful CI; newer acceptance-test CI and final review remain separate closure gates. No Codespace stop, protected-path edit, live-data change, new dependency, paid route, or live model/provider test is part of these pending changes.
+Codespace remote-connection/setup failures were bypassed for delivery using the authenticated github.com editor. The Codespace was not stopped. The GPT connection failure is a missing review result, not a failing code test.
 
 ---
 
