@@ -45,3 +45,22 @@ by TextPipeline; it does not claim semantic correctness of an AI result.
 - CLI stdin/output, empty/oversize/invalid UTF-8 rejection, network-disabled run.
 
 All tests are offline. No live provider availability or image/training claim.
+
+## Durable encrypted staging
+
+`AdultTextExecutor.stage_encrypted(task_type, canonical_input, budget)` validates
+input and requires a matching caller-configured `ADULT_PAYLOAD_ENCRYPTION_KEY`
+before creating any task. It claims a lease, attaches encrypted input, saves a
+checkpoint and yields without selecting a route or invoking any adapter. It does
+not generate, print or persist the configured key. Reconstruct the same stores,
+pipeline and cipher in a later process and call `run(task_id, None, config_fingerprint)`.
+A successful result is encrypted by the existing ArtifactStore and survives reopen.
+
+The configured key must remain available to the caller. This is a library API,
+not a durable submission CLI, web endpoint or automatic scheduler. Existing input
+and output retention bounds still apply. The task's wall deadline starts at task
+creation and is not extended by staging or reopening, currently at most600seconds.
+Staging is multiple fenced commits, not one crash-atomic operation. An uncertain
+readback preserves committed input and pauses for reconciliation. Cancellation
+wins; no model runs during staging. Neither paused corrective recovery nor
+five-failure orchestration is implemented by this method.
