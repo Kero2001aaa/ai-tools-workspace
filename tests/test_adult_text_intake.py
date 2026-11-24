@@ -94,6 +94,52 @@ class AdultTextIntakeIntegrationTests(unittest.TestCase):
         self.assertTrue(self.artifacts.discard_input(ref.payload_id, self.task.task_id))
         self.assertFalse(self.artifacts.discard_input(ref.payload_id, self.task.task_id))
 
+    def test_commit_then_response_error_preserves_attached_input(self):
+        original = self.store.attach_input
+
+        def commit_then_raise(*args, **kwargs):
+            original(*args, **kwargs)
+            raise OSError('simulated readback failure')
+
+        with patch.object(self.store, 'attach_input', side_effect=commit_then_raise):
+            with self.assertRaisesRegex(TextIntakeError, 'intake_committed_readback_failed'):
+                self.attach()
+        request = self.store.get_task_request(self.task.task_id)
+        self.assertIsNotNone(request.payload_id)
+        self.assertEqual(self.data, self.artifacts.load_input(request.payload_id, self.task.task_id))
+
+    def test_unknown_commit_state_preserves_payload_instead_of_deleting(self):
+        original = self.store.get_task_request
+        reads = 0
+
+        def fail_second_read(task_id):
+            nonlocal reads
+            reads += 1
+            if reads >= 2:
+                raise OSError('simulated unavailable state store')
+            return original(task_id)
+
+        with patch.object(self.store, 'get_task_request', side_effect=fail_second_read):
+            with self.assertRaisesRegex(TextIntakeError, 'intake_state_unknown'):
+                self.intake.attach(self.task.task_id, self.data, self.lease, 0)
+        self.assertIsNone(original(self.task.task_id).payload_id)
+        self.assertEqual(1, len(self.artifacts.cache._entries))
+
+    def test_cancellation_prevents_attachment_and_cleans_input(self):
+        current = self.store.request_cancel(self.task.task_id)
+        with self.assertRaises(TextIntakeError):
+            self.intake.attach(current.task_id, self.data, self.lease, current.state_version)
+        self.assertIsNone(self.store.get_task_request(current.task_id).payload_id)
+        self.assertEqual(0, len(self.artifacts.cache._entries))
+
+    def test_started_intake_cannot_attach_input(self):
+        step = self.store.get_step(self.task.task_id, self.task.current_step_id)
+        self.store.save_step(self.task.task_id, replace(step, status='running'), self.lease, 1)
+        with self.assertRaises(TextIntakeError):
+            self.intake.attach(self.task.task_id, self.data, self.lease, 2)
+        self.assertIsNone(self.store.get_task_request(self.task.task_id).payload_id)
+        self.assertEqual(0, len(self.artifacts.cache._entries))
+
     def test_invalid_envelope_and_cleanup_error_are_explicit(self):
         with self.assertRaises(TextIntakeError):
             self.intake.attach(self.task.task_id, b'not-json', self.lease, 1)
