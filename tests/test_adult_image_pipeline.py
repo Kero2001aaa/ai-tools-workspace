@@ -227,8 +227,11 @@ class AdultImagePipelineTests(unittest.TestCase):
     def test_tracker_failure_after_save_discards_artifact(self):
         self.build("image.generate")
         self.tracker.succeed.side_effect = RuntimeError("boom")
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(ImagePipelineError) as raised:
             self.run_once()
+        self.assertEqual("finalization_failed", raised.exception.error_code)
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
         self.store.discard_output.assert_called_once_with("c" * 32, TASK_ID, ATTEMPT_ID)
 
     def test_outcome_does_not_expose_image_bytes(self):
@@ -479,6 +482,74 @@ class AdultImagePipelineTests(unittest.TestCase):
                 self.store.save_output.assert_not_called()
                 self.tracker.succeed.assert_not_called()
                 self.adapter.generate.assert_called_once()
+
+    def test_finalization_and_cleanup_errors_are_sanitized(self):
+        import traceback
+        self.build("image.generate")
+        marker = "private-analysis-secret-/tmp/private-path"
+        self.tracker.succeed.side_effect = RuntimeError(marker)
+        self.store.discard_output.side_effect = RuntimeError(marker)
+        with self.assertRaises(ImagePipelineError) as raised:
+            self.run_once()
+        self.assertEqual("finalization_failed", raised.exception.error_code)
+        self.assertNotIn(marker, "".join(traceback.format_exception(raised.exception)))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+        self.store.discard_output.assert_called_once_with("c" * 32, TASK_ID, ATTEMPT_ID)
+
+    def test_failed_attempt_finalization_error_is_sanitized(self):
+        import traceback
+        self.build("image.generate")
+        marker = "private-provider-finalization-detail"
+        self.adapter.generate.side_effect = RuntimeError(marker)
+        self.tracker.fail.side_effect = RuntimeError(marker)
+        with self.assertRaises(ImagePipelineError) as raised:
+            self.run_once()
+        self.assertEqual("finalization_failed", raised.exception.error_code)
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+        self.assertNotIn(marker, "".join(traceback.format_exception(raised.exception)))
+        self.store.save_output.assert_not_called()
+
+    def test_real_router_zero_provider_budget_creates_no_attempt(self):
+        import tempfile
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from agent.adult.capability_registry import ModelCapabilityRegistry
+        from agent.adult.models import CapabilityEvidence, ModelCapabilitySpec
+        self.build("image.analyze")
+        self.task = replace(self.task, max_provider_calls=0)
+        with tempfile.TemporaryDirectory() as folder:
+            store = AdultTaskStore(Path(folder) / "registry.sqlite3")
+            registry = ModelCapabilityRegistry(store, clock=lambda: datetime(2026, 11, 21, 12, tzinfo=timezone.utc))
+            spec = ModelCapabilitySpec(
+                adapter_id="img_adapter", adapter_version="1.0.0", provider_id="p", model_id="m",
+                model_version="v1", task_type="image.analyze", input_modalities=("image",),
+                output_modalities=("text",), cost_class="free_verified",
+                accepted_mime_types=("image/png",), max_input_bytes=4096,
+                max_input_width=512, max_input_height=512,
+            )
+            record = registry.register(spec)
+            evidence = CapabilityEvidence(
+                adapter_id=spec.adapter_id, adapter_version=spec.adapter_version, provider_id="p", model_id="m",
+                model_version="v1", task_type=spec.task_type, input_modalities=spec.input_modalities,
+                output_modalities=spec.output_modalities, capability_source="official_provider_docs",
+                capability_reference="https://provider.example/docs", verified_at=NOW,
+                expires_at="2026-12-21T12:00:00.000000Z", cost_source="official_free_tier_terms",
+                cost_reference="https://provider.example/free", cost_verified_at=NOW,
+                cost_expires_at="2026-11-28T12:00:00.000000Z", cost_is_zero=True,
+            )
+            record = registry.verify(record.capability_id, evidence, record.state_version)
+            registry.enable(record.capability_id, record.state_version)
+            router = AdultModelRouter(registry, approach_key_builder=AdultAttemptTracker.approach_keys)
+            self.pipeline._router = router
+            self.assertEqual("unavailable", self.run_once().status)
+            self.tracker.begin.assert_not_called()
+            self.adapter.analyze.assert_not_called()
+            self.store.save_output.assert_not_called()
+            self.task = replace(self.task, max_provider_calls=1)
+            self.assertEqual("succeeded", self.run_once().status)
+            self.adapter.analyze.assert_called_once()
 
     def test_non_success_outcome_cannot_carry_artifact(self):
         self.build("image.generate")
