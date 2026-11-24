@@ -33,7 +33,7 @@ class ImagePipelineError(RuntimeError):
     """Stable contract error without image, prompt, or provider details."""
 
     def __init__(self, error_code: str) -> None:
-        self.error_code = error_code if error_code == "invalid_request" else "invalid_request"
+        self.error_code = error_code if error_code in {"invalid_request", "finalization_failed"} else "invalid_request"
         super().__init__(self.error_code)
 
 
@@ -266,7 +266,10 @@ class AdultImagePipeline:
             return self._outcome(task, step_id, "unavailable", "ATTEMPT_UNAVAILABLE", route)
 
         def fail(code: str, text: str, retryable: bool, status: str = "failed", evaluation=None):
-            attempt = self._attempt_tracker.fail(handle, code, text, retryable)
+            try:
+                attempt = self._attempt_tracker.fail(handle, code, text, retryable)
+            except Exception:
+                raise ImagePipelineError("finalization_failed") from None
             return self._outcome(task, step_id, status, code, route, attempt, evaluation)
 
         try:
@@ -337,7 +340,7 @@ class AdultImagePipeline:
                 self._artifact_store.discard_output(artifact.artifact_id, task.task_id, handle.attempt_id)
             except Exception:
                 pass
-            raise
+            raise ImagePipelineError("finalization_failed") from None
         finally:
             del result
         return self._outcome(task, step_id, "succeeded", route=route, attempt=attempt,
