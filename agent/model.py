@@ -31,18 +31,18 @@ def build_chat_model(
     if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries != 0:
         raise ValueError("Automatic model retries are disabled; max_retries must be 0.")
 
+    if base_url is None or base_url.rstrip("/") != "https://openrouter.ai/api/v1" or model != "openrouter/free":
+        raise RuntimeError("Configured route has no verified free-only execution grant")
+    import httpx
     from langchain_openai import ChatOpenAI
-
-    options = {
-        "model": model.strip(),
-        "api_key": api_key.strip(),
-        "temperature": 0,
-        "timeout": timeout,
-        "max_retries": 0,
-    }
-    if base_url is not None:
-        options["base_url"] = base_url.strip()
-    return ChatOpenAI(**options)
+    from agent.free_route_guard import FreeRouteTransport, AsyncFreeRouteTransport, PROVIDER
+    return ChatOpenAI(
+        api_key=api_key, model=model, base_url=base_url,
+        timeout=timeout, max_retries=0, max_tokens=512, streaming=False,
+        extra_body={"provider": PROVIDER},
+        http_client=httpx.Client(transport=FreeRouteTransport(), follow_redirects=False),
+        http_async_client=httpx.AsyncClient(transport=AsyncFreeRouteTransport(), follow_redirects=False),
+    )
 
 
 def load_chat_model():
@@ -67,9 +67,6 @@ def load_chat_model():
         )
 
     return build_chat_model(
-        api_key=api_key,
-        model=model_name,
-        base_url=base_url or None,
-        timeout=30,
-        max_retries=0,
+        api_key=api_key, model=model_name, base_url=base_url or None,
+        timeout=30, max_retries=0,
     )
