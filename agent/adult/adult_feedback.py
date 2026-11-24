@@ -10,6 +10,7 @@ import json
 
 from agent.adult.adult_attempt_tracker import AdultAttemptTracker
 from agent.adult.adult_memory import AdultMemory
+from agent.adult.feedback_proposal_repository import FeedbackProposalRepository
 from agent.adult.adult_task_store import AdultTaskStore
 from agent.adult.payload_store import PayloadCipher
 from agent.memory_store import FeedbackPublisherStore, MemoryRef, SanitizedFeedback
@@ -69,6 +70,7 @@ class AdultFeedback:
             raise TypeError('A keyed fingerprinter is required.')
         self.tasks, self.tracker = tasks, tracker
         self.publisher, self.memory, self.fingerprinter = publisher, adult_memory, fingerprinter
+        self.proposals = FeedbackProposalRepository(tasks)
 
     def _feedback(self, task_id, attempt_id=None):
         task = self.tasks.get_task(task_id)
@@ -111,6 +113,7 @@ class AdultFeedback:
         attempt_id, feedback = result
         ref = self.memory.remember_private(self._encode(attempt_id, feedback), 'lesson', task_id,
                                            {'source': 'adult-feedback-proposal-v1'})
+        self.proposals.ensure(ref.id, task_id, feedback)
         return FeedbackProposal(ref.id)
 
     def sanitize(self, proposal: FeedbackProposal) -> SanitizedFeedback:
@@ -129,6 +132,18 @@ class AdultFeedback:
         except (KeyError, TypeError, ValueError):
             raise ValueError('feedback_proposal_invalid') from None
 
+    def publication_status(self, feedback_id: int):
+        # Status is private and only available for a currently valid proposal.
+        self.sanitize(FeedbackProposal(feedback_id))
+        return self.proposals.status(feedback_id)
+
     def publish(self, feedback_id: int) -> MemoryRef:
         clean = self.sanitize(FeedbackProposal(feedback_id))
-        return self.publisher.publish_sanitized_feedback(clean, idempotent=True)
+        record = self.memory.get_private(feedback_id)
+        # Also recover proposals built by the earlier memory-only bridge.
+        self.proposals.ensure(feedback_id, record.task_id, clean)
+        published = self.publisher.publish_sanitized_feedback(clean, idempotent=True)
+        # Separate DBs cannot share a commit. A lost receipt is recoverable by
+        # retrying the idempotent publisher, with fresh ACL/integrity checks.
+        self.proposals.record_publication(feedback_id, published.id)
+        return published
