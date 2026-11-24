@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,6 +82,10 @@ class MemoryDataIntegrityError(MemoryErrorBase):
 
 class UnsupportedLegacySchema(MemoryErrorBase):
     """The database layout is not a supported legacy or current schema."""
+
+
+class _EmptyDatabaseInitializationPending(UnsupportedLegacySchema):
+    """A concurrent creator may not have committed its initial schema yet."""
 
 
 class MemoryBackupVerificationFailed(MemoryErrorBase):
@@ -491,13 +496,27 @@ class MemoryStore:
         return _connect_database(self.db_path)
 
     def _initialize(self, *, existed_before_open: bool) -> None:
+        # A creator can open the file before acquiring its SQLite reservation.
+        # Release our reservation between bounded retries so it can initialize.
+        for attempt in range(21):
+            try:
+                self._initialize_once(existed_before_open=existed_before_open)
+                return
+            except _EmptyDatabaseInitializationPending:
+                if attempt == 20:
+                    raise UnsupportedLegacySchema(
+                        "An existing empty database file is not a supported new database."
+                    ) from None
+                time.sleep(0.05)
+
+    def _initialize_once(self, *, existed_before_open: bool) -> None:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             tables = _table_names(connection)
             if not tables:
                 if existed_before_open:
-                    raise UnsupportedLegacySchema(
+                    raise _EmptyDatabaseInitializationPending(
                         "An existing empty database file is not a supported new database."
                     )
                 _create_current_schema(connection)
