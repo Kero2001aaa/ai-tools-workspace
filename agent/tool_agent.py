@@ -115,7 +115,7 @@ def get_recursion_limit(env=None):
     return limit
 
 
-def build_tool_agent(model, tools):
+def build_tool_agent(model, tools, *, proposal_validator=None):
     """Build a ReAct-style graph using explicitly supplied tools."""
     if model is None:
         raise ValueError("A configured chat model is required for tool calling.")
@@ -161,7 +161,10 @@ def build_tool_agent(model, tools):
             )),
             *history,
         ]
-        return {"messages": [model_with_tools.invoke(messages)]}
+        response = model_with_tools.invoke(messages)
+        if proposal_validator is not None:
+            proposal_validator.validate_model_message(response)
+        return {"messages": [response]}
 
     workflow = StateGraph(MessagesState)
     workflow.add_node("assistant", call_model)
