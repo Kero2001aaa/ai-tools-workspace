@@ -18,8 +18,11 @@ could not detect this circular dependency.
 4. AdultTaskStore.attach_input permits one opaque payload reference only while
    analyzing, with the original pending intake step, zero attempts, current
    state version, and a current store-issued lease. Cancellation wins.
-5. Failed attachment deletes only the input created by that call. Cleanup errors
-   are explicit. Storage and task database are not a distributed transaction:
+5. Failed attachment first reads the committed task request. If it already owns
+   this input, preserve it and report a readback failure. If commit state cannot
+   be read, preserve retention-bound data and report unknown state. Only a
+   confirmed unattached input is removed. Cleanup errors are explicit. Storage
+   and task database are not a distributed transaction:
    a process crash between writes can leave a bounded-retention orphan. It must
    not cause execution; recovery is not claimed to repair this automatically.
 6. The caller owns subsequent step creation, checkpoints, lease renewal, task
