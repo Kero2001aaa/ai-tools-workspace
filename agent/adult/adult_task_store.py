@@ -1155,6 +1155,55 @@ class AdultTaskStore:
             raise TaskStoreSchemaError("Created task could not be reloaded.")
         return result
 
+    def attach_input(
+        self, task_id: str, payload_id: str, lease: TaskLease,
+        expected_state_version: int,
+    ) -> AdultTaskSnapshot:
+        """Attach an opaque input reference once during leased intake.
+
+        The intake caller must first validate payload ownership and fingerprint
+        through AdultArtifactStore. This layer never reads payload bytes.
+        No attempts or execution steps may exist yet. Reattachment is denied.
+        """
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if not isinstance(payload_id, str) or not re.fullmatch(r"[0-9a-f]{32}", payload_id):
+            raise AdultModelValidationError("payload_id must be an opaque payload identifier.")
+        if (not isinstance(expected_state_version, int)
+                or isinstance(expected_state_version, bool) or expected_state_version < 0):
+            raise AdultModelValidationError("expected_state_version must be a non-negative integer.")
+        now = _utc_now()
+        with self._transaction() as db:
+            task = db.execute("SELECT * FROM adult_tasks WHERE task_id=?", (task_id,)).fetchone()
+            if task is None:
+                raise TaskNotFound("Task does not exist.")
+            self._require_current_lease(task, task_id, lease, now)
+            if task["state_version"] != expected_state_version:
+                raise StaleTaskVersion("Task state version changed.")
+            steps = db.execute(
+                "SELECT * FROM adult_steps WHERE task_id=? ORDER BY sequence_no", (task_id,),
+            ).fetchall()
+            if (task["status"] != "analyzing" or task["payload_id"] is not None
+                    or task["total_attempts"] != 0 or task["cancel_requested"]
+                    or len(steps) != 1 or steps[0]["operation"] != "intake"
+                    or steps[0]["status"] != "pending"):
+                raise InvalidTaskTransition("Input can only be attached once during initial intake.")
+            db.execute(
+                "UPDATE adult_tasks SET payload_id=?,state_version=state_version+1,updated_at=? "
+                "WHERE task_id=? AND state_version=?",
+                (payload_id, now, task_id, expected_state_version),
+            )
+            db.execute(
+                "INSERT INTO adult_task_events "
+                "(event_id,task_id,event_type,from_status,to_status,metadata_json,created_at) "
+                "VALUES (?,?,'state_transition','analyzing','analyzing',?,?)",
+                (str(uuid.uuid4()), task_id, '{"reason_code":"input_attached"}', now),
+            )
+        result = self.get_task(task_id)
+        if result is None:
+            raise TaskStoreSchemaError("Attached task could not be reloaded.")
+        return result
+
     def get_task(self, task_id: str) -> AdultTaskSnapshot | None:
         if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
             raise AdultModelValidationError("task_id must be a bounded identifier.")
