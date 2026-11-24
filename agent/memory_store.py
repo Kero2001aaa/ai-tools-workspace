@@ -353,6 +353,18 @@ def _validate_task_id(task_id: str | None) -> str | None:
     return task_id
 
 
+def _contains_local_path(value: str) -> bool:
+    """Reject explicit local paths, not embedded technical owner/repo IDs.
+
+    This lexical gate is not a complete secret or identity sanitizer. Bare
+    relative filenames and technical slash-separated identifiers stay allowed.
+    """
+    return bool(re.search(
+        r"(?:^|[\s=:\x22\x27(<\[{])(?:/(?!/)|~[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\]|\\\\)",
+        value,
+    ))
+
+
 def _validate_json_value(value: Any, depth: int = 1) -> None:
     if depth > MAX_METADATA_DEPTH:
         raise ValueError("Metadata nesting exceeds three levels.")
@@ -365,8 +377,8 @@ def _validate_json_value(value: Any, depth: int = 1) -> None:
     if isinstance(value, str):
         if len(value) > MAX_METADATA_STRING_LENGTH:
             raise ValueError("Metadata strings must be 256 characters or fewer.")
-        if re.search(r"(?i)(?:^|[\s=:])(?:/home/|/root/|[a-z]:\\|\\\\)", value):
-            raise ValueError("Metadata must not contain absolute filesystem paths.")
+        if _contains_local_path(value):
+            raise ValueError("Metadata must not contain explicit local filesystem paths.")
         return
     if isinstance(value, list):
         if len(value) > MAX_METADATA_ARRAY_ITEMS:
@@ -809,7 +821,7 @@ class FeedbackPublisherStore:
             r"(?:[a-z]:\\|/home/|/root/|\\\\)|"
             r"\b(?:password|api[_ -]?key|access[_ -]?token|secret)\b)"
         )
-        if any(prohibited.search(value) for value in (lesson, action)):
+        if any(prohibited.search(value) or _contains_local_path(value) for value in (lesson, action)):
             raise ValueError("Feedback contains a prohibited identifier, path, URL, or secret.")
         return feedback
 
