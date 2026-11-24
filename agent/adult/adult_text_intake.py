@@ -57,6 +57,15 @@ class AdultTextIntake:
                 raise TextIntakeError("input_invalid")
             return self.tasks.attach_input(task_id, reference.payload_id, lease, expected_state_version)
         except Exception:
+            # A commit can succeed before its response/readback fails. Never
+            # delete a reference that the task now owns, or one whose commit
+            # state cannot be established. Such orphans remain retention-bound.
+            try:
+                committed = self.tasks.get_task_request(task_id)
+            except Exception:
+                raise TextIntakeError("intake_state_unknown") from None
+            if committed is not None and committed.payload_id == reference.payload_id:
+                raise TextIntakeError("intake_committed_readback_failed") from None
             try:
                 self.artifacts.discard_input(reference.payload_id, task_id)
             except Exception:
