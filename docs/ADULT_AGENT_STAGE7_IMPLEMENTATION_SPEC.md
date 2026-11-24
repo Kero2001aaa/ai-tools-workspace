@@ -263,7 +263,7 @@ The pipeline returns a bounded TextPipelineOutcome containing task/step IDs, rou
 - Invalid/empty/oversized text output: `MODEL_OUTPUT_INVALID`, retryable as a distinct approach (the Stage 5 tracker may classify it as unknown, but retryability remains explicit).
 - Output policy denial: `POLICY_REJECTED`, non-retryable and terminal for the task.
 - Output storage failure: stable `OUTPUT_STORAGE_FAILED`, bounded and classified without exposing paths or storage details.
-- Attempt finalization failure: no success response; safely discard or leave an unreachable expiring artifact, and preserve the original tracker error.
+- Attempt finalization failure: no success response; safely discard or leave an unreachable expiring artifact. Raise bounded `TextPipelineError("finalization_failed")` without chaining raw tracker errors. Preserve the failure category, not private exception text or paths. This intentionally replaces the earlier requirement to preserve the original tracker exception, which conflicted with the privacy invariant.
 
 AttemptTracker remains the only authority for attempt budgets, provider-call budgets, retry deduplication, failure classification, and durable success/failure outcomes. The pipeline must not calculate or mutate those counters itself.
 
@@ -375,3 +375,12 @@ The following Stage 7 implementation units are committed on `feature/adult-agent
 - Focused pipeline tests cover all three text operations, success publication, no-route behavior, pre-dispatch policy denial, exact adapter resolution, invalid output, terminal output-policy rejection, sanitized adapter errors, storage failure, finalization cleanup, step mismatch, and persisted-request mismatch.
 
 Validation gate: PASS. The user confirmed that all requested focused, Adult-specific regression, full repository test, diff-check, and working-tree validation commands passed locally. GitHub Actions workflow #345 for commit `92480f1d43155941b88aee62d63e5e620c72a249` completed successfully, including unit tests, MCP security scan, OSV Python dependency audit, and optional browser dependency audit. Stage 7 is complete. Stage 8 and Stage 9 remain blocked until separately authorized; no Stage 8 or Stage 9 implementation is included in this stage.
+
+
+## Privacy and lifecycle follow-up, 2026-11-24
+
+A bounded review after Stage8 found that the earlier raw tracker-error propagation contract conflicted with this specification's no-plaintext/no-path exception rule. This is an intentional documented contract change: success/failure finalization errors now raise `TextPipelineError("finalization_failed")` with traceback chaining suppressed, rather than rethrowing the original exception type/message. Cleanup still uses the exact artifact/task/attempt identity; if cleanup fails, no success or artifact reference is returned and retention remains the final fallback. A failed tracker transaction is not claimed to be durably finalized; existing recovery handles uncertain attempts.
+
+Evaluator exceptions and malformed results now finalize as non-retryable `MODEL_OUTPUT_INVALID` before storage. Explicit non-retryable evaluator decisions keep that classification. No automatic retry, lease mutation, budget change, remote provider call or new dependency is introduced.
+
+Compatibility: callers catching `RuntimeError` still catch `TextPipelineError` (its base class). Callers relying on a particular raw tracker exception must switch to the stable `error_code` and persisted task/attempt recovery state. Repository caller search found only focused tests invoking `run_one_attempt`; no production Supervisor/Executor or external integration caller is present in this branch. Three new pipeline tests cover evaluator exception/malformed results, both finalization paths including cleanup failure and public exception sanitization, and terminal decision preservation. The existing cleanup test now expects the stable contract. Final test and exact-head CI evidence is reported separately, not inferred from this text.
