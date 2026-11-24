@@ -450,3 +450,12 @@ class AdultOmniRouteImageAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CostHeaderOverflowTests(unittest.TestCase):
+    def test_decimal_overflow_header_is_sanitized(self):
+        from agent.adult.integrations.omniroute_image import OmniRouteImageAdapterError, _cost_from_payload
+        with self.assertRaises(OmniRouteImageAdapterError) as ctx:
+            _cost_from_payload({}, {"x-omniroute-response-cost": "1E1000000"})
+        self.assertEqual(str(ctx.exception), "metadata_invalid")
+        self.assertNotIn("1E1000000", repr(ctx.exception))

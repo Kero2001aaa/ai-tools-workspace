@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import base64
-from decimal import Decimal, InvalidOperation, ROUND_CEILING
+from decimal import Decimal, DecimalException, InvalidOperation, ROUND_CEILING
 import json
 from typing import Any, Callable
 
@@ -143,7 +143,10 @@ def _cost_from_payload(payload: dict[str, Any], headers: Any) -> int | None:
             raise OmniRouteImageAdapterError("metadata_invalid") from None
         if not usd.is_finite() or usd < 0:
             raise OmniRouteImageAdapterError("metadata_invalid")
-        microusd = int((usd * Decimal(1_000_000)).to_integral_value(rounding=ROUND_CEILING))
+        try:
+            microusd = int((usd * Decimal(1_000_000)).to_integral_value(rounding=ROUND_CEILING))
+        except DecimalException:
+            raise OmniRouteImageAdapterError("metadata_invalid") from None
         if microusd > _MAX_METADATA_COUNTER:
             raise OmniRouteImageAdapterError("metadata_invalid")
         return microusd
