@@ -28,6 +28,9 @@ class AdultMemory:
             metadata=metadata,
         )
 
+    def get_private(self, memory_id: int) -> MemoryRecord | None:
+        return self.__store.get_owned(memory_id)
+
     def recall_private(self, query: str, limit: int = 5) -> list[MemoryRecord]:
         return self.__store.recall_owned(query, limit)
 
