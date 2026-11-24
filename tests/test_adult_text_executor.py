@@ -109,3 +109,66 @@ class ExecutorTests(unittest.TestCase):
             result=self.executor.run(task.task_id,None,CONFIG)
         self.assertEqual('prior_attempt_requires_recovery',result.error_code)
         self.assertEqual(1,self.adapter.calls)
+    def test_durable_encrypted_stage_then_reopen_without_input(self):
+        from agent.adult.adult_text_executor import AdultTextExecutor
+        key=base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
+        cipher=PayloadCipher(key);artifacts=AdultArtifactStore(self.root/'retained',cipher=cipher)
+        policy=AdultPolicies()
+        pipeline=AdultTextPipeline(artifacts,self.tasks,self.router,self.tracker,policy,AdultEvaluator(policy),{('offline-text','1'):self.adapter})
+        executor=AdultTextExecutor(self.tasks,AdultTextIntake(self.tasks,artifacts,cipher),pipeline,cipher)
+        self.enable()
+        with patch.dict('os.environ',{'ADULT_PAYLOAD_ENCRYPTION_KEY':key}):
+            staged=executor.stage_encrypted('text.analyze',self.data)
+        self.assertEqual('checkpointed',staged.status);self.assertEqual(0,self.adapter.calls)
+        deadline=self.tasks.get_task(staged.task_id).deadline_at
+        request=self.tasks.get_task_request(staged.task_id)
+        self.assertEqual('encrypted',request.retention_policy)
+        self.assertNotIn(self.data,(self.root/'tasks.sqlite3').read_bytes())
+        for file in (self.root/'retained').glob('*.aap'):self.assertNotIn(self.data,file.read_bytes())
+        # Reconstruct every stateful component, not just a second store handle.
+        tasks=AdultTaskStore(self.root/'tasks.sqlite3');cipher=PayloadCipher(key)
+        artifacts=AdultArtifactStore(self.root/'retained',cipher=cipher)
+        tracker=AdultAttemptTracker(tasks);registry=ModelCapabilityRegistry(tasks)
+        router=AdultModelRouter(registry,approach_key_builder=tracker.approach_keys,local_adapter_available=lambda x:x=='offline-text')
+        pipeline=AdultTextPipeline(artifacts,tasks,router,tracker,policy,AdultEvaluator(policy),{('offline-text','1'):self.adapter})
+        reopened=AdultTextExecutor(tasks,AdultTextIntake(tasks,artifacts,cipher),pipeline,cipher)
+        result=reopened.run(staged.task_id,None,CONFIG)
+        self.assertEqual('completed',result.status);self.assertEqual(1,self.adapter.calls)
+        self.assertEqual(deadline,tasks.get_task(staged.task_id).deadline_at)
+        reread=AdultArtifactStore(self.root/'retained',cipher=PayloadCipher(key))
+        self.assertIn(b'Not AI inference',reread.read_chunk(result.artifact_id,0).data)
+
+    def test_stage_missing_or_mismatched_key_creates_no_task(self):
+        with patch.dict('os.environ',{},clear=True):
+            with self.assertRaises(Exception):self.executor.stage_encrypted('text.analyze',self.data)
+        wrong=base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
+        with patch.dict('os.environ',{'ADULT_PAYLOAD_ENCRYPTION_KEY':wrong}):
+            with self.assertRaisesRegex(ValueError,'configured_key_mismatch'):
+                self.executor.stage_encrypted('text.analyze',self.data)
+        self.assertEqual((),self.tasks.list_tasks().items)
+    def test_stage_readback_error_preserves_committed_encrypted_input(self):
+        key=base64.urlsafe_b64encode(secrets.token_bytes(32)).decode();cipher=PayloadCipher(key)
+        artifacts=AdultArtifactStore(self.root/'retained',cipher=cipher);policy=AdultPolicies()
+        pipeline=AdultTextPipeline(artifacts,self.tasks,self.router,self.tracker,policy,AdultEvaluator(policy),{('offline-text','1'):self.adapter})
+        executor=AdultTextExecutor(self.tasks,AdultTextIntake(self.tasks,artifacts,cipher),pipeline,cipher)
+        original=self.tasks.attach_input
+        def committed_then_error(*args,**kwargs):
+            original(*args,**kwargs);raise OSError()
+        with patch.dict('os.environ',{'ADULT_PAYLOAD_ENCRYPTION_KEY':key}),patch.object(self.tasks,'attach_input',side_effect=committed_then_error):
+            with self.assertRaises(Exception):executor.stage_encrypted('text.analyze',self.data)
+        task=self.tasks.list_tasks().items[0];request=self.tasks.get_task_request(task.task_id)
+        self.assertEqual('paused',task.status);self.assertEqual(0,self.adapter.calls)
+        self.assertEqual(self.data,AdultArtifactStore(self.root/'retained',cipher=PayloadCipher(key)).load_input(request.payload_id,task.task_id))
+
+    def test_stage_cancellation_stays_cancelled_without_model(self):
+        key=base64.urlsafe_b64encode(secrets.token_bytes(32)).decode();cipher=PayloadCipher(key)
+        artifacts=AdultArtifactStore(self.root/'retained',cipher=cipher);policy=AdultPolicies()
+        pipeline=AdultTextPipeline(artifacts,self.tasks,self.router,self.tracker,policy,AdultEvaluator(policy),{('offline-text','1'):self.adapter})
+        executor=AdultTextExecutor(self.tasks,AdultTextIntake(self.tasks,artifacts,cipher),pipeline,cipher)
+        original=executor._checkpoint
+        def checkpoint_then_cancel(task,*args,**kwargs):
+            original(task,*args,**kwargs);self.tasks.request_cancel(task.task_id)
+        with patch.dict('os.environ',{'ADULT_PAYLOAD_ENCRYPTION_KEY':key}),patch.object(executor,'_checkpoint',side_effect=checkpoint_then_cancel):
+            with self.assertRaises(Exception):executor.stage_encrypted('text.analyze',self.data)
+        task=self.tasks.list_tasks().items[0];self.assertEqual('cancelled',task.status)
+        self.assertEqual(0,self.adapter.calls)
