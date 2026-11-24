@@ -464,11 +464,31 @@ _ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
 class AdultTaskStore:
     """Owns the isolated Adult operational database; no provider integration."""
 
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(self, db_path: str | Path | None = None, *, read_only: bool = False):
         if sqlite3.sqlite_version_info < MIN_SQLITE_VERSION:
             raise TaskStoreSchemaError("SQLite 3.38.0 or later is required.")
         configured = db_path if db_path is not None else os.environ.get("ADULT_STATE_DB")
         self._db_path = Path(configured) if configured is not None else DEFAULT_DB_PATH
+        if type(read_only) is not bool:
+            raise TypeError("read_only must be a boolean.")
+        self._read_only = read_only
+        if read_only:
+            if not self._db_path.is_file():
+                raise TaskStoreSchemaError("Read-only Adult store must already exist.")
+            connection = self._connect()
+            try:
+                history = [(row["version"], row["name"]) for row in connection.execute(
+                    "SELECT version,name FROM adult_schema_migrations ORDER BY version"
+                ).fetchall()]
+                expected = [(SCHEMA_VERSION, SCHEMA_NAME),
+                            (ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME),
+                            (CAPABILITY_SCHEMA_VERSION, CAPABILITY_SCHEMA_NAME)]
+                if history != expected:
+                    raise TaskStoreSchemaError("Read-only store requires current schema.")
+                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
+            finally:
+                connection.close()
+            return
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         existed = self._db_path.exists()
         self._migrate()
@@ -476,9 +496,13 @@ class AdultTaskStore:
             os.chmod(self._db_path, stat.S_IRUSR | stat.S_IWUSR)
 
     def _connect(self) -> sqlite3.Connection:
+        read_only = getattr(self, "_read_only", False)
         connection = sqlite3.connect(
-            str(self._db_path), timeout=10, isolation_level=None,
+            self._db_path.resolve().as_uri() + "?mode=ro" if read_only else str(self._db_path),
+            uri=read_only, timeout=10, isolation_level=None,
         )
+        if read_only:
+            connection.execute("PRAGMA query_only=ON")
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
@@ -1322,7 +1346,9 @@ class AdultTaskStore:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TaskStoreSchemaError("Stored checkpoint metadata is invalid.") from exc
 
-    def list_events(self, task_id: str, limit: int = 50) -> list[TaskEvent]:
+    def list_events(self, task_id: str, limit: int = 50, *, newest_first: bool = False) -> list[TaskEvent]:
+        if type(newest_first) is not bool:
+            raise AdultModelValidationError("newest_first must be a boolean.")
         if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
             raise AdultModelValidationError("task_id must be a bounded identifier.")
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
@@ -1330,7 +1356,7 @@ class AdultTaskStore:
         with self._connect() as db:
             rows = db.execute(
                 """SELECT * FROM adult_task_events WHERE task_id=?
-                   ORDER BY created_at,event_id LIMIT ?""",
+                   ORDER BY """ + ("created_at DESC,event_id DESC" if newest_first else "created_at,event_id") + " LIMIT ?",
                 (task_id, limit),
             ).fetchall()
         try:
