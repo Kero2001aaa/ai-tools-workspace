@@ -58,7 +58,7 @@ class TextPipelineError(RuntimeError):
             "invalid_request", "invalid_input", "policy_rejected",
             "capability_unavailable", "adapter_unavailable",
             "attempt_unavailable", "provider_error", "provider_timeout",
-            "model_output_invalid", "output_storage_failed",
+            "model_output_invalid", "output_storage_failed", "finalization_failed",
         }
         self.error_code = error_code if error_code in allowed else "invalid_request"
         super().__init__(self.error_code)
@@ -211,9 +211,12 @@ class AdultTextPipeline:
         sanitized_error: str,
         retryable: bool,
     ) -> AttemptResult:
-        return self._attempt_tracker.fail(
-            handle, error_code, sanitized_error, retryable,
-        )
+        try:
+            return self._attempt_tracker.fail(
+                handle, error_code, sanitized_error, retryable,
+            )
+        except Exception:
+            raise TextPipelineError("finalization_failed") from None
 
     def run_one_attempt(
         self,
@@ -344,12 +347,18 @@ class AdultTextPipeline:
             attempt = self._fail(handle, "MODEL_OUTPUT_INVALID", "Model output failed deterministic validation.", True)
             return self._outcome(task, step_id, "failed", "MODEL_OUTPUT_INVALID", route, attempt)
 
-        evaluation = self._evaluator.evaluate(task.task_type, adapter_result.text)
+        try:
+            evaluation = self._evaluator.evaluate(task.task_type, adapter_result.text)
+        except Exception:
+            evaluation = None
+        if not isinstance(evaluation, EvaluationResult):
+            attempt = self._fail(handle, "MODEL_OUTPUT_INVALID", "Output evaluation failed.", False)
+            return self._outcome(task, step_id, "failed", "MODEL_OUTPUT_INVALID", route, attempt)
         if not evaluation.accepted:
             if any(code in {"policy_rejected", "policy_unavailable"} for code in evaluation.reason_codes):
                 attempt = self._fail(handle, "POLICY_REJECTED", "Output policy rejected the generated text.", False)
                 return self._outcome(task, step_id, "rejected", "POLICY_REJECTED", route, attempt, evaluation)
-            attempt = self._fail(handle, "MODEL_OUTPUT_INVALID", "Model output failed deterministic validation.", True)
+            attempt = self._fail(handle, "MODEL_OUTPUT_INVALID", "Model output failed deterministic validation.", evaluation.needs_revision)
             return self._outcome(task, step_id, "failed", "MODEL_OUTPUT_INVALID", route, attempt, evaluation)
 
         usage = self._safe_usage(adapter_result.usage)
@@ -381,7 +390,7 @@ class AdultTextPipeline:
             except Exception:
                 # The artifact remains unreachable from the task result and is bounded by retention.
                 pass
-            raise
+            raise TextPipelineError("finalization_failed") from None
         finally:
             # Do not retain a plaintext reference in the returned pipeline object.
             del adapter_result
@@ -392,4 +401,4 @@ class AdultTextPipeline:
         return self._outcome(
             task, step_id, "succeeded", route=route, attempt=attempt,
             evaluation=evaluation, artifact=artifact,
-        )
+                                )
