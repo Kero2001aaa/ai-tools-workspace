@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -48,13 +49,16 @@ def build_workspace_server_config(env=None):
             raise RuntimeError(
                 "GRAPHIFY_MCP_COMMAND must resolve to an installed executable (for example graphify-mcp)."
             )
-        if not os.path.isfile(graphify_graph) or not graphify_graph.endswith(".json"):
-            raise RuntimeError("GRAPHIFY_GRAPH_PATH must point to an existing graph JSON file.")
+        from agent.graphify_mcp_server import graph_bytes
+        graph_bytes(graphify_graph)
         servers["graphify"] = {
             "transport": "stdio",
-            "command": resolved_command,
-            "args": [graphify_graph],
+            "command": sys.executable,
+            "args": ["-m", "agent.graphify_mcp_server"],
+            "env": {"GRAPHIFY_MCP_COMMAND": resolved_command,
+                    "GRAPHIFY_GRAPH_PATH": str(Path(graphify_graph).resolve())},
         }
+
 
     if env.get("ENABLE_SPECIALIST_AGENTS", "").strip().lower() in {"1", "true", "yes", "on"}:
         servers["specialists"] = {
