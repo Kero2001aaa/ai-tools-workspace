@@ -379,6 +379,12 @@ def _validate_json_value(value: Any, depth: int = 1) -> None:
             raise ValueError("Metadata strings must be 256 characters or fewer.")
         if _contains_local_path(value):
             raise ValueError("Metadata must not contain explicit local filesystem paths.")
+        if re.search(
+            r"(?i)(?:\b(?:password|passwd|pwd|api[_ -]?key|access[_ -]?token|"
+            r"refresh[_ -]?token|client[_ -]?secret)\b[\s\x22\x27]*[:=]|"
+            r"\bauthorization\b[\s\x22\x27]*[:=]\s*bearer\b)", value
+        ):
+            raise ValueError("Metadata must not contain explicit credential assignments.")
         return
     if isinstance(value, list):
         if len(value) > MAX_METADATA_ARRAY_ITEMS:
