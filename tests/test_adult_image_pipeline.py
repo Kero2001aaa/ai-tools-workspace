@@ -302,28 +302,33 @@ class AdultImagePipelineTests(unittest.TestCase):
     def test_task_owned_subpayload_failures_never_route(self):
         import tempfile
         from agent.adult.payload_store import TransientPayloadCache
-        for failure in ("cross_task", "wrong_kind", "expired", "missing"):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
-                self.build("image.edit")
-                clock = [0.0]
-                cache = TransientPayloadCache(ttl_seconds=10, clock=lambda: clock[0])
-                store = AdultArtifactStore(folder, cache=cache)
-                if failure != "missing":
-                    cache._put_reference(
-                        "other-task-123456" if failure == "cross_task" else TASK_ID,
-                        IMAGE_ID, png_bytes(), kind="output" if failure == "wrong_kind" else "input",
-                    )
-                if failure == "expired":
-                    clock[0] = 11.0
-                cache._put_reference(TASK_ID, PAYLOAD_ID, encode_image_input(ImageInputEnvelope(
-                    task_type="image.edit", image_payload_id=IMAGE_ID, prompt_payload_id=PROMPT_ID,
-                )))
-                cache._put_reference(TASK_ID, PROMPT_ID, encode_image_prompt("a square"))
-                self.pipeline._artifact_store = store
-                self.assertEqual("INVALID_INPUT", self.run_once().error_code)
-                self.router.choose_routes.assert_not_called()
-                self.tracker.begin.assert_not_called()
-                self.adapter.edit.assert_not_called()
+        for target, operation in ((IMAGE_ID, "image.edit"), (PROMPT_ID, "image.generate")):
+            for failure in ("cross_task", "wrong_kind", "expired", "missing"):
+                with self.subTest(target=target, failure=failure), tempfile.TemporaryDirectory() as folder:
+                    self.build(operation)
+                    clock = [0.0]
+                    cache = TransientPayloadCache(ttl_seconds=10, clock=lambda: clock[0])
+                    store = AdultArtifactStore(folder, cache=cache)
+                    if failure != "missing":
+                        cache._put_reference(
+                            "other-task-123456" if failure == "cross_task" else TASK_ID,
+                            target, png_bytes() if target == IMAGE_ID else encode_image_prompt("a square"),
+                            kind="output" if failure == "wrong_kind" else "input",
+                        )
+                    if failure == "expired":
+                        clock[0] = 11.0
+                    cache._put_reference(TASK_ID, PAYLOAD_ID, encode_image_input(ImageInputEnvelope(
+                        task_type=operation, image_payload_id=IMAGE_ID if operation == "image.edit" else None,
+                        prompt_payload_id=PROMPT_ID,
+                    )))
+                    if target == IMAGE_ID:
+                        cache._put_reference(TASK_ID, PROMPT_ID, encode_image_prompt("a square"))
+                    self.pipeline._artifact_store = store
+                    self.assertEqual("INVALID_INPUT", self.run_once().error_code)
+                    self.router.choose_routes.assert_not_called()
+                    self.tracker.begin.assert_not_called()
+                    self.adapter.edit.assert_not_called()
+                    self.adapter.generate.assert_not_called()
 
     def test_input_policy_exceptions_and_malformed_decisions_fail_closed(self):
         for decision in (None, True, "allowed"):
@@ -441,6 +446,39 @@ class AdultImagePipelineTests(unittest.TestCase):
                     db.close()
                 for private_value in ("a red square", "A small image.", IMAGE_ID, PROMPT_ID):
                     self.assertNotIn(private_value, metadata)
+
+    def test_unsupported_format_signatures_fail_before_routing(self):
+        signatures = (b"BM", b"II*\x00", b"MM\x00*", b"\x00\x00\x00\x18ftypavif", b"GIF89a", b"<svg>")
+        for signature in signatures:
+            with self.subTest(signature=signature):
+                self.build("image.edit")
+                good = self.store.load_input.side_effect
+                self.store.load_input.side_effect = lambda pid, tid: signature + b"x" * 32 if pid == IMAGE_ID else good(pid, tid)
+                self.assertEqual("rejected", self.run_once().status)
+                self.router.choose_routes.assert_not_called()
+                self.tracker.begin.assert_not_called()
+                self.adapter.edit.assert_not_called()
+
+    def test_unknown_cost_route_is_not_attempted(self):
+        self.build("image.generate", cost_class="unknown")
+        self.assertEqual("unavailable", self.run_once().status)
+        self.tracker.begin.assert_not_called()
+        self.adapter.generate.assert_not_called()
+
+    def test_corrupt_declared_mime_and_route_byte_output_fail_before_storage(self):
+        for failure in ("corrupt", "declared_mime", "route_bytes"):
+            with self.subTest(failure=failure):
+                self.build("image.generate")
+                if failure == "corrupt":
+                    self.adapter.generate.return_value = ImageAdapterResult(b"not-an-image", "image/png", {}, 0)
+                elif failure == "declared_mime":
+                    self.adapter.generate.return_value = ImageAdapterResult(self.output, "image/jpeg", {}, 0)
+                else:
+                    self.router.choose_routes.return_value = [replace(self.route, max_output_bytes=1)]
+                self.assertEqual("MODEL_OUTPUT_INVALID", self.run_once().error_code)
+                self.store.save_output.assert_not_called()
+                self.tracker.succeed.assert_not_called()
+                self.adapter.generate.assert_called_once()
 
     def test_non_success_outcome_cannot_carry_artifact(self):
         self.build("image.generate")
