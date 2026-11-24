@@ -170,6 +170,35 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
         self.assertEqual(1, store.get_task(task.task_id).state_version)
         self.assertEqual(2, len(store.list_events(task.task_id)))
 
+    def test_rejected_path_metadata_leaves_task_and_event_history_unchanged(self):
+        from agent.adult.models import AdultModelValidationError
+        store, task = self._make_task()
+        before = store.list_events(task.task_id)
+        with self.assertRaises(AdultModelValidationError):
+            store.transition(task.task_id, {'queued'}, 'failed', 'state_transition', 0,
+                             metadata={'diagnostic':{'nested':['/var/synthetic/private']}})
+        self.assertEqual(task, store.get_task(task.task_id))
+        self.assertEqual(before, store.list_events(task.task_id))
+
+    def test_checkpoint_reader_rejects_unsupported_persisted_version(self):
+        import json
+        store, task = self._make_task()
+        original = store.get_latest_checkpoint(task.task_id)
+        self.assertEqual(1, original.schema_version)
+        with store._connect() as db:
+            db.execute('DROP TRIGGER prevent_adult_checkpoints_update')
+            raw = original.snapshot.to_dict()
+            raw['schema_version'] = 999
+            db.execute('UPDATE adult_checkpoints SET schema_version=999,snapshot_json=? WHERE task_id=?',
+                       (json.dumps(raw), task.task_id))
+        with self.assertRaises(TaskStoreSchemaError) as caught:
+            store.get_latest_checkpoint(task.task_id)
+        self.assertNotIn('999', str(caught.exception))
+        with store._connect() as db:
+            row = db.execute('SELECT * FROM adult_checkpoints WHERE task_id=?', (task.task_id,)).fetchone()
+            with self.assertRaises(TaskStoreSchemaError):
+                store._checkpoint_from_row(row)
+
     def test_save_checkpoint_appends_revision_and_updates_task_version_atomically(self):
         store, task = self._make_task()
         lease = store.claim_task(task.task_id, "checkpoint-worker", lease_seconds=300)
