@@ -45,43 +45,58 @@ class LocalTextStatsAdapter:
         return TextAdapterResult(json.dumps(result, sort_keys=True), {}, 0)
 
 
+def open_stats_executor(root: Path, cipher: PayloadCipher):
+    """Reopen only the deterministic counting contract, never production inference."""
+    tasks = AdultTaskStore(root / 'tasks.sqlite3')
+    artifacts = AdultArtifactStore(root / 'artifacts', cipher=cipher)
+    registry = ModelCapabilityRegistry(tasks)
+    spec = ModelCapabilitySpec(
+        'local-text-statistics', '1', 'text.analyze', ('text',), ('text',), 'local',
+    )
+    # Reuse the exact existing local contract on process restart. Never silently
+    # replace a different or revoked record under the same adapter identity.
+    with tasks._connect() as db:
+        prior = db.execute("SELECT capability_id FROM adult_model_capabilities "
+                           "WHERE adapter_id=? AND adapter_version=? AND task_type=?",
+                           (spec.adapter_id, spec.adapter_version, spec.task_type)).fetchone()
+    record = registry.get(prior['capability_id']) if prior else registry.register(spec)
+    if record.spec != spec or record.verification_status == 'revoked':
+        raise RuntimeError('local_capability_conflict')
+    # A local, deterministic smoke check establishes only this counting contract.
+    sample = encode_text_input('text.analyze', 'one two\nthree')
+    ref = artifacts.save_input('stats-smoke', sample, 'application/json', retain_encrypted=False)
+    from agent.adult.integrations.protocols import TextRequest
+    adapter = LocalTextStatsAdapter(artifacts)
+    smoke = json.loads(adapter.invoke(TextRequest('stats-smoke','stats-smoke-step','text.analyze',ref.payload_id)).text)
+    if smoke.get('words_whitespace') != 3 or smoke.get('lines') != 2:
+        raise RuntimeError('local_smoke_failed')
+    artifacts.discard_input(ref.payload_id, 'stats-smoke')
+    now = datetime.now(timezone.utc)
+    evidence = CapabilityEvidence(
+        capability_source='local_adapter_smoke_test', capability_reference='local:counting-smoke-v1',
+        verified_at=now.isoformat().replace('+00:00', 'Z'),
+        expires_at=(now+timedelta(minutes=10)).isoformat().replace('+00:00', 'Z'),
+        adapter_id='local-text-statistics', adapter_version='1', task_type='text.analyze',
+        input_modalities=('text',), output_modalities=('text',),
+    )
+    record = registry.verify(record.capability_id, evidence, record.state_version)
+    registry.enable(record.capability_id, record.state_version)
+    tracker = AdultAttemptTracker(tasks)
+    router = AdultModelRouter(registry, approach_key_builder=tracker.approach_keys,
+                             local_adapter_available=lambda value: value == 'local-text-statistics')
+    policy = AdultPolicies()
+    pipeline = AdultTextPipeline(artifacts, tasks, router, tracker, policy, AdultEvaluator(policy),
+                                 {('local-text-statistics', '1'): adapter})
+    executor = AdultTextExecutor(tasks, AdultTextIntake(tasks, artifacts, cipher), pipeline, cipher)
+    return tasks, artifacts, executor
+
+
 def run_stats(text: str) -> dict:
     """One real task to an evaluated artifact; no source content in returned stats."""
     with tempfile.TemporaryDirectory(prefix='workspace-text-stats-') as directory:
         root = Path(directory)
         cipher = PayloadCipher(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())
-        tasks = AdultTaskStore(root / 'tasks.sqlite3')
-        artifacts = AdultArtifactStore(root / 'artifacts', cipher=cipher)
-        registry = ModelCapabilityRegistry(tasks)
-        record = registry.register(ModelCapabilitySpec(
-            'local-text-statistics', '1', 'text.analyze', ('text',), ('text',), 'local',
-        ))
-        # A local, deterministic smoke check establishes only this counting contract.
-        sample = encode_text_input('text.analyze', 'one two\nthree')
-        ref = artifacts.save_input('stats-smoke', sample, 'application/json', retain_encrypted=False)
-        from agent.adult.integrations.protocols import TextRequest
-        adapter = LocalTextStatsAdapter(artifacts)
-        smoke = json.loads(adapter.invoke(TextRequest('stats-smoke','stats-smoke-step','text.analyze',ref.payload_id)).text)
-        if smoke.get('words_whitespace') != 3 or smoke.get('lines') != 2:
-            raise RuntimeError('local_smoke_failed')
-        artifacts.discard_input(ref.payload_id, 'stats-smoke')
-        now = datetime.now(timezone.utc)
-        evidence = CapabilityEvidence(
-            capability_source='local_adapter_smoke_test', capability_reference='local:counting-smoke-v1',
-            verified_at=now.isoformat().replace('+00:00', 'Z'),
-            expires_at=(now+timedelta(minutes=10)).isoformat().replace('+00:00', 'Z'),
-            adapter_id='local-text-statistics', adapter_version='1', task_type='text.analyze',
-            input_modalities=('text',), output_modalities=('text',),
-        )
-        record = registry.verify(record.capability_id, evidence, record.state_version)
-        registry.enable(record.capability_id, record.state_version)
-        tracker = AdultAttemptTracker(tasks)
-        router = AdultModelRouter(registry, approach_key_builder=tracker.approach_keys,
-                                 local_adapter_available=lambda value: value == 'local-text-statistics')
-        policy = AdultPolicies()
-        pipeline = AdultTextPipeline(artifacts, tasks, router, tracker, policy, AdultEvaluator(policy),
-                                     {('local-text-statistics', '1'): adapter})
-        executor = AdultTextExecutor(tasks, AdultTextIntake(tasks, artifacts, cipher), pipeline, cipher)
+        tasks, artifacts, executor = open_stats_executor(root, cipher)
         data = encode_text_input('text.analyze', text)
         task = executor.create('text.analyze', data)
         result = executor.run(task.task_id, data, cipher.fingerprint(b'local-text-statistics-v1'))
