@@ -1,7 +1,7 @@
 # Adult Agent — Stage 8 Implementation Specification
 ## Image Input Validation, Image Adapters, Evaluator, and One-Attempt Pipeline
 
-**Status:** Stage 8 not closed. Pipeline implementation, hardening and acceptance tests pushed; exact-head CI and final review evidence remain separate gates. See the evidence reconciliation below.
+**Status:** Code acceptance pending exact final-head CI after targeted privacy fixes. ChatGPT/Hindsight workflow verification remains open separately; it is not an IMG code gate. See the evidence reconciliation below.
 **Branch:** `feature/adult-agent-mvp`  
 **Parent specification:** `docs/ADULT_AGENT_IMPLEMENTATION_SPEC.md`  
 **Precondition:** Stages 1–7 are PASS on the current branch head  
@@ -419,12 +419,22 @@ This is a coverage map, not a declaration that Stage 8 passed. All test names be
 | IMG-REG-04 | Stage8 changed-path review contains only Adult source/tests and Stage8 documentation. No protected path, live database, credential, dependency or provider configuration change was made in this follow-up. |
 | IMG-REG-05 | Image tests use synthetic fixtures/fake adapters and clients. CI security audits access package/audit services; no live model/provider call is made. The broader full suite uses local loopback HTTP test servers. |
 
-### Remaining closure gates
+### Code acceptance assessment and independent workflow status
 
-1. Verify CI for test commit `23c32c3b32449cb71cf6435e1232fd8ea53a3dda` and for the exact resulting documentation head.
-2. Complete the requested final ChatGPT code review. A normal New chat submission was accepted visibly with Think selected, but ended in a connection/no-response alert without an assistant answer. Existing-chat and New chat routes have had bounded recovery; no review result was obtained.
-3. Keep Hindsight Memory verification open. Prior response prose claimed retrieval calls, but actual visible tool activity has not been independently confirmed. Think selection is verified separately and proves no Hindsight invocation.
-4. Resolve the explicitly qualified matrix evidence limits before recording Stage8 PASS. No Stage9 implementation or main merge is included.
+The previous matrix qualifications were reviewed against the actual requirements:
+
+- Component versus integrated coverage is not itself a failure. Input limits are checked by `validate_image` before the router call; exact route limits are checked by the real router and evaluator. Structural-only validation is an explicit design boundary, not a missing raster decoder.
+- IMG-PIPE-05 now has a direct real-registry/router image-pipeline test: a current verified free route with provider budget zero creates no attempt, adapter call or output; the same route succeeds when only the budget changes to one.
+- The privacy review found and fixed a genuine IMG-PIPE-12 gap: arbitrary tracker finalization exceptions could escape after cleanup. Both success and failure finalization now raise only stable `ImagePipelineError("finalization_failed")`, suppressing traceback chaining. Saved-output cleanup remains task/attempt bound and never reports success when finalization fails. A failed cleanup still leaves TTL as the specified final boundary.
+- Invalid-analysis Unicode DTO validation now suppresses the raw encoding-error cause. Tests check public formatted exceptions and hidden DTO values, alongside existing real SQLite metadata checks. No exhaustive dynamic logger instrumentation is required by the spec. The pipeline/evaluator/input code does not log raw values; adapter failures use stable errors.
+- Security audits accessing package/audit services and repository tests using loopback servers do not constitute live model/provider calls. The image adapter tests use fake clients. No live model/provider test was performed.
+- Stage8 changed-path review includes only Adult source/tests and its specification. No protected path, live data, credential, dependency or provider-configuration change was made.
+
+Local post-fix evidence: **37 pipeline tests**, **88 focused image tests** (validator/input/policy/evaluator/pipeline modules), and **452 full-suite tests OK**, with clean `git diff --check`. The final remote files are compared byte-for-byte to the tested versions. Exact final-head CI must still be verified after this documentation commit; prior CI384 passed all checks at `789e552`.
+
+**Code verdict:** the actionable acceptance gaps identified in the matrix review are fixed, with targeted tests. No known code-acceptance blocker remains beyond verifying the exact resulting head's CI/security run. Component coverage and the stated structural-validation scope are not extra gates. Record code acceptance only once that CI check succeeds.
+
+**Separate user-requested workflow:** final ChatGPT review and Hindsight verification remain incomplete. The submitted New chat with Think selected ended in a connection/no-response alert, without an assistant review. No actual Hindsight invocation was observed. These are not named IMG code acceptance requirements and must not be presented as failing code tests or converted into new code gates. Do not repeat exhausted connection recovery without a new signal. No Stage9 work or main merge is included.
 
 Codespace remote-connection/setup failures were bypassed for delivery using the authenticated github.com editor. The Codespace was not stopped. The GPT connection failure is a missing review result, not a failing code test.
 
