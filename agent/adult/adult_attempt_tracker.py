@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 
 from agent.adult.adult_task_store import ACTIVE_STATUSES, AdultTaskStore
 from agent.adult.adult_task_store import LeaseLost, TaskNotFound
-from agent.adult.models import AdultModelValidationError, RouteCandidate
+from agent.adult.models import AdultModelValidationError, RouteCandidate, TaskLease
 
 
 _ATTEMPT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$")
@@ -395,7 +395,7 @@ class AdultAttemptTracker:
     def begin(
         self, task_id: str, step_id: str, route: RouteCandidate,
         input_fingerprint: str, config_fingerprint: str,
-        *, retry_reason: str | None = None,
+        *, retry_reason: str | None = None, lease: TaskLease | None = None,
     ) -> AttemptHandle:
         _validate_identifier("task_id", task_id)
         _validate_identifier("step_id", step_id)
@@ -418,6 +418,10 @@ class AdultAttemptTracker:
             ).fetchone()
             if task is None:
                 raise TaskNotFound("Task does not exist.")
+            if lease is not None:
+                # Bind a caller-owned execution to its fenced lease, atomically
+                # with attempt creation. Legacy direct callers remain unchanged.
+                self._store._require_current_lease(task, task_id, lease, now)
             if task["status"] in {"completed", "failed", "cancelled"}:
                 raise AttemptNotAvailable("Terminal tasks cannot start new attempts.")
             if task["status"] not in ACTIVE_STATUSES:
