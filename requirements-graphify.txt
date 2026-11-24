@@ -1,0 +1,5 @@
+# Optional isolated uv tool only, not part of the workspace environment.
+# Reviewed wheel serve.py/prs.py match upstream013a6461 on2026-11-24.
+graphifyy[mcp]==0.9.118
+# Use reviewed MCP1 contract; upstream also supports MCP2 but that is not tested here.
+mcp==1.30.0

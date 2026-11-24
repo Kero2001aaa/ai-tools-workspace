@@ -1,7 +1,8 @@
 """Public-only MCP bridge for the Agent Reach GitHub and V2EX channels.
 
 Only fixed channel/action pairs are exposed. The CLI runs without shell parsing,
-with a temporary HOME, no inherited GitHub credentials, and bounded time/output.
+with a temporary HOME, an allowlisted environment, and bounded time/combined output.
+POSIX process groups are required. This bridge is not an OS sandbox.
 """
 import json
 import os
@@ -9,6 +10,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import selectors
+import signal
+import time
 
 from mcp.server.fastmcp import FastMCP
 
@@ -51,6 +55,82 @@ def _limit(value: int) -> int:
     return value
 
 
+def _public_env(home):
+    # Deliberately do not inherit model/cloud credentials, proxies, Python paths,
+    # git config, custom certificate hooks, or user session/config directories.
+    return {
+        "PATH": os.defpath,
+        "HOME": home, "USERPROFILE": home,
+        "XDG_CONFIG_HOME": home, "XDG_DATA_HOME": home,
+        "XDG_CACHE_HOME": home, "XDG_STATE_HOME": home,
+        "TMPDIR": home, "TEMP": home, "TMP": home,
+        "LANG": "C.UTF-8", "PYTHONIOENCODING": "utf-8",
+        "PYTHONNOUSERSITE": "1", "NO_COLOR": "1",
+        "DO_NOT_TRACK": "true", "GH_TELEMETRY": "false",
+        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+
+def _stop_process(process):
+    # A child can spawn descendants holding a pipe open. Kill the session group
+    # on POSIX, even if the direct child already exited. This is not a sandbox.
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=2)
+
+
+def _capture_bounded(argv, home, env):
+    """Bound combined stdout/stderr while reading, including stderr floods."""
+    if os.name != "posix":
+        raise RuntimeError("Public Agent Reach requires POSIX process-group support.")
+    try:
+        process = subprocess.Popen(argv, shell=False, cwd=home, env=env,
+                                   stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   start_new_session=True)
+    except OSError as exc:
+        raise RuntimeError("Could not start Agent Reach.") from None
+    output = bytearray()
+    total = 0
+    deadline = time.monotonic() + _TIMEOUT_SECONDS
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ, True)
+            selector.register(process.stderr, selectors.EVENT_READ, False)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("Agent Reach request timed out.")
+                for key, _ in selector.select(remaining):
+                    chunk = os.read(key.fileobj.fileno(), min(8192, _MAX_OUTPUT_BYTES - total + 1))
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    total += len(chunk)
+                    if total > _MAX_OUTPUT_BYTES:
+                        raise RuntimeError("Agent Reach response exceeded the 200 KB safety limit.")
+                    if key.data:
+                        output.extend(chunk)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Agent Reach request timed out.")
+            try:
+                returncode = process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("Agent Reach request timed out.") from None
+        return output.decode("utf-8", errors="replace"), returncode
+    finally:
+        _stop_process(process)
+        process.stdout.close()
+        process.stderr.close()
+
+
 def _run_public(channel: str, action: str, arguments: list[str]) -> dict:
     if (channel, action) not in _ALLOWED:
         raise ValueError("This Agent Reach channel/action is not allowlisted.")
@@ -60,35 +140,15 @@ def _run_public(channel: str, action: str, arguments: list[str]) -> dict:
 
     # Isolate Agent Reach config/session state and suppress all inherited credentials.
     with tempfile.TemporaryDirectory(prefix="agent-reach-public-") as home:
-        env = os.environ.copy()
-        for key in ("GH_TOKEN", "GITHUB_TOKEN", "AGENT_REACH_GITHUB_TOKEN"):
-            env.pop(key, None)
-        env.update({
-            "HOME": home,
-            "USERPROFILE": home,
-            "NO_COLOR": "1",
-            "DO_NOT_TRACK": "true",
-            "GH_TELEMETRY": "false",
-        })
+        env = _public_env(home)
         argv = [
             command, channel, action, *arguments,
             "--backend", "github-api" if channel == "github" else "v2ex-api",
             "--timeout", "15",
         ]
-        try:
-            completed = subprocess.run(
-                argv, shell=False, cwd=home, env=env,
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=_TIMEOUT_SECONDS, check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("Agent Reach request timed out.") from exc
-        except OSError as exc:
-            raise RuntimeError(f"Could not start Agent Reach: {type(exc).__name__}.") from exc
+        output, returncode = _capture_bounded(argv, home, env)
 
-    output = completed.stdout.strip()
-    if len(output.encode("utf-8")) > _MAX_OUTPUT_BYTES:
-        raise RuntimeError("Agent Reach response exceeded the 200 KB safety limit.")
+    output = output.strip()
     try:
         payload = json.loads(output)
     except (json.JSONDecodeError, TypeError) as exc:
@@ -97,9 +157,13 @@ def _run_public(channel: str, action: str, arguments: list[str]) -> dict:
         raise RuntimeError("Agent Reach returned an unsupported response schema.")
     if not payload.get("ok"):
         error = payload.get("error") or {}
+        if not isinstance(error, dict):
+            raise RuntimeError("Agent Reach returned an invalid error response.")
         code = str(error.get("code", "UNKNOWN"))[:40]
         message = str(error.get("message", "request failed"))[:300]
         raise RuntimeError(f"Agent Reach {code}: {message}")
+    if returncode != 0:
+        raise RuntimeError("Agent Reach exited unsuccessfully.")
     return payload
 
 

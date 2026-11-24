@@ -6,3 +6,5 @@ langchain-openai
 httpx
 python-dotenv
 pydantic
+# Open-source authenticated encryption and key derivation for Adult Agent Stage 4.
+cryptography>=50.0.2,<51.0.0

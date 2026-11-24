@@ -1,4 +1,4 @@
-"""Local control plane with authenticated, allowlisted task actions.
+"""Local control plane with authenticated reads and allowlisted task actions.
 
 The dashboard binds to loopback only. Keep the Codespaces forwarded port private.
 """
@@ -65,6 +65,8 @@ def status_snapshot():
             "bind": "127.0.0.1",
             "read_only_data_endpoints": True,
             "authenticated_task_controls": True,
+            "authenticated_monitoring": True,
+            "host_allowlist": True,
             "dashboard_agent_opt_in": True,
             "secrets_exposed": False,
         },
@@ -77,6 +79,19 @@ def task_snapshot(limit=20):
 
 def memory_snapshot(limit=10):
     return MemoryStore().recent(limit)
+
+
+def allowed_authorities(port, env=None):
+    """Exact local and Codespaces authorities, never a wildcard proxy trust."""
+    env = os.environ if env is None else env
+    values = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    name = env.get("CODESPACE_NAME", "")
+    domain = env.get("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN", "")
+    import re
+    if re.fullmatch(r"[a-zA-Z0-9-]+", name) and re.fullmatch(r"[a-zA-Z0-9.-]+", domain):
+        authority = f"{name}-{port}.{domain}".lower()
+        values.update({authority, authority + ":443"})
+    return values
 
 
 def _page():
@@ -92,7 +107,11 @@ h2{font-size:1rem;margin:0 0 12px}.value{font-size:1.8rem;font-weight:700}
 ul{padding-left:20px;line-height:1.8}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#c6d4e4}
 button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px;cursor:pointer}
 </style></head><body>
-<h1>AI Workspace</h1><p>Local control plane · authenticated task controls · no secrets exposed</p>
+<h1>AI Workspace</h1><p>Local control plane · authenticated monitoring and task controls · no secrets exposed</p>
+<section class="card"><h2>Unlock monitoring</h2>
+<p class="muted">Enter the access token printed in the terminal. Required for private monitoring and actions. It stays in this page only.</p>
+<input id="control-token" type="password" autocomplete="off" placeholder="Control token" style="width:min(100%,420px);box-sizing:border-box;padding:10px">
+<button onclick="load().catch(showLoadError)">Load private data</button></section>
 <div class="grid">
 <section class="card"><h2>Workspace</h2><div class="value" id="state">Loading</div><p id="runtime" class="muted"></p></section>
 <section class="card"><h2>Memory records</h2><div class="value" id="memories">—</div></section>
@@ -111,16 +130,27 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 <pre id="agent-result" aria-live="polite"></pre></section>
 <section class="card"><h2>Controlled task actions</h2>
 <p class="muted">Enter the one-time access token printed in the Codespaces terminal. Enqueue and execution are separate actions.</p>
-<input id="control-token" type="password" autocomplete="off" placeholder="One-time control token" style="width:min(100%,420px);padding:10px;border-radius:8px;border:1px solid #40536a;background:#10151d;color:#fff">
+
 <select id="task-type" style="padding:10px;margin:8px"><option value="workspace_status">Workspace status</option><option value="memory_recent">Recent memories (read-only)</option></select>
 <button onclick="enqueueTask()">Enqueue task</button><button onclick="runTask()">Run one queued task</button>
 <pre id="action-result" aria-live="polite"></pre></section>
 <p class="muted">Refreshes every 30 seconds. Task execution is limited to the two allowlisted task types; no shell or arbitrary code execution.</p>
 <script>
+function clearPrivateData(){
+ document.getElementById('state').textContent='Locked';
+ for(const id of ['runtime','memories','tasks','integrations','security','task-list','memory-list']) document.getElementById(id).textContent='';
+}
+function showLoadError(){clearPrivateData();document.getElementById('state').textContent='Locked: check access token or connection';}
+document.getElementById('control-token').addEventListener('input',clearPrivateData);
 async function load(){
- const [s,t,m]=await Promise.all([
- fetch('/api/status').then(r=>r.json()),fetch('/api/tasks').then(r=>r.json()),fetch('/api/memories').then(r=>r.json())
- ]);
+ const token=document.getElementById('control-token').value;
+ if(!token){clearPrivateData();return}
+ const [s,t,m]=await Promise.all(['/api/status','/api/tasks','/api/memories'].map(async path=>{
+  const response=await fetch(path,{headers:{Authorization:'Bearer '+token}});
+  if(!response.ok) throw new Error('Monitoring unavailable');
+  return response.json();
+ }));
+ if(document.getElementById('control-token').value!==token) return;
  document.getElementById('state').textContent=s.status;
  document.getElementById('runtime').textContent='Python '+s.python+' · '+s.checked_at;
  document.getElementById('memories').textContent=s.memory_records??'Unavailable';
@@ -164,25 +194,43 @@ async function runTask(){
  try{await controlPost('/api/tasks/run-once',{})}
  catch(e){document.getElementById('action-result').textContent=String(e)}
 }
-load().catch(e=>{document.getElementById('state').textContent='Error';document.getElementById('task-list').textContent=String(e)});
-setInterval(()=>load().catch(()=>{}),30000);
+clearPrivateData();
+setInterval(()=>load().catch(showLoadError),30000);
 </script></body></html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "AIWorkspaceControlPlane/1.1"
 
+    def _trusted_host(self):
+        hosts = self.headers.get_all("Host", [])
+        allowed = getattr(self.server, "allowed_authorities", None)
+        if allowed is None:
+            allowed = allowed_authorities(self.server.server_port, {})
+        if len(hosts) != 1 or hosts[0].lower() not in allowed:
+            self._send(403, '{"error":"untrusted Host"}', "application/json")
+            return False
+        return True
+
     def _authorized(self):
+        if len(self.headers.get_all("Authorization", [])) != 1:
+            self._send(401, '{"error":"authentication required"}', "application/json")
+            return False
         supplied = self.headers.get("Authorization", "")
-        expected = "Bearer " + self.server.control_token
-        if not hmac.compare_digest(supplied, expected):
+        expected = "Bearer " + getattr(self.server, "control_token", "")
+        if not getattr(self.server, "control_token", "") or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
             self._send(401, '{"error":"authentication required"}', "application/json")
             return False
         origin = self.headers.get("Origin")
         host = self.headers.get("Host", "")
         if origin:
-            parsed = urlparse(origin)
-            if parsed.netloc != host or parsed.scheme not in {"http", "https"}:
+            try:
+                parsed = urlparse(origin)
+            except ValueError:
+                self._send(403, '{"error":"invalid Origin"}', "application/json")
+                return False
+            if (parsed.netloc.lower() != host.lower() or parsed.scheme not in {"http", "https"}
+                    or parsed.path or parsed.query or parsed.fragment or len(self.headers.get_all("Origin", [])) != 1):
                 self._send(403, '{"error":"cross-origin request rejected"}', "application/json")
                 return False
         fetch_site = self.headers.get("Sec-Fetch-Site")
@@ -230,9 +278,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if not self._trusted_host():
+            return
         path = urlparse(self.path).path
         if path == "/":
             return self._send(200, _page(), "text/html; charset=utf-8")
+        if path.startswith("/api/") and not self._authorized():
+            return
         if path == "/api/status":
             return self._send(200, json.dumps(status_snapshot()), "application/json")
         if path == "/api/tasks":
@@ -242,6 +294,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, '{"error":"not found"}', "application/json")
 
     def do_POST(self):
+        if not self._trusted_host():
+            return
         path = urlparse(self.path).path
         if path not in {"/api/tasks/enqueue", "/api/tasks/run-once", "/api/agent/run"}:
             return self._send(405, '{"error":"unsupported action"}', "application/json")
@@ -327,6 +381,7 @@ def main():
     if not 1024 <= args.port <= 65535:
         raise SystemExit("Port must be between 1024 and 65535.")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server.allowed_authorities = allowed_authorities(server.server_port)
     server.control_token = secrets.token_urlsafe(32)
     server.action_lock = threading.Lock()
     server.action_times = []
