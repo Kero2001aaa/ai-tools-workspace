@@ -39,6 +39,25 @@ class FreeToolContract:
         self._schemas = schemas
         self._names = frozenset(names)
 
+    def validate_model_message(self, message):
+        """Reject unapproved model-proposed calls before any tool executes.
+
+        Offline candidate API only. Does not enable HTTP tool transport.
+        """
+        calls = getattr(message, 'tool_calls', None)
+        invalid = getattr(message, 'invalid_tool_calls', None)
+        if invalid or not isinstance(calls, list) or len(calls) > 1:
+            raise ValueError('Only one valid serial tool proposal accepted')
+        if not calls:
+            return
+        call = calls[0]
+        if not isinstance(call, dict) or not isinstance(call.get('name'), str) or call.get('name') not in self._names:
+            raise ValueError('Unpinned model tool proposal')
+        cid = call.get('id')
+        if not isinstance(cid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', cid):
+            raise ValueError('Invalid tool proposal ID')
+        _validate_args(call['name'], call.get('args'))
+
     def validate(self, request):
         try:
             body = json.loads(request.content)
@@ -88,14 +107,7 @@ class FreeToolContract:
                     raise ValueError('Tool arguments too large')
                 try:
                     parsed = json.loads(args, object_pairs_hook=_unique_object)
-                    if not isinstance(parsed, dict):
-                        raise ValueError('Tool arguments must be object')
-                    if fn['name'] == 'workspace_status' and parsed:
-                        raise ValueError('Status takes no arguments')
-                    if fn['name'] == 'recent_memories':
-                        limit = parsed.get('limit', 10)
-                        if set(parsed) - {'limit'} or isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
-                            raise ValueError('Memory limit must be bounded')
+                    _validate_args(fn['name'], parsed)
                 except (ValueError, TypeError):
                     raise ValueError('Tool arguments invalid') from None
                 pending.add(cid)
@@ -119,3 +131,16 @@ def _unique_object(pairs):
             raise ValueError('Duplicate argument key')
         result[key] = value
     return result
+
+
+def _validate_args(name, parsed):
+    if not isinstance(parsed, dict):
+        raise ValueError('Tool arguments must be object')
+    if len(json.dumps(parsed)) > 8192:
+        raise ValueError('Tool arguments too large')
+    if name == 'workspace_status' and parsed:
+        raise ValueError('Status takes no arguments')
+    if name == 'recent_memories':
+        limit = parsed.get('limit', 10)
+        if set(parsed) - {'limit'} or isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+            raise ValueError('Memory limit must be bounded')
