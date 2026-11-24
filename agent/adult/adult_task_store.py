@@ -839,6 +839,8 @@ class AdultTaskStore:
                 raise InvalidTaskTransition("Requested lease release destination is not allowed.")
             if row["cancel_requested"] and next_status != "cancelled":
                 raise TaskCancelled("A cancellation request permits only cancellation.")
+            if next_status == "waiting_user":
+                raise UserApprovalRequired("Use set_waiting_user to enforce the five-failure approval gate.")
             if next_status == "cancelled" and reason != "cancel_observed":
                 raise AdultModelValidationError(
                     "Cancellation release requires the cancel_observed reason."
@@ -1729,6 +1731,8 @@ class AdultTaskStore:
             if task is None:
                 raise TaskNotFound("Task does not exist.")
             self._require_current_lease(task, task_id, lease, now)
+            if "waiting_user" not in _ALLOWED_TRANSITIONS[task["status"]]:
+                raise InvalidTaskTransition("Requested waiting-user transition is not allowed.")
             if task["state_version"] != expected_state_version:
                 raise StaleTaskVersion("Task state version changed.")
             if (
