@@ -6,7 +6,7 @@ from typing import Mapping
 
 from agent.adult.adult_attempt_tracker import AdultAttemptTracker, AttemptResult
 from agent.adult.adult_image_evaluator import AdultImageEvaluator
-from agent.adult.adult_image_input import ImageInputError, decode_image_input
+from agent.adult.adult_image_input import ImageInputError, decode_image_input, decode_image_prompt
 from agent.adult.adult_image_policies import AdultImagePolicies
 from agent.adult.adult_image_validator import ImageValidationError, validate_image
 from agent.adult.adult_router import AdultModelRouter
@@ -200,7 +200,7 @@ class AdultImagePipeline:
             if task_type != "image.generate":
                 image = self._load_image(envelope.image_payload_id, task.task_id)
             if task_type != "image.analyze":
-                self._artifact_store.load_input(envelope.prompt_payload_id, task.task_id)
+                decode_image_prompt(self._artifact_store.load_input(envelope.prompt_payload_id, task.task_id))
         except (ImageInputError, ImageValidationError):
             return self._outcome(task, step_id, "rejected", "INVALID_INPUT")
         except Exception:
@@ -286,6 +286,8 @@ class AdultImagePipeline:
             adapter_code = getattr(exc, "error_code", None)
             if adapter_code in {"input_invalid", "input_unavailable"}:
                 return fail("INVALID_INPUT", "Adapter input validation failed.", False)
+            if adapter_code == "provider_timeout":
+                return fail("PROVIDER_TIMEOUT", "Provider request timed out.", True)
             if adapter_code == "client_unavailable":
                 return fail("BACKEND_UNAVAILABLE", "Image backend is unavailable.", True)
             if adapter_code in {"output_invalid", "output_too_large"}:
@@ -296,20 +298,25 @@ class AdultImagePipeline:
         if not isinstance(result, expected):
             return fail("MODEL_OUTPUT_INVALID", "Model output failed deterministic validation.", True)
 
-        if task_type == "image.analyze":
-            evaluation = self._evaluator.evaluate(task_type, result)
-        else:
-            evaluation = self._evaluator.evaluate(
-                task_type, result,
-                output_mime_types=route.output_mime_types,
-                max_bytes=route.max_output_bytes,
-                max_width=route.max_output_width,
-                max_height=route.max_output_height,
-            )
+        try:
+            if task_type == "image.analyze":
+                evaluation = self._evaluator.evaluate(task_type, result)
+            else:
+                evaluation = self._evaluator.evaluate(
+                    task_type, result,
+                    output_mime_types=route.output_mime_types,
+                    max_bytes=route.max_output_bytes,
+                    max_width=route.max_output_width,
+                    max_height=route.max_output_height,
+                )
+        except Exception:
+            return fail("MODEL_OUTPUT_INVALID", "Output evaluation failed.", False)
+        if not isinstance(evaluation, EvaluationResult):
+            return fail("MODEL_OUTPUT_INVALID", "Output evaluation failed.", False)
         if not evaluation.accepted:
             if any(code in {"policy_rejected", "policy_unavailable"} for code in evaluation.reason_codes):
                 return fail("POLICY_REJECTED", "Output policy rejected the generated result.", False, "rejected", evaluation)
-            return fail("MODEL_OUTPUT_INVALID", "Model output failed deterministic validation.", True, "failed", evaluation)
+            return fail("MODEL_OUTPUT_INVALID", "Model output failed deterministic validation.", evaluation.needs_revision, "failed", evaluation)
         if result.cost_microusd not in {None, 0}:
             return fail("COST_POLICY_BLOCKED", "Non-zero model cost is not permitted.", False, "failed", evaluation)
 

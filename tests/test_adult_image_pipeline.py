@@ -238,10 +238,66 @@ class AdultImagePipelineTests(unittest.TestCase):
 
     def test_wrong_task_type_is_invalid_request(self):
         self.build("image.generate")
-        bad = replace(self.request, task_type="text.rewrite") if False else None
         task = replace(self.task, task_type="text.rewrite")
         with self.assertRaises(ImagePipelineError):
             self.pipeline.run_one_attempt(task, STEP_ID, self.request, CONFIG_FP, set())
+
+    def test_invalid_prompt_never_reaches_router_or_adapter(self):
+        for task_type in ("image.generate", "image.edit"):
+            with self.subTest(task_type=task_type):
+                self.build(task_type)
+                good = self.store.load_input.side_effect
+                self.store.load_input.side_effect = lambda pid, tid: b"" if pid == PROMPT_ID else good(pid, tid)
+                self.assertEqual("rejected", self.run_once().status)
+                self.router.choose_routes.assert_not_called()
+                self.tracker.begin.assert_not_called()
+
+    def test_missing_input_never_creates_attempt(self):
+        self.build("image.edit")
+        self.store.load_input.side_effect = FileNotFoundError()
+        self.assertEqual("INVALID_INPUT", self.run_once().error_code)
+        self.tracker.begin.assert_not_called()
+
+    def test_evaluator_exception_finalizes_attempt_fail_closed(self):
+        self.build("image.generate")
+        self.pipeline._evaluator.evaluate = Mock(side_effect=RuntimeError())
+        self.assertEqual("MODEL_OUTPUT_INVALID", self.run_once().error_code)
+        self.tracker.fail.assert_called_once()
+        self.store.save_output.assert_not_called()
+
+    def test_invalid_evaluator_result_finalizes_attempt_fail_closed(self):
+        self.build("image.generate")
+        self.pipeline._evaluator.evaluate = Mock(return_value=None)
+        self.assertEqual("MODEL_OUTPUT_INVALID", self.run_once().error_code)
+        self.tracker.fail.assert_called_once()
+        self.store.save_output.assert_not_called()
+
+    def test_missing_route_policy_is_not_retryable(self):
+        self.build("image.generate", max_output_width=None)
+        self.run_once()
+        self.assertFalse(self.tracker.fail.call_args.args[3])
+
+    def test_provider_timeout_error_code_maps_to_timeout(self):
+        self.build("image.generate")
+        error = RuntimeError()
+        error.error_code = "provider_timeout"
+        self.adapter.generate.side_effect = error
+        self.assertEqual("PROVIDER_TIMEOUT", self.run_once().error_code)
+        self.adapter.generate.assert_called_once()
+
+    def test_storage_failure_does_not_succeed_attempt(self):
+        self.build("image.generate")
+        self.store.save_output.side_effect = RuntimeError()
+        self.assertEqual("OUTPUT_STORAGE_FAILED", self.run_once().error_code)
+        self.tracker.succeed.assert_not_called()
+
+    def test_tracker_budget_refusal_prevents_adapter_call(self):
+        # Budget enforcement is owned by AttemptTracker; no adapter call on refusal.
+        self.build("image.generate")
+        from agent.adult.adult_attempt_tracker import AttemptBudgetExhausted
+        self.tracker.begin.side_effect = AttemptBudgetExhausted()
+        self.assertEqual("ATTEMPT_UNAVAILABLE", self.run_once().error_code)
+        self.adapter.generate.assert_not_called()
 
     def test_non_success_outcome_cannot_carry_artifact(self):
         self.build("image.generate")
