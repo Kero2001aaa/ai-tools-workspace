@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import platform
+import re
 import secrets
 import hmac
 import sqlite3
@@ -15,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 
@@ -75,6 +76,89 @@ def status_snapshot():
 
 def task_snapshot(limit=20):
     return TaskQueue().list_tasks(limit)
+
+
+_ADULT_REASON_CODES = frozenset({
+    "initial", "step_completed", "approval_required", "manual_yield", "lease_recovered",
+    "needs_input", "paused", "cancelled", "worker_released", "yielded",
+    "cancel_observed", "budget_exhausted",
+})
+_ADULT_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def _adult_store():
+    """Open the Adult store only if it already exists; a status read never creates it."""
+    from agent.adult.adult_task_store import AdultTaskStore, DEFAULT_DB_PATH
+    configured = os.environ.get("ADULT_STATE_DB")
+    path = Path(configured) if configured else DEFAULT_DB_PATH
+    if not path.is_file():
+        return None
+    return AdultTaskStore(path, read_only=True)
+
+
+def _adult_task_view(task):
+    """Allowlisted lifecycle fields only: no fingerprints, payload/artifact ids or metadata."""
+    return {
+        "task_id": task.task_id, "task_type": task.task_type, "status": task.status,
+        "created_at": task.created_at, "updated_at": task.updated_at,
+        "state_version": task.state_version, "attempt_count": task.attempt_count,
+        "failed_attempts_since_approval": task.failed_attempts_since_approval,
+        "provider_calls": task.provider_calls, "max_total_attempts": task.max_total_attempts,
+        "max_provider_calls": task.max_provider_calls, "spent_cost_microusd": task.spent_cost_microusd,
+        "deadline_at": task.deadline_at, "has_result": task.latest_result_artifact_id is not None,
+        "last_error_code": task.last_error_code, "user_action_required": task.user_action_required,
+        "cancel_requested": task.cancel_requested,
+    }
+
+
+def _adult_event_view(event):
+    reason = event.metadata.get("reason_code") if isinstance(event.metadata, dict) else None
+    return {
+        "event_type": event.event_type, "from_status": event.from_status,
+        "to_status": event.to_status, "created_at": event.created_at,
+        "reason_code": reason if isinstance(reason, str) and reason in _ADULT_REASON_CODES else None,
+    }
+
+
+def _adult_checkpoint_view(checkpoint):
+    if checkpoint is None:
+        return None
+    snap = checkpoint.snapshot
+    return {
+        "revision": checkpoint.revision, "reason": checkpoint.reason,
+        "created_at": checkpoint.created_at, "status": snap.status,
+        "user_action_required": checkpoint.user_action_required,
+        "completed_steps": len(snap.completed_step_ids), "pending_steps": len(snap.pending_step_ids),
+        "total_attempts": snap.total_attempts, "remaining_attempts": snap.remaining_attempts,
+        "remaining_wall_seconds": snap.remaining_wall_seconds,
+        "last_error_code": snap.last_error_code, "allowed_decisions": list(snap.allowed_decisions),
+    }
+
+
+def adult_tasks_snapshot(limit=20, status=None):
+    store = _adult_store()
+    if store is None:
+        return {"available": False, "tasks": []}
+    page = store.list_tasks(status=status, limit=limit)
+    tasks = []
+    for task in page.items:
+        view = _adult_task_view(task)
+        events = store.list_events(task.task_id, limit=1, newest_first=True)
+        view["latest_event"] = _adult_event_view(events[0]) if events else None
+        view["latest_checkpoint"] = _adult_checkpoint_view(store.get_latest_checkpoint(task.task_id))
+        tasks.append(view)
+    return {"available": True, "tasks": tasks, "has_more": page.has_more}
+
+
+def adult_task_detail(task_id):
+    store = _adult_store()
+    task = store.get_task(task_id) if store is not None else None
+    if task is None:
+        return None
+    view = _adult_task_view(task)
+    view["events"] = [_adult_event_view(e) for e in reversed(store.list_events(task_id, limit=50, newest_first=True))]
+    view["latest_checkpoint"] = _adult_checkpoint_view(store.get_latest_checkpoint(task_id))
+    return view
 
 
 def memory_snapshot(limit=10):
@@ -289,9 +373,36 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(status_snapshot()), "application/json")
         if path == "/api/tasks":
             return self._send(200, json.dumps(task_snapshot(), default=str), "application/json")
+        if path == "/api/adult/tasks" or path.startswith("/api/adult/tasks/"):
+            return self._adult_get(path)
         if path == "/api/memories":
             return self._send(200, json.dumps(memory_snapshot(), default=str), "application/json")
         return self._send(404, '{"error":"not found"}', "application/json")
+
+    def _adult_get(self, path):
+        from agent.adult.models import AdultModelValidationError, TASK_STATUSES
+        from agent.adult.adult_task_store import AdultTaskStoreError
+        try:
+            if path == "/api/adult/tasks":
+                query = parse_qs(urlparse(self.path).query)
+                if set(query) - {"limit", "status"} or any(len(v) != 1 for v in query.values()):
+                    raise ValueError("unsupported query")
+                limit = int(query["limit"][0]) if "limit" in query else 20
+                status = query["status"][0] if "status" in query else None
+                if not 1 <= limit <= 50 or (status is not None and status not in TASK_STATUSES):
+                    raise ValueError("invalid query")
+                return self._send(200, json.dumps(adult_tasks_snapshot(limit, status)), "application/json")
+            task_id = path[len("/api/adult/tasks/"):]
+            if urlparse(self.path).query or not _ADULT_TASK_ID_RE.fullmatch(task_id):
+                raise ValueError("invalid task id")
+            detail = adult_task_detail(task_id)
+            if detail is None:
+                return self._send(404, '{"error":"not found"}', "application/json")
+            return self._send(200, json.dumps(detail), "application/json")
+        except (ValueError, AdultModelValidationError):
+            return self._send(400, '{"error":"invalid request"}', "application/json")
+        except (AdultTaskStoreError, sqlite3.Error, OSError):
+            return self._send(503, '{"error":"Adult status unavailable"}', "application/json")
 
     def do_POST(self):
         if not self._trusted_host():
