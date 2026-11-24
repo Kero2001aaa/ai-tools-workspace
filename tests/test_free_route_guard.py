@@ -64,3 +64,31 @@ class FreeRouteGuardTests(unittest.TestCase):
         model.http_client._transport.inner=httpx.MockTransport(inner)
         self.assertEqual('WORKSPACE_OK',model.invoke('test',max_tokens=24).content)
         self.assertEqual(1,len(seen))
+
+    def test_unverified_extensions_and_dual_caps_fail(self):
+        for override in [{'modalities':['image']},{'transforms':['middle-out']},{'max_completion_tokens':999},{'messages':[{'role':'user','content':[{'type':'image_url'}]}]}]:
+            with self.subTest(override=override):
+                with httpx.Client(transport=FreeRouteTransport(httpx.MockTransport(lambda req:self.fail('network')))) as client:
+                    with self.assertRaises(ValueError):client.post(URL,json={**self.body(),**override})
+
+    def test_error_content_and_headers_sanitized(self):
+        seen=[]
+        def inner(req):
+            seen.append(req)
+            return httpx.Response(429,text='private-error-content',headers={'x-private':'private'})
+        with httpx.Client(transport=FreeRouteTransport(httpx.MockTransport(inner)),follow_redirects=True) as client:
+            response=client.post(URL,json=self.body())
+        self.assertEqual(429,response.status_code)
+        self.assertNotIn('private',response.text)
+        self.assertNotIn('x-private',response.headers)
+        self.assertEqual(1,len(seen))
+
+    def test_redirect_never_followed_even_when_client_enabled(self):
+        seen=[]
+        def inner(req):
+            seen.append(req)
+            return httpx.Response(307,headers={'location':'https://other.invalid'})
+        with httpx.Client(transport=FreeRouteTransport(httpx.MockTransport(inner)),follow_redirects=True) as client:
+            response=client.post(URL,json=self.body())
+        self.assertEqual(307,response.status_code)
+        self.assertEqual(1,len(seen))
