@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent.adult.adult_memory import AdultMemory
 from agent.memory_store import (
@@ -129,6 +130,62 @@ class MemoryAccessControlTests(unittest.TestCase):
                 self.adult_scope.remember('synthetic fact', metadata={'component_id':value})
                 feedback = SanitizedFeedback(**{**VALID_FEEDBACK.__dict__, 'component_id':value, 'lesson':'Normalize '+value+' before parsing.'})
                 self.publisher.publish_sanitized_feedback(feedback)
+
+    def test_explicit_credential_assignments_rejected_in_metadata_values(self):
+        markers = ['password=synthetic', 'API_KEY: synthetic', 'access-token = synthetic',
+                   'client_secret="synthetic"', 'Authorization: Bearer synthetic',
+                   '{"password": "synthetic"}']
+        for value in markers:
+            for metadata in ({'source':value}, {'tags':[value]}, {'source':{'source':value}}):
+                with self.subTest(metadata=metadata):
+                    with self.assertRaises(ValueError):
+                        self.adult_scope.remember('synthetic fact', metadata=metadata)
+        for value in ('password-policy', 'api_key_rotation', 'oauth/access-token',
+                      'provider.example/v1', 'owner/repo'):
+            self.adult_scope.remember('synthetic fact', metadata={'source':value})
+
+    def test_mem_acl_10_extra_fields_and_oversized_prose_rejected(self):
+        with self.assertRaises(TypeError):
+            SanitizedFeedback(**{**VALID_FEEDBACK.__dict__, 'raw_content':'synthetic'})
+        for field in ('lesson', 'recommended_action'):
+            with self.subTest(field=field):
+                feedback = SanitizedFeedback(**{**VALID_FEEDBACK.__dict__, field:'x'*1001})
+                with self.assertRaises(ValueError):
+                    self.publisher.publish_sanitized_feedback(feedback)
+
+    def test_mem_acl_07_startup_rejects_modified_schema_policy(self):
+        with sqlite3.connect(self.db_path) as db:
+            db.execute("DELETE FROM memory_namespace_acl WHERE principal='adult_agent'")
+        with self.assertRaises(MemoryAuthorizationError):
+            MemoryStore(self.db_path)
+
+    def test_mem_acl_12_sql_trace_has_scope_predicates_before_return(self):
+        self.workspace.remember('shared synthetic needle')
+        self.adult.remember_private('private synthetic needle', 'fact')
+        self.publisher.publish_sanitized_feedback(VALID_FEEDBACK)
+        original_connect = self.store._connect
+        trace = []
+        def traced_connect():
+            connection = original_connect()
+            connection.set_trace_callback(trace.append)
+            return connection
+        with patch.object(self.store, '_connect', side_effect=traced_connect):
+            cases = [
+                (lambda:self.workspace.recent(), "m.namespace='workspace'", 'can_read=1'),
+                (lambda:self.adult.recall_private('synthetic'), "m.namespace='adult'", 'can_read=1'),
+                (lambda:self.adult.recall_shareable_workspace('provider'), "m.visibility='shareable'", 'can_read_shareable=1'),
+            ]
+            for call, namespace, permission in cases:
+                trace.clear()
+                call()
+                selects = [sql for sql in trace if sql.startswith('SELECT m.id')]
+                self.assertEqual(1, len(selects))
+                where = selects[0].split(' WHERE ',1)[1]
+                self.assertIn(namespace, where)
+                self.assertIn(permission, where)
+                self.assertIn('memory_namespace_acl', where)
+                if permission == 'can_read_shareable=1':
+                    self.assertIn("m.namespace='workspace'", where)
 
     def test_feedback_publication_writes_only_sanitized_shareable_lesson(self):
         ref = self.publisher.publish_sanitized_feedback(VALID_FEEDBACK)
