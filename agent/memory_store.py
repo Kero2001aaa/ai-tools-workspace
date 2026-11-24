@@ -360,7 +360,7 @@ def _contains_local_path(value: str) -> bool:
     relative filenames and technical slash-separated identifiers stay allowed.
     """
     return bool(re.search(
-        r"(?:^|[\s=:\x22\x27(<\[{])(?:/(?!/)|~[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\]|\\\\)",
+        r"(?:^|[\s=:\x22\x27(<\[{])(?:/|~[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\]|\\\\)",
         value,
     ))
 
@@ -793,7 +793,7 @@ class FeedbackPublisherStore:
             raise TypeError("feedback must be a SanitizedFeedback record.")
         if not isinstance(feedback.category, str) or feedback.category not in FEEDBACK_CATEGORIES:
             raise ValueError("Unsupported feedback category.")
-        if not isinstance(feedback.component_id, str) or not _COMPONENT_RE.fullmatch(feedback.component_id):
+        if not isinstance(feedback.component_id, str) or not _COMPONENT_RE.fullmatch(feedback.component_id) or _contains_local_path(feedback.component_id):
             raise ValueError("component_id must be a normalized non-secret identifier.")
         if feedback.version is not None and (
             not isinstance(feedback.version, str)
