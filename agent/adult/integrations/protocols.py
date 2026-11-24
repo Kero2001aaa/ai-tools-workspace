@@ -72,8 +72,8 @@ class ImageAnalysisResult:
             raise AdultModelValidationError("Image analysis text must be a string.")
         try:
             encoded = self.text.encode("utf-8", "strict")
-        except UnicodeEncodeError as exc:
-            raise AdultModelValidationError("Image analysis text must be valid UTF-8.") from exc
+        except UnicodeEncodeError:
+            raise AdultModelValidationError("Image analysis text must be valid UTF-8.") from None
         if len(self.text) > 20_000 or len(encoded) > 80 * 1024:
             raise AdultModelValidationError("Image analysis text exceeds its size limit.")
         _validate_image_result_usage(self.usage, self.cost_microusd)
