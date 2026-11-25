@@ -43,3 +43,9 @@ explicit bounded segment. Changed source/instruction are rejected. Tests exercis
 cache loss, exact restore, one result/no replay, and an actual separate process
 observing missing input with zero attempts. Post-attempt ephemeral loss still
 cannot be repaired through this narrow method and is not claimed supported.
+
+A zero-attempt loss between the leased input check and pipeline input loading
+also returns needs_input. The execution step remains pending until begin()
+commits an attempt, so exact restoration can rerun it without a fabricated
+lease-recovery checkpoint or a forbidden step reset. A committed unknown
+attempt is still never replayed.
