@@ -55,6 +55,53 @@ def _parse_plan(content):
     return validated
 
 
+def _review_projection(request, results):
+    """Valid JSON with a fair bounded excerpt for every specialist, never raw slicing."""
+    def clipped(value, limit):
+        if not isinstance(value, str):
+            raise ValueError('supervisor_evidence_invalid')
+        try:
+            value.encode('utf-8')
+        except UnicodeError:
+            raise ValueError('supervisor_evidence_invalid') from None
+        return value[:limit]
+    if not 1 <= len(results) <= MAX_ASSIGNMENTS:
+        raise ValueError('supervisor_evidence_invalid')
+    request_excerpt = clipped(request.strip(), 2000)
+    def project(limit):
+        entries = []
+        for result in results:
+            if not isinstance(result, dict) or result.get('specialist') not in ALLOWED_ASSIGNMENT_ROLES:
+                raise ValueError('supervisor_evidence_invalid')
+            if type(result.get('truncated')) is not bool:
+                raise ValueError('supervisor_evidence_invalid')
+            analysis = result.get('analysis')
+            excerpt = clipped(analysis, limit)
+            entries.append({'specialist': result['specialist'],
+                'task': clipped(result.get('task'), 500),
+                'task_truncated': len(result['task']) > 500, 'analysis': excerpt,
+                'analysis_original_characters': len(analysis),
+                'analysis_excerpt_truncated': len(excerpt) < len(analysis),
+                'upstream_truncated': result.get('truncated') is True,
+                'trust': 'untrusted_specialist_output'})
+        return {'request': request_excerpt, 'request_truncated': len(request.strip()) > len(request_excerpt),
+            'specialist_results': entries, 'evidence_scope': 'supplied_untrusted_excerpts_only',
+            'instruction': 'Do not infer omitted text. Flag incomplete evidence and unsupported claims.'}
+    # JSON escaping can expand text. Binary search bounds the actual serialized
+    # character count while giving each result the same excerpt allocation.
+    low, high, best = 0, 3000, None
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = json.dumps(project(middle), ensure_ascii=False, separators=(',', ':'))
+        if len(candidate) <= MAX_REVIEW_CONTEXT:
+            best = candidate;low = middle + 1
+        else:
+            high = middle - 1
+    if best is None:
+        raise ValueError('supervisor_evidence_too_large')
+    return best
+
+
 def supervise_request(request, context=""):
     """Plan once, run up to two specialists, then run one review; no retries or side effects."""
     if not isinstance(request, str) or not request.strip() or len(request) > 4000:
@@ -62,6 +109,10 @@ def supervise_request(request, context=""):
     if not isinstance(context, str) or len(context) > 4000:
         raise ValueError("context must contain at most 4,000 characters")
 
+    # Refuse input-only impossible review overhead before model construction or
+    # planning. The shortest legal role/task makes this a conservative lower bound.
+    _review_projection(request, [{'specialist': 'coding', 'task': 'x',
+        'analysis': '', 'truncated': False}])
     model = load_chat_model()
     if model is None:
         raise RuntimeError("No chat model configured; supervised workflows are unavailable offline.")
@@ -87,6 +138,10 @@ def supervise_request(request, context=""):
     if time.monotonic() - started >= MAX_WORKFLOW_SECONDS:
         raise TimeoutError("Supervisor planning exceeded the workflow time budget")
 
+    # Once exact plan tasks are known, fixed review metadata can be checked
+    # without spending any specialist calls, even with zero analysis text.
+    _review_projection(request, [{**assignment, 'analysis': '', 'truncated': False}
+        for assignment in plan])
     results = []
     for assignment in plan:
         if time.monotonic() - started >= MAX_WORKFLOW_SECONDS:
@@ -96,13 +151,7 @@ def supervise_request(request, context=""):
         )
         results.append({**assignment, **result})
 
-    review_context = json.dumps(
-        {"request": request.strip(), "specialist_results": results},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    if len(review_context) > MAX_REVIEW_CONTEXT:
-        review_context = review_context[:MAX_REVIEW_CONTEXT]
+    review_context = _review_projection(request, results)
     if time.monotonic() - started >= MAX_WORKFLOW_SECONDS:
         raise TimeoutError("Workflow time budget reached before final review")
 
@@ -114,6 +163,9 @@ def supervise_request(request, context=""):
         review_context,
         model=model,
     )
+
+    if time.monotonic() - started >= MAX_WORKFLOW_SECONDS:
+        raise TimeoutError("Supervisor final review exceeded the workflow time budget")
 
     sections = []
     for result in results:
@@ -135,5 +187,7 @@ def supervise_request(request, context=""):
             "Specialists have no tools or side effects.",
             "No automatic retries; failures stop the workflow.",
             "The workflow does not edit files or execute code.",
+            "Review uses explicitly truncated untrusted excerpts, not complete source evidence.",
+            "Elapsed checks do not interrupt a blocking model call.",
         ],
     }
