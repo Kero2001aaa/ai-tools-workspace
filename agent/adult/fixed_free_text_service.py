@@ -35,7 +35,7 @@ class FixedFreeTextService:
             raise ValueError('fixed_free_endpoint_required')
         self.tasks, self.artifacts, self.cipher, self.config = tasks, artifacts, cipher, config
         self.registry = ModelCapabilityRegistry(tasks)
-        self.tracker = AdultAttemptTracker(tasks)
+        self.tracker = AdultAttemptTracker(tasks, route_validator=self.registry.current_text_route_in_transaction)
 
     def _fingerprint(self, task_type):
         return self.cipher.fingerprint(b'fixed-free-text-service-v1:' + task_type.encode('ascii'))
