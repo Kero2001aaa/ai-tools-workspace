@@ -27,5 +27,21 @@ to plan results. Real temporary file, FIFO, symlink, concurrent-change and actua
 repository code-source tests exercise the read boundary. This does not accept
 Stage5.1or a code-understanding journey without review and downstream integration.
 
+## Local code quote report, separate candidate
+
+`build_code_quote_report` accepts a question and1-5exact file/line selections,
+then reads each through the approved-file boundary. Caller cannot supply quote
+text: returned quotes come from those actual reads. Repeated selections from the
+same file must have identical full-file hashes or the whole report fails. Different
+files are not an atomic snapshot. Output identifies relative path, exact line
+range, full/excerpt hashes and quote, with source-data-only labels. It never labels
+local code as Exa/Firecrawl or fabricates web URLs. Empty quotes are refused.
+
+This is a quote-only report, not generated code understanding or a correctness
+review. No claims, automatic selection, source execution, persistence, plan-result
+attachment or model call is added. There is no visual rendering, so downstream UI
+must escape all strings and treat supplied question/quotes as untrusted. Maximum
+input read is5x64KiB+1across selections, with up to5x200returned lines. Existing
+root trust, source secrecy and kernel-I/O limitations apply without expansion.
 Line numbering follows Python str.splitlines, including NEL(U+0085), U+2028 and
 U+2029 as breaks as well as CR/LF. It may differ from a newline-only editor count.
