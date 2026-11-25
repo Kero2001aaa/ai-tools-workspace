@@ -19,9 +19,9 @@ class ApplicationTests(unittest.TestCase):
         service = self.service()
         return FixedFreeTextApplication(service,budget=TaskBudget(max_provider_calls=1))
 
-    def test_explicit_retention_required_before_any_task_is_created(self):
+    def test_retention_must_be_boolean_before_any_task_is_created(self):
         app=self.application()
-        for consent in (False,None,1,'true'):
+        for consent in (None,1,'true'):
             with self.assertRaises(ValueError):app.submit_text_task('text.analyze','private context',retain_payload=consent)
         self.assertEqual((),self.tasks.list_tasks().items)
 
@@ -87,3 +87,68 @@ class ApplicationTests(unittest.TestCase):
         other=app._service.artifacts.save_output('other-task','other-attempt',b'Other private result.','text/plain')
         forged=replace(self.tasks.get_task(task),status='completed',latest_result_artifact_id=other.artifact_id)
         with self.assertRaises(PayloadNotFound):task_result_chunk(forged,app._service.artifacts)
+
+    def test_default_ephemeral_stages_without_environment_key_or_persistent_input(self):
+        app=self.application()
+        with patch.dict('os.environ',{},clear=True),patch(
+            'agent.adult.integrations.omniroute_chat.build_chat_model') as factory:
+            task=app.submit_text_task('text.analyze','Transient private source.')['task_id']
+            request=self.tasks.get_task_request(task)
+            self.assertEqual('ephemeral',request.retention_policy)
+            self.assertEqual('checkpointed',app.get_task(task)['status'])
+            factory.assert_not_called()
+        with self.artifacts._connection() as db:
+            self.assertEqual(0,db.execute("SELECT COUNT(*) FROM adult_payload_records").fetchone()[0])
+        self.assertIn(b'Transient private source.',self.artifacts.load_input(request.payload_id,task))
+        for file in self.root.rglob('*'):
+            if file.is_file():self.assertNotIn(b'Transient private source.',file.read_bytes())
+
+    def test_ephemeral_same_process_fake_completion_and_no_replay(self):
+        app=self.application();self.enable_route(app._service)
+        fake=Mock();fake.invoke.return_value=SimpleNamespace(content='Safe fake result.',usage_metadata={},response_metadata={})
+        with patch('agent.adult.integrations.omniroute_chat.build_chat_model',return_value=fake):
+            task=app.submit_text_task('text.analyze','Transient source.')['task_id']
+            self.assertEqual('completed',app.run_task(task)['task']['status'])
+            self.assertEqual(b'Safe fake result.',base64.b64decode(app.get_result_chunk(task)['data_base64']))
+            self.assertEqual('completed',app.run_task(task)['task']['status'])
+            self.assertEqual(1,fake.invoke.call_count)
+
+    def test_ephemeral_process_cache_loss_requires_input_and_zero_attempts(self):
+        from agent.adult.fixed_free_text_service import FixedFreeTextService
+        from agent.adult.payload_store import AdultArtifactStore
+        app=self.application();self.enable_route(app._service)
+        task=app.submit_text_task('text.analyze','Transient source.')['task_id']
+        reopened=FixedFreeTextService(self.tasks,AdultArtifactStore(self.root/'retained',cipher=self.cipher),
+                                      self.cipher,app._service.config)
+        other=FixedFreeTextApplication(reopened,budget=TaskBudget(max_provider_calls=1))
+        with patch('agent.adult.integrations.omniroute_chat.build_chat_model') as factory:
+            outcome=other.run_task(task)
+            self.assertEqual('needs_input',outcome['task']['status'])
+            self.assertTrue(outcome['task']['user_action_required'])
+            self.assertEqual('input_required',outcome['error_code'])
+            self.assertEqual([],other.get_attempts(task));factory.assert_not_called()
+        self.assertEqual('cancelled',other.cancel_task(task)['status'])
+
+    def test_actual_new_process_reports_ephemeral_loss_without_provider_configuration(self):
+        import os,subprocess,sys
+        app=self.application()
+        task=app.submit_text_task('text.analyze','Ephemeral process private source.')['task_id']
+        code="""
+import json,os
+from pathlib import Path
+from agent.adult.adult_task_store import AdultTaskStore
+from agent.adult.payload_store import AdultArtifactStore,PayloadCipher
+from agent.adult.fixed_free_text_service import FixedFreeTextService
+from agent.adult.integrations.omniroute_chat import AdultOmniRouteConfig
+root=Path(os.environ['TEST_ROOT']);cipher=PayloadCipher(os.environ['TEST_KEY'])
+service=FixedFreeTextService(AdultTaskStore(root/'tasks.sqlite3'),
+    AdultArtifactStore(root/'retained',cipher=cipher),cipher,
+    AdultOmniRouteConfig('https://openrouter.ai/api/v1','synthetic-offline-only'))
+first=service.run(os.environ['TEST_TASK']);second=service.run(os.environ['TEST_TASK'])
+print(json.dumps({'first':first.status,'second':second.status,
+    'attempts':service.tasks.get_task(first.task_id).attempt_count}))
+"""
+        result=subprocess.run([sys.executable,'-c',code],env={**os.environ,
+            'TEST_ROOT':str(self.root),'TEST_KEY':self.key,'TEST_TASK':task},capture_output=True,text=True,timeout=20)
+        self.assertEqual(0,result.returncode,result.stderr)
+        self.assertEqual({'first':'needs_input','second':'needs_input','attempts':0},json.loads(result.stdout))
