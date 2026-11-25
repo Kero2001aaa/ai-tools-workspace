@@ -50,6 +50,9 @@ class RequestContractTests(unittest.TestCase):
         for task in ('image.analyze','image.edit'):
             validate_request('adult_submit_image_task',{'task_type':task,'prompt':'' if task=='image.analyze' else 'blue',
                              'image_base64':encoded,'image_mime_type':'image/png'})
+        # An optional bounded analysis prompt validates like generate/edit prompts.
+        validate_request('adult_submit_image_task',{'task_type':'image.analyze','prompt':'read the sign',
+                         'image_base64':encoded,'image_mime_type':'image/png'})
         for args in ({'task_type':'image.analyze','prompt':''},
                      {'task_type':'image.edit','prompt':'','image_base64':encoded},
                      {'task_type':'image.generate','prompt':'red','image_base64':encoded},
