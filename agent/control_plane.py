@@ -227,14 +227,21 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 <select id="task-type" style="padding:10px;margin:8px"><option value="workspace_status">حالة مساحة العمل</option><option value="memory_recent">آخر الذكريات (قراءة فقط)</option></select>
 <button onclick="enqueueTask()">إضافة للطابور</button><button onclick="runTask()">تنفيذ مهمة واحدة من الطابور</button>
 <pre id="action-result" aria-live="polite"></pre></section>
+<p class="muted">تغيير رمز الدخول يخفي النتائج الخاصة، لكنه لا يلغي طلبات أُرسلت بالفعل. افحص الحالة الحالية قبل إعادة إجراء لا تعرف نتيجته.</p>
 <p class="muted">تتحدث المتابعة كل 30 ثانية. تسمح اللوحة بإضافة حالة مساحة العمل وآخر الذكريات فقط. لا تعرض أنواع مهام الخادم الأخرى، ولا تنفيذ shell أو كود عشوائي.</p>
 <script>
 let monitoringEpoch=0;
 let monitoringRequest=0;
 let reportRequest=0;
+let actionRequest=0;
+let agentRequest=0;
 function clearPrivateData(){
  monitoringEpoch++;
  reportRequest++;
+ actionRequest++;
+ agentRequest++;
+ document.getElementById('agent-result').textContent='';
+ document.getElementById('action-result').textContent='';
  document.getElementById('saved-report').textContent='';
  document.getElementById('state').textContent='Locked';
  for(const id of ['runtime','memories','tasks','integrations','security','task-list','memory-list','plan-list']) document.getElementById(id).textContent='';
@@ -320,11 +327,17 @@ async function loadSavedReport(){
 }
 async function controlPost(path,body){
  const token=document.getElementById('control-token').value;
- if(!token){document.getElementById('action-result').textContent='Enter the one-time token first.';return}
- const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(body)});
- const data=await response.json();
- document.getElementById('action-result').textContent=JSON.stringify(data,null,2);
- if(response.ok) await load();
+ const epoch=monitoringEpoch;const request=++actionRequest;
+ const output=document.getElementById('action-result');
+ if(!token){output.textContent='Enter the one-time token first.';return}
+ const current=()=>document.getElementById('control-token').value===token && monitoringEpoch===epoch && actionRequest===request;
+ try{
+  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(body)});
+  const data=await response.json();
+  if(!current())return;
+  output.textContent=JSON.stringify(data,null,2);
+  if(response.ok) await load();
+ }catch(error){if(current())output.textContent='Action result unavailable. Check current state before retrying; a submitted action may already have completed.';}
 }
 async function runAgent(){
  const request=document.getElementById('agent-request').value.trim();
@@ -333,24 +346,24 @@ async function runAgent(){
  const token=document.getElementById('control-token').value;
  if(!token){document.getElementById('agent-result').textContent='Enter the one-time token first.';return}
  const output=document.getElementById('agent-result');
+ const epoch=monitoringEpoch;const currentRequest=++agentRequest;
+ const current=()=>document.getElementById('control-token').value===token && monitoringEpoch===epoch && agentRequest===currentRequest;
  output.textContent='Agent is working…';
  try{
   const response=await fetch('/api/agent/run',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({request})});
   const data=await response.json();
-  output.textContent=JSON.stringify(data,null,2);
- }catch(e){output.textContent=String(e)}
+  if(current())output.textContent=JSON.stringify(data,null,2);
+ }catch(error){if(current())output.textContent='Agent result unavailable. A submitted request may already have completed; check state before retrying.';}
 }
 async function enqueueTask(){
  if(!confirm('Enqueue this allowlisted task?')) return;
  const type=document.getElementById('task-type').value;
  const payload=type==='memory_recent'?{limit:5}:{};
- try{await controlPost('/api/tasks/enqueue',{task_type:type,payload,max_attempts:1})}
- catch(e){document.getElementById('action-result').textContent=String(e)}
+ await controlPost('/api/tasks/enqueue',{task_type:type,payload,max_attempts:1});
 }
 async function runTask(){
  if(!confirm('Execute exactly one due task from the allowlist?')) return;
- try{await controlPost('/api/tasks/run-once',{})}
- catch(e){document.getElementById('action-result').textContent=String(e)}
+ await controlPost('/api/tasks/run-once',{});
 }
 clearPrivateData();
 setInterval(()=>load().catch(showLoadError),30000);
