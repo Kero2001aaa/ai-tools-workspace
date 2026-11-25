@@ -9,7 +9,9 @@ The confirmation names plan ID, last-read status and completed/total counts,
 explaining no running-process kill, no completed-result rollback and no resume.
 
 One click after confirmation submits the exact last-read updated_at once. A global
-in-flight fence disables double submission; token/epoch/selection/request fences
+in-flight fence disables double submission and selector refresh. Monitoring
+requests already in flight are invalidated at submit and settlement, so an older
+snapshot cannot silently repopulate candidates after the outcome. Token/epoch/selection/request fences
 hide stale success/failure text. Token changes clear candidates and result. After
 a response or unknown transport outcome, candidates are cleared and the operator
 must reload state before another attempt. No automatic retry or cancellation is

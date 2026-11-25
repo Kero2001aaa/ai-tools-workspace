@@ -294,6 +294,7 @@ async function load(){
  renderPlans(p);
 }
 function renderPlans(snapshot){
+ if(!cancelInFlight){
  cancellablePlans.clear();
  const select=document.getElementById('cancel-plan');
  const previous=select.value;
@@ -307,6 +308,7 @@ function renderPlans(snapshot){
  }
  if(cancellablePlans.has(previous))select.value=previous;
  updateCancelPreview();
+ }
  const panel=document.getElementById('plan-list');
  if(!snapshot.available){panel.textContent='Plan store unavailable. No database created.';return}
  if(!snapshot.plans.length){panel.textContent='No plans yet.';return}
@@ -339,6 +341,7 @@ async function cancelSelectedPlan(){
  if(!confirm('إلغاء الباقي من الخطة '+plan.id+'؟ الحالة '+plan.status+'، المكتمل '+plan.completed+'/'+plan.total+'. لا إيقاف لعملية جارية ولا حذف للمكتمل. لا يمكن استكمال الخطة بعد الإلغاء.'))return;
  if(document.getElementById('control-token').value!==token||monitoringEpoch!==epoch||document.getElementById('cancel-plan').value!==id)return;
  cancelInFlight=true;
+ monitoringRequest++;
  document.getElementById('cancel-plan-button').disabled=true;
  const current=()=>document.getElementById('control-token').value===token&&monitoringEpoch===epoch&&cancelRequest===request&&document.getElementById('cancel-plan').value===id;
  try{
@@ -349,7 +352,7 @@ async function cancelSelectedPlan(){
   cancellablePlans.clear();
   document.getElementById('cancel-plan').textContent='';updateCancelPreview();
  }catch(error){if(current()){output.textContent='نتيجة الإلغاء غير معروفة. أعد قراءة الحالة قبل أي محاولة أخرى.';cancellablePlans.clear();document.getElementById('cancel-plan').textContent='';updateCancelPreview();}}
- finally{cancelInFlight=false;document.getElementById('cancel-plan-button').disabled=false;}
+ finally{monitoringRequest++;cancelInFlight=false;document.getElementById('cancel-plan-button').disabled=false;}
 }
 function clearSavedReport(){reportRequest++;document.getElementById('saved-report').textContent='';}
 document.getElementById('report-plan').addEventListener('input',clearSavedReport);

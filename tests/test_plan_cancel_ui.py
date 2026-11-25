@@ -25,8 +25,9 @@ function select(){document.getElementById('control-token').value='token';renderP
  select();assert.equal(cancellablePlans.size,1);
  consent=false;await cancelSelectedPlan();assert.equal(posts.length,0);assert.match(previews[0],/plan-id/);assert.match(previews[0],/1\/2/);
  consent=true;let first=cancelSelectedPlan();await cancelSelectedPlan();assert.equal(posts.length,1);assert.equal(document.getElementById('cancel-plan-button').disabled,true);
+ renderPlans({available:true,plans:[]});assert.equal(cancellablePlans.size,1);
  assert.equal(posts[0].path,'/api/plans/cancel');assert.deepEqual(JSON.parse(posts[0].options.body),{plan_id:'plan-id',expected_updated_at:'version-one'});
- pending.shift().resolve({ok:true,json:async()=>({status:'cancelled'})});await first;assert.match(document.getElementById('plan-cancel-result').textContent,/تم إلغاء/);assert.equal(cancellablePlans.size,0);await cancelSelectedPlan();assert.equal(posts.length,1);
+ const epochBefore=monitoringRequest;pending.shift().resolve({ok:true,json:async()=>({status:'cancelled'})});await first;assert.ok(monitoringRequest>epochBefore);assert.match(document.getElementById('plan-cancel-result').textContent,/تم إلغاء/);assert.equal(cancellablePlans.size,0);await cancelSelectedPlan();assert.equal(posts.length,1);
  select();first=cancelSelectedPlan();clearPrivateData();pending.shift().resolve({ok:true,json:async()=>({status:'cancelled'})});await first;assert.equal(document.getElementById('plan-cancel-result').textContent,'');
  select();first=cancelSelectedPlan();document.getElementById('cancel-plan').value='other';document.getElementById('cancel-plan').listeners.change();pending.shift().resolve({ok:false,json:async()=>({error:'private'})});await first;assert.equal(document.getElementById('plan-cancel-result').textContent,'');
  select();first=cancelSelectedPlan();pending.shift().reject(Error('lost'));await first;assert.match(document.getElementById('plan-cancel-result').textContent,/غير معروفة/);assert.equal(cancellablePlans.size,0);
