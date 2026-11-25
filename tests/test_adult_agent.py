@@ -55,17 +55,17 @@ class AdultAgentTests(unittest.TestCase):
         self.assertEqual(1,self.adapter.calls)
         self.assertEqual(1,self.image_helper.adapter.calls['generate'])
 
-    def test_mime_and_unsupported_analysis_prompt_refused_before_creation(self):
+    def test_mime_refused_and_optional_analysis_prompt_supported(self):
         app = self.agent();image = image_fixtures.png_bytes()
         with self.assertRaises(ValueError):
             app.submit_image_task('image.edit','make it blue',image,'image/jpeg')
-        with self.assertRaises(ValueError):
-            app.submit_image_task('image.analyze','read the sign',image,'image/png')
         with self.assertRaises(ValueError):
             app.submit_image_task('image.generate','a red square',mime_type='image/png')
         self.assertEqual(0,len(app.list_tasks()['tasks']))
         task = app.submit_image_task('image.analyze','',image,'image/png')['task_id']
         self.assertEqual('checkpointed',app.get_task(task)['status'])
+        prompted = app.submit_image_task('image.analyze','read the sign',image,'image/png')['task_id']
+        self.assertEqual('checkpointed',app.get_task(prompted)['status'])
 
     def test_cancel_dispatches_neither_modality_and_metadata_reads_are_readonly(self):
         app = self.agent()
