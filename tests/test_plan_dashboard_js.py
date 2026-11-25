@@ -18,8 +18,8 @@ class PlanDashboardJSTests(unittest.TestCase):
         harness = '''
 const assert=require('assert');
 const elements=new Map();
-global.document={getElementById(id){
- if(!elements.has(id))elements.set(id,{textContent:'',value:'',addEventListener(){},set innerHTML(x){throw Error('unsafe HTML')}});
+global.document={createElement(){return {value:"",textContent:""}},getElementById(id){
+ if(!elements.has(id))elements.set(id,{textContent:'',value:'',appendChild(){},addEventListener(){},set innerHTML(x){throw Error('unsafe HTML')}});
  return elements.get(id);
 }};
 global.setInterval=()=>0;
@@ -40,7 +40,7 @@ console.log('DOM states, safe text rendering and token-clear passed');
         script = re.search(r'<script>(.*?)</script>', _page(), re.S).group(1)
         harness = '''
 const assert=require('assert');const elements=new Map();
-global.document={getElementById(id){if(!elements.has(id))elements.set(id,{textContent:'',value:'',addEventListener(){}});return elements.get(id);}};
+global.document={createElement(){return {value:"",textContent:""}},getElementById(id){if(!elements.has(id))elements.set(id,{textContent:'',value:'',appendChild(){},addEventListener(){}});return elements.get(id);}};
 global.setInterval=()=>0;let releases=[];
 global.fetch=()=>new Promise(resolve=>releases.push(()=>resolve({ok:true,json:async()=>({})})));
 '''
@@ -58,7 +58,7 @@ console.log('Late response after token change ignored');})().catch(e=>{console.e
         script = re.search(r'<script>(.*?)</script>', _page(), re.S).group(1)
         harness = """
 const assert=require('assert');const elements=new Map();
-global.document={getElementById(id){if(!elements.has(id))elements.set(id,{textContent:'',value:'',addEventListener(){}});return elements.get(id);}};
+global.document={createElement(){return {value:"",textContent:""}},getElementById(id){if(!elements.has(id))elements.set(id,{textContent:'',value:'',appendChild(){},addEventListener(){}});return elements.get(id);}};
 global.setInterval=()=>0;let releases=[];
 global.fetch=()=>new Promise(resolve=>releases.push(()=>resolve({ok:true,json:async()=>({})})));
 """
@@ -76,7 +76,7 @@ assert.equal(document.getElementById('plan-list').textContent,'');
         script = re.search(r'<script>(.*?)</script>', _page(), re.S).group(1)
         harness = """
 const assert=require('assert');const elements=new Map();
-global.document={getElementById(id){if(!elements.has(id))elements.set(id,{textContent:'',value:'',addEventListener(){},innerHTML:''});return elements.get(id);}};
+global.document={createElement(){return {value:"",textContent:""}},getElementById(id){if(!elements.has(id))elements.set(id,{textContent:'',value:'',appendChild(){},addEventListener(){},innerHTML:''});return elements.get(id);}};
 global.setInterval=()=>0;let releases=[];
 global.fetch=(path)=>new Promise(resolve=>releases.push((label)=>resolve({ok:true,json:async()=>path==='/api/status'?{status:label,integrations:{},security:{}}:path==='/api/plans'?{available:false}:[]})));
 """
@@ -94,7 +94,7 @@ assert.equal(document.getElementById('state').textContent,'new');
         script = re.search(r'<script>(.*?)</script>', _page(), re.S).group(1)
         harness = """
 const assert=require('assert');const elements=new Map();
-global.document={getElementById(id){if(!elements.has(id))elements.set(id,{textContent:'',value:'',addEventListener(){},innerHTML:''});return elements.get(id);}};
+global.document={createElement(){return {value:"",textContent:""}},getElementById(id){if(!elements.has(id))elements.set(id,{textContent:'',value:'',appendChild(){},addEventListener(){},innerHTML:''});return elements.get(id);}};
 global.setInterval=()=>0;let releases=[];
 global.fetch=(path)=>new Promise((resolve,reject)=>releases.push({reject,resolve:()=>resolve({ok:true,json:async()=>path==='/api/status'?{status:'new',integrations:{},security:{}}:path==='/api/plans'?{available:false}:[]})}));
 """

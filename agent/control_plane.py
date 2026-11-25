@@ -209,7 +209,13 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 <section class="card"><h2>إعدادات الأمان</h2><pre id="security"></pre></section>
 </div>
 <section class="card"><h2>آخر المهام</h2><pre id="task-list">بانتظار التحميل</pre></section>
-<section class="card"><h2>الخطط العامة</h2><p class="muted">عرض حالة الخطط للقراءة فقط. العمل الجاري ذو النتيجة المجهولة ينتظر التحقق، ولا يُعاد تلقائيًا.</p><pre id="plan-list" aria-live="polite">مقفل</pre></section>
+<section class="card"><h2>الخطط العامة</h2><p class="muted">عرض حالة الخطط للقراءة فقط. العمل الجاري ذو النتيجة المجهولة ينتظر التحقق، ولا يُعاد تلقائيًا.</p><pre id="plan-list" aria-live="polite">مقفل</pre>
+<h3>إلغاء الباقي من خطة غير جارية</h3>
+<p class="muted">اختر خطة من آخر قراءة ثم أكد إلغاء الباقي. لا يوقف عملية جارية ولا يمحو نتيجة مكتملة. الإلغاء نهائي ولا يمكن استكمال الخطة بعده. الحالة القديمة أو المجهولة تُرفض، أعد القراءة قبل المحاولة التالية.</p>
+<label>الخطة <select id="cancel-plan" style="max-width:100%;padding:8px"><option value="">حمّل المتابعة أولًا</option></select></label>
+<pre id="cancel-plan-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;direction:ltr;text-align:left"></pre>
+<button id="cancel-plan-button" onclick="cancelSelectedPlan()">مراجعة وإلغاء الباقي</button>
+<pre id="plan-cancel-result" aria-live="polite"></pre></section>
 <section class="card"><h2>تقرير اقتباسات الكود المحفوظ</h2>
 <p class="muted">اعرض تقريرًا محليًا مكتملًا من اقتباسات فقط. لا يقرأ المصدر ولا ينفذ مهمة أو يستدعي نموذجًا. نسخة محفوظة كنص غير مشفر، وليست الكود الحالي أو فهمًا بنموذج.</p>
 <label>معرّف الخطة <bdi>Plan ID</bdi> <input id="report-plan" maxlength="36" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px"></label>
@@ -236,8 +242,20 @@ let monitoringRequest=0;
 let reportRequest=0;
 let actionRequest=0;
 let agentRequest=0;
+let cancelRequest=0;
+let cancelInFlight=false;
+let cancellablePlans=new Map();
+function clearPlanCancellation(){
+ cancelRequest++;
+ cancellablePlans.clear();
+ const select=document.getElementById('cancel-plan');
+ select.textContent='';
+ document.getElementById('cancel-plan-preview').textContent='';
+ document.getElementById('plan-cancel-result').textContent='';
+}
 function clearPrivateData(){
  monitoringEpoch++;
+ clearPlanCancellation();
  reportRequest++;
  actionRequest++;
  agentRequest++;
@@ -276,6 +294,19 @@ async function load(){
  renderPlans(p);
 }
 function renderPlans(snapshot){
+ cancellablePlans.clear();
+ const select=document.getElementById('cancel-plan');
+ const previous=select.value;
+ select.textContent='';
+ const empty=document.createElement('option');empty.value='';empty.textContent='اختر خطة غير جارية';select.appendChild(empty);
+ for(const plan of snapshot.plans||[]){
+  if(['queued','checkpointed','paused'].includes(plan.status) && !plan.steps.some(step=>step.status==='running'||step.outcome_reconciliation_required)){
+   cancellablePlans.set(plan.id,{id:plan.id,updated_at:plan.updated_at,status:plan.status,completed:plan.completed_steps,total:plan.total_steps});
+   const option=document.createElement('option');option.value=plan.id;option.textContent=plan.id+' · '+plan.status+' · '+plan.completed_steps+'/'+plan.total_steps;select.appendChild(option);
+  }
+ }
+ if(cancellablePlans.has(previous))select.value=previous;
+ updateCancelPreview();
  const panel=document.getElementById('plan-list');
  if(!snapshot.available){panel.textContent='Plan store unavailable. No database created.';return}
  if(!snapshot.plans.length){panel.textContent='No plans yet.';return}
@@ -291,6 +322,34 @@ function renderPlans(snapshot){
  }
  if(snapshot.has_more) lines.push('More plans exist. Showing the latest bounded page.');
  panel.textContent=lines.join('\\n');
+}
+function updateCancelPreview(){
+ const plan=cancellablePlans.get(document.getElementById('cancel-plan').value);
+ document.getElementById('cancel-plan-preview').textContent=plan?'Plan '+plan.id+' · '+plan.status+' · '+plan.completed+'/'+plan.total:'';
+}
+document.getElementById('cancel-plan').addEventListener('change',()=>{cancelRequest++;document.getElementById('plan-cancel-result').textContent='';updateCancelPreview();});
+async function cancelSelectedPlan(){
+ const output=document.getElementById('plan-cancel-result');
+ const token=document.getElementById('control-token').value;
+ const id=document.getElementById('cancel-plan').value;
+ const plan=cancellablePlans.get(id);
+ if(cancelInFlight)return;
+ if(!token||!plan){output.textContent='حمّل المتابعة واختر خطة غير جارية أولًا.';return}
+ const epoch=monitoringEpoch;const request=++cancelRequest;
+ if(!confirm('إلغاء الباقي من الخطة '+plan.id+'؟ الحالة '+plan.status+'، المكتمل '+plan.completed+'/'+plan.total+'. لا إيقاف لعملية جارية ولا حذف للمكتمل. لا يمكن استكمال الخطة بعد الإلغاء.'))return;
+ if(document.getElementById('control-token').value!==token||monitoringEpoch!==epoch||document.getElementById('cancel-plan').value!==id)return;
+ cancelInFlight=true;
+ document.getElementById('cancel-plan-button').disabled=true;
+ const current=()=>document.getElementById('control-token').value===token&&monitoringEpoch===epoch&&cancelRequest===request&&document.getElementById('cancel-plan').value===id;
+ try{
+  const response=await fetch('/api/plans/cancel',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({plan_id:id,expected_updated_at:plan.updated_at})});
+  const result=await response.json();
+  if(!current())return;
+  output.textContent=response.ok?'تم إلغاء الباقي. أعد تحميل المتابعة لرؤية الحالة الحالية.':'رُفض الإلغاء. أعد قراءة الحالة، لا تعاود تلقائيًا.';
+  cancellablePlans.clear();
+  document.getElementById('cancel-plan').textContent='';updateCancelPreview();
+ }catch(error){if(current()){output.textContent='نتيجة الإلغاء غير معروفة. أعد قراءة الحالة قبل أي محاولة أخرى.';cancellablePlans.clear();document.getElementById('cancel-plan').textContent='';updateCancelPreview();}}
+ finally{cancelInFlight=false;document.getElementById('cancel-plan-button').disabled=false;}
 }
 function clearSavedReport(){reportRequest++;document.getElementById('saved-report').textContent='';}
 document.getElementById('report-plan').addEventListener('input',clearSavedReport);
