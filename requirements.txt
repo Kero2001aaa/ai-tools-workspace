@@ -2,6 +2,8 @@
 # Provider credentials are optional; no hosted service is called by default.
 langgraph
 langchain-mcp-adapters
+# Direct FastMCP 1.x API imports in the local stdio servers; MCP 2.x is not compatible.
+mcp==1.30.0
 langchain-openai
 httpx
 python-dotenv
