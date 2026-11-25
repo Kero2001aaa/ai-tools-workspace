@@ -287,13 +287,17 @@ class AdultAttemptTracker:
         store: AdultTaskStore,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        route_validator: Callable | None = None,
     ) -> None:
         if not isinstance(store, AdultTaskStore):
             raise TypeError("store must be an AdultTaskStore.")
         if not callable(clock):
             raise TypeError("clock must be callable.")
+        if route_validator is not None and not callable(route_validator):
+            raise TypeError("route_validator must be callable.")
         self._store = store
         self._clock = clock
+        self._route_validator = route_validator
 
     def _now(self) -> str:
         return _utc_text(self._clock())
@@ -433,6 +437,8 @@ class AdultAttemptTracker:
                 or task["lease_expires_at"] <= now or task["lease_generation"] <= 0
             ):
                 raise LeaseLost("A current unexpired task lease is required.")
+            if self._route_validator is not None and self._route_validator(db, route, now) is not True:
+                raise AttemptNotAvailable("Selected route is no longer verified and enabled.")
             if task["deadline_at"] <= now:
                 raise AttemptBudgetExhausted("Task wall-time budget is exhausted.")
             if task["failed_attempts_since_approval"] >= 5:
