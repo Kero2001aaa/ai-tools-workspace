@@ -148,7 +148,7 @@ class BoundedImageApplicationTests(unittest.TestCase):
     def test_nonterminal_executor_error_is_not_hidden(self):
         app = self.app()
         task = app.submit_image_task('image.generate', prompt='a red square')['task_id']
-        with patch.object(self.executor, 'run', side_effect=RuntimeError('test failure')):
+        with patch.object(app.supervisor, 'run_until_done', side_effect=RuntimeError('test failure')):
             with self.assertRaises(RuntimeError):
                 app.run_task(task)
         self.assertEqual('checkpointed', self.tasks.get_task(task).status)
