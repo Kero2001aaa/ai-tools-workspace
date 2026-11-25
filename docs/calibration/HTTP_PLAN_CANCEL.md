@@ -17,7 +17,10 @@ no process interrupted and no completed result rolled back. There is no uncancel
 
 A success receipt returns only plan_id, status and updated_at. A lifecycle/store
 refusal returns fixed409 without private title, payload, result or path. Shape
-errors return400. If the response is lost, reload current state before retrying;
+errors for framing, a non-object body, missing/extra fields or duplicate keys
+return400. Invalid field values (including UUID, case, type, null or length)
+follow the same fixed409 refusal as lifecycle/store failures. If the response
+is lost, reload current state before retrying;
 a completed cancellation may already have committed. There is no exactly-once
 transport guarantee or new audit database. The plan's cancelled state/timestamp
 are its durable outcome. Schema checks do not authenticate hostile databases or
