@@ -336,7 +336,15 @@ async function controlPost(path,body){
   const data=await response.json();
   if(!current())return;
   output.textContent=JSON.stringify(data,null,2);
-  if(response.ok) await load();
+  if(response.ok){
+   try{await load();}
+   catch(error){
+    if(current()){
+     document.getElementById('state').textContent='Monitoring unavailable';
+     document.getElementById('runtime').textContent='Action response retained below. Monitoring refresh failed; do not repeat a successful action.';
+    }
+   }
+  }
  }catch(error){if(current())output.textContent='Action result unavailable. Check current state before retrying; a submitted action may already have completed.';}
 }
 async function runAgent(){
