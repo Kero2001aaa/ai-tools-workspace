@@ -53,12 +53,10 @@ class AdultAgent:
                 raise ValueError('image_mime_mismatch')
         elif mime_type is not None:
             raise ValueError('unexpected_image_mime')
-        # Existing image-analysis envelope is image-only. Do not silently drop
-        # an optional analysis instruction that the lower contract cannot hold.
-        if task_type == 'image.analyze' and prompt:
-            raise ValueError('analysis_prompt_not_supported')
+        # An optional analysis prompt is supported by the envelope below and
+        # stays bound to the task fingerprint; an empty prompt stays promptless.
         return self.image.submit_image_task(task_type, image=image_bytes,
-            prompt=None if task_type == 'image.analyze' else prompt, retain_payload=retain_payload)
+            prompt=prompt if prompt else None, retain_payload=retain_payload)
 
     def get_task(self, task_id):
         return self._application(task_id).get_task(task_id)
