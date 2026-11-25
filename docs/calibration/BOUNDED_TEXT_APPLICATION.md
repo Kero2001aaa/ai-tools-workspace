@@ -30,6 +30,16 @@ server factory, environment configuration or transport registration. The injecte
 executor owns its existing fixed adapter mapping and route registry. Five-failure
 approval tests use only deterministic local adapters and software-simulated
 operator decisions. Completed/cancelled input cleanup is input-only and reports
-failure separately, preserving results and preventing replay. Full ephemeral
-restart restoration for this generic facade, image orchestration, list/attempts
+failure separately, preserving results and preventing replay. Image orchestration, list/attempts
 facade and a complete AdultAgent contract remain unfinished.
+
+The existing executor now checks an ephemeral cache reference under its normal
+lease before creating/running a model step. Missing bytes release to needs_input
+with zero attempts rather than being reported as a provider failure. Encrypted
+key/integrity failures retain their existing behavior. The internal facade's
+restore_input_and_resume uses the same narrow exact-input restoration transaction
+as the fixed service, accepts only a zero-attempt needs_input task, and runs one
+explicit bounded segment. Changed source/instruction are rejected. Tests exercise
+cache loss, exact restore, one result/no replay, and an actual separate process
+observing missing input with zero attempts. Post-attempt ephemeral loss still
+cannot be repaired through this narrow method and is not claimed supported.
