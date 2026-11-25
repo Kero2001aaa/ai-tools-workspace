@@ -180,8 +180,8 @@ def allowed_authorities(port, env=None):
 
 def _page():
     return """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Workspace Control Plane</title>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Workspace Control Plane · لوحة مساحة العمل</title>
 <style>
 :root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#10151d;color:#e8edf5}
 body{margin:0 auto;max-width:1100px;padding:32px 20px}h1{margin-bottom:6px}p,.muted{color:#9aa8ba}
@@ -189,43 +189,45 @@ body{margin:0 auto;max-width:1100px;padding:32px 20px}h1{margin-bottom:6px}p,.mu
 .card{background:#192331;border:1px solid #2a394b;border-radius:12px;padding:18px}
 h2{font-size:1rem;margin:0 0 12px}.value{font-size:1.8rem;font-weight:700}
 ul{padding-left:20px;line-height:1.8}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#c6d4e4}
+pre,input{direction:ltr;text-align:left;unicode-bidi:plaintext}pre{font-size:0.85rem;line-height:1.6}label{display:block;margin-top:10px}button,select{margin-block:5px;max-width:100%}ul{padding-inline-start:20px}bdi{unicode-bidi:isolate}
 button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px;cursor:pointer}
 </style></head><body>
-<h1>AI Workspace</h1><p>Local control plane · authenticated monitoring and task controls · no secrets exposed</p>
-<section class="card"><h2>Unlock monitoring</h2>
-<p class="muted">Enter the access token printed in the terminal. Required for private monitoring and actions. It stays in this page only.</p>
-<input id="control-token" type="password" autocomplete="off" placeholder="Control token" style="width:min(100%,420px);box-sizing:border-box;padding:10px">
-<button onclick="load().catch(showLoadError)">Load private data</button></section>
+<h1>مساحة العمل <bdi>AI Workspace</bdi></h1><p>لوحة محلية خاصة · المتابعة والإجراءات تحتاج رمز دخول · لا تعرض قيم الأسرار</p>
+<section class="card"><h2>فتح المتابعة</h2>
+<p class="muted">أدخل رمز الدخول الظاهر في الطرفية. مطلوب للمتابعة الخاصة والإجراءات، ولا يُحفظ بعد مغادرة الصفحة.</p>
+<input id="control-token" type="password" autocomplete="off" placeholder="رمز الدخول" aria-label="رمز الدخول" style="width:min(100%,420px);box-sizing:border-box;padding:10px">
+<button onclick="load().catch(showLoadError)">تحميل البيانات الخاصة</button></section>
+<p class="muted">دليل الحالة: <bdi>online</bdi> متصل · <bdi>Locked</bdi> مقفل · <bdi>completed</bdi> مكتمل · <bdi>cancelled</bdi> ملغى. تبقى معرّفات المهام والحالات التقنية والنتائج بلغتها الأصلية دون ترجمة.</p>
 <div class="grid">
-<section class="card"><h2>Workspace monitoring</h2><div class="value" id="state">Loading</div><p id="runtime" class="muted"></p></section>
-<section class="card"><h2>Memory records</h2><div class="value" id="memories">—</div></section>
-<section class="card"><h2>Task records</h2><div class="value" id="tasks">—</div></section>
+<section class="card"><h2>متابعة مساحة العمل</h2><div class="value" id="state">بانتظار التحميل</div><p id="runtime" class="muted"></p></section>
+<section class="card"><h2>سجلات الذاكرة</h2><div class="value" id="memories">—</div></section>
+<section class="card"><h2>سجلات المهام</h2><div class="value" id="tasks">—</div></section>
 </div>
 <div class="grid">
-<section class="card"><h2>Integrations</h2><ul id="integrations"></ul></section>
-<section class="card"><h2>Security posture</h2><pre id="security"></pre></section>
+<section class="card"><h2>التكاملات</h2><ul id="integrations"></ul></section>
+<section class="card"><h2>إعدادات الأمان</h2><pre id="security"></pre></section>
 </div>
-<section class="card"><h2>Recent tasks</h2><pre id="task-list">Loading…</pre></section>
-<section class="card"><h2>General plans</h2><p class="muted">Read-only lifecycle from the plan store. Unknown running work waits for reconciliation, never automatic replay.</p><pre id="plan-list" aria-live="polite">Locked</pre></section>
-<section class="card"><h2>Saved code quote report</h2>
-<p class="muted">Read a completed local quote-only report. No source read, task execution or model call. Stored plaintext snapshot, not current code or model understanding.</p>
-<label>Plan ID <input id="report-plan" maxlength="36" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px"></label>
-<label>Step ID <input id="report-step" maxlength="36" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px"></label>
-<button onclick="loadSavedReport()">Read saved report</button>
-<pre id="saved-report" aria-live="polite">Locked</pre></section>
-<section class="card"><h2>Recent memory</h2><pre id="memory-list">Loading…</pre></section>
-<section class="card"><h2>AI Agent</h2>
-<p class="muted">Runs one explicit request through the configured model and approved MCP tools. Provider charges or free-tier limits may apply. Disabled until ENABLE_DASHBOARD_AGENT=true is set in the private .env file.</p>
-<textarea id="agent-request" rows="5" maxlength="4000" placeholder="Describe the research or task for the agent" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #40536a;background:#10151d;color:#fff"></textarea>
-<button onclick="runAgent()">Run AI request</button>
+<section class="card"><h2>آخر المهام</h2><pre id="task-list">بانتظار التحميل</pre></section>
+<section class="card"><h2>الخطط العامة</h2><p class="muted">عرض حالة الخطط للقراءة فقط. العمل الجاري ذو النتيجة المجهولة ينتظر التحقق، ولا يُعاد تلقائيًا.</p><pre id="plan-list" aria-live="polite">مقفل</pre></section>
+<section class="card"><h2>تقرير اقتباسات الكود المحفوظ</h2>
+<p class="muted">اعرض تقريرًا محليًا مكتملًا من اقتباسات فقط. لا يقرأ المصدر ولا ينفذ مهمة أو يستدعي نموذجًا. نسخة محفوظة كنص غير مشفر، وليست الكود الحالي أو فهمًا بنموذج.</p>
+<label>معرّف الخطة <bdi>Plan ID</bdi> <input id="report-plan" maxlength="36" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px"></label>
+<label>معرّف الخطوة <bdi>Step ID</bdi> <input id="report-step" maxlength="36" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px"></label>
+<button onclick="loadSavedReport()">عرض التقرير المحفوظ</button>
+<pre id="saved-report" aria-live="polite">مقفل</pre></section>
+<section class="card"><h2>آخر الذكريات</h2><pre id="memory-list">بانتظار التحميل</pre></section>
+<section class="card"><h2>طلب للمساعد</h2>
+<p class="muted">ينفذ طلبًا صريحًا واحدًا بالنموذج المُعدّ والأدوات المسموحة. قد تُستهلك حصة مجانية؛ لا يُسمح بمسار مدفوع تلقائي. معطل حتى يفعّله المشغّل في الإعداد الخاص: ENABLE_DASHBOARD_AGENT=true.</p>
+<textarea id="agent-request" rows="5" maxlength="4000" placeholder="اكتب طلب البحث أو المهمة للمساعد" dir="auto" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #40536a;background:#10151d;color:#fff"></textarea>
+<button onclick="runAgent()">تنفيذ طلب المساعد</button>
 <pre id="agent-result" aria-live="polite"></pre></section>
-<section class="card"><h2>Controlled task actions</h2>
-<p class="muted">Enter the one-time access token printed in the Codespaces terminal. Enqueue and execution are separate actions.</p>
+<section class="card"><h2>إجراءات المهام المحدودة</h2>
+<p class="muted">يجب إدخال رمز الدخول الظاهر في طرفية Codespaces. إضافة المهمة للطابور لا تشغّلها؛ التنفيذ إجراء منفصل.</p>
 
-<select id="task-type" style="padding:10px;margin:8px"><option value="workspace_status">Workspace status</option><option value="memory_recent">Recent memories (read-only)</option></select>
-<button onclick="enqueueTask()">Enqueue task</button><button onclick="runTask()">Run one queued task</button>
+<select id="task-type" style="padding:10px;margin:8px"><option value="workspace_status">حالة مساحة العمل</option><option value="memory_recent">آخر الذكريات (قراءة فقط)</option></select>
+<button onclick="enqueueTask()">إضافة للطابور</button><button onclick="runTask()">تنفيذ مهمة واحدة من الطابور</button>
 <pre id="action-result" aria-live="polite"></pre></section>
-<p class="muted">Refreshes every 30 seconds. The dashboard can enqueue only Workspace status and Recent memories. Other server task types are not offered here; no shell or arbitrary code execution.</p>
+<p class="muted">تتحدث المتابعة كل 30 ثانية. تسمح اللوحة بإضافة حالة مساحة العمل وآخر الذكريات فقط. لا تعرض أنواع مهام الخادم الأخرى، ولا تنفيذ shell أو كود عشوائي.</p>
 <script>
 let monitoringEpoch=0;
 let monitoringRequest=0;
