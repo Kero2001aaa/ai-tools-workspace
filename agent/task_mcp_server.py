@@ -1,5 +1,6 @@
 """MCP tools for the explicit, allowlisted local task queue."""
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictInt
 
 from agent.task_queue import ALLOWED_TASK_TYPES, TaskQueue
 from agent.task_worker import run_once
@@ -9,8 +10,8 @@ task_queue = TaskQueue()
 
 
 @mcp.tool()
-def enqueue_task(task_type: str, payload: dict | None = None, max_attempts: int = 3) -> dict:
-    """Queue one approved local task: workspace_status or memory_recent."""
+def enqueue_task(task_type: str, payload: dict | None = None, max_attempts: StrictInt = 3) -> dict:
+    """Queue one approved local task: workspace_status, memory_recent, or explicitly configured local_code_report."""
     if task_type not in ALLOWED_TASK_TYPES:
         raise ValueError(f"Unsupported task type: {task_type}")
     return task_queue.enqueue(task_type, payload, max_attempts=max_attempts)

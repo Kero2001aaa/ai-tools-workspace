@@ -6,7 +6,24 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DEFAULT_DB = Path(".data") / "tasks.sqlite3"
-ALLOWED_TASK_TYPES = {"workspace_status", "memory_recent"}
+ALLOWED_TASK_TYPES = {"workspace_status", "memory_recent", "local_code_report"}
+
+
+def validate_task_payload(task_type, payload):
+    """One explicit payload contract before persistence and before dispatch."""
+    if not isinstance(task_type, str) or task_type not in ALLOWED_TASK_TYPES:
+        raise ValueError("Unsupported task type")
+    if not isinstance(payload, dict):
+        raise ValueError("Task payload must be a JSON object")
+    if task_type == "workspace_status" and payload:
+        raise ValueError("workspace_status does not accept a payload")
+    if task_type == "memory_recent":
+        limit = payload.get("limit", 5)
+        if set(payload) - {"limit"} or type(limit) is not int or not 1 <= limit <= 20:
+            raise ValueError("memory_recent accepts only an integer limit from 1 to 20")
+    if task_type == "local_code_report":
+        from agent.code_task import validate_payload
+        validate_payload(payload)
 
 
 def _now():
@@ -22,7 +39,8 @@ class TaskQueue:
 
     def __init__(self, db_path=None):
         self.db_path = Path(db_path or DEFAULT_DB).expanduser()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        from agent.private_sqlite import prepare_database
+        prepare_database(self.db_path)
         with self._connect() as db:
             db.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -40,6 +58,12 @@ class TaskQueue:
                     updated_at TEXT NOT NULL
                 )
             """)
+            from agent.task_attempts import initialize
+            initialize(db)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
+            if "plan_step_id" not in columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN plan_step_id TEXT")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_plan_step ON tasks(plan_step_id) WHERE plan_step_id IS NOT NULL")
             db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_ready ON tasks(status, run_at, created_at)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_lease ON tasks(status, locked_at)")
 
@@ -49,13 +73,10 @@ class TaskQueue:
         return db
 
     def enqueue(self, task_type, payload=None, *, run_at=None, max_attempts=3):
-        if task_type not in ALLOWED_TASK_TYPES:
-            raise ValueError(f"Unsupported task type: {task_type}")
-        if not 1 <= max_attempts <= 10:
-            raise ValueError("max_attempts must be between 1 and 10")
-        data = payload or {}
-        if not isinstance(data, dict):
-            raise ValueError("Task payload must be a JSON object")
+        if type(max_attempts) is not int or not 1 <= max_attempts <= 10:
+            raise ValueError("max_attempts must be an integer between 1 and 10")
+        data = {} if payload is None else payload
+        validate_task_payload(task_type, data)
         encoded = json.dumps(data, separators=(",", ":"), sort_keys=True)
         if len(encoded) > 4000:
             raise ValueError("Task payload must be 4,000 characters or fewer")
@@ -100,7 +121,7 @@ class TaskQueue:
             db.execute("BEGIN IMMEDIATE")
             stale = db.execute(
                 "SELECT id, attempts, max_attempts FROM tasks "
-                "WHERE status = 'running' AND locked_at < ?", (cutoff,)
+                "WHERE status = 'running' AND plan_step_id IS NULL AND locked_at < ?", (cutoff,)
             ).fetchall()
             for row in stale:
                 status = "pending" if row["attempts"] < row["max_attempts"] else "failed"
@@ -109,7 +130,7 @@ class TaskQueue:
                     (status, "Worker lease expired", current_stamp, row["id"]),
                 )
             row = db.execute(
-                "SELECT id FROM tasks WHERE status='pending' AND run_at<=? "
+                "SELECT id FROM tasks WHERE status='pending' AND plan_step_id IS NULL AND run_at<=? "
                 "ORDER BY run_at, created_at LIMIT 1", (current_stamp,)
             ).fetchone()
             if row is None:
@@ -127,6 +148,90 @@ class TaskQueue:
             raise
         finally:
             db.close()
+
+    def bind_plan_step(self, db, step):
+        """Bind inside the caller's plan transaction, on this exact database."""
+        if step["task_type"] not in ALLOWED_TASK_TYPES:
+            raise ValueError("Unsupported plan task type")
+        payload = json.loads(step["payload"])
+        if not isinstance(payload, dict) or len(step["payload"]) > 4000:
+            raise ValueError("Invalid plan payload")
+        # Reuse the plan's operation-specific payload validator without broadening
+        # either the queue allowlist or any tool's input schema.
+        from agent.plan_store import _validate_step
+        _validate_step({"task_type":step["task_type"],"payload":payload})
+        task_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "workspace-plan-step:" + step["id"]))
+        now = _stamp(_now())
+        db.execute("""INSERT OR IGNORE INTO tasks
+            (id,task_type,payload,status,attempts,max_attempts,run_at,created_at,updated_at,plan_step_id)
+            VALUES(?,?,?,'pending',0,1,?,?,?,?)""",
+            (task_id,step["task_type"],step["payload"],now,now,now,step["id"]))
+        task = db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
+        if (task is None or task["plan_step_id"] != step["id"]
+                or task["task_type"] != step["task_type"] or task["payload"] != step["payload"]):
+            raise ValueError("Plan execution identity conflict")
+        return self._as_dict(task)
+
+    def claim_plan_task(self, task_id):
+        """Targeted claim. Unknown running outcomes are never automatically replayed."""
+        from agent.task_attempts import fingerprints
+        now = _stamp(_now())
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            changed = db.execute("""UPDATE tasks SET status='running',attempts=attempts+1,
+                locked_at=?,updated_at=? WHERE id=? AND status='pending' AND plan_step_id IS NOT NULL""",
+                (now,now,task_id)).rowcount
+            if not changed:
+                db.commit()
+                return None
+            task = db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
+            method, inputs = fingerprints(task['task_type'], json.loads(task['payload']))
+            prior = db.execute("SELECT retry_reason FROM task_attempts WHERE task_id=? ORDER BY attempt_no DESC LIMIT 1",(task_id,)).fetchone()
+            db.execute("""INSERT INTO task_attempts
+                (task_id,attempt_no,plan_step_id,method_fingerprint,input_fingerprint,
+                 claim_stamp,started_at,status,retry_reason) VALUES(?,?,?,?,?,?,?,'running',?)""",
+                (task_id,task['attempts'],task['plan_step_id'],method,inputs,now,now,prior[0] if prior else None))
+            db.commit()
+        return self.get(task_id)
+
+    def finish_plan_task(self, claim, *, result=None, error=None):
+        """Fence completion to the exact persisted claim, not just a running ID."""
+        if not isinstance(claim, dict) or not claim.get("plan_step_id"):
+            raise ValueError("Plan task claim required")
+        encoded = json.dumps(result,separators=(",",":"),sort_keys=True,default=str) if error is None else None
+        if encoded is not None and len(encoded)>20000:
+            raise ValueError("Task result must be 20,000 characters or fewer")
+        from agent.task_attempts import classify, digest
+        failure, retryable, code = classify(error) if error is not None else (None, False, None)
+        now = _stamp(_now())
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            changed = db.execute("""UPDATE tasks SET status=?,result=?,last_error=?,locked_at=NULL,updated_at=?
+                WHERE id=? AND status='running' AND attempts=? AND locked_at=? AND plan_step_id=?""",
+                ("succeeded" if error is None else "failed",encoded,str(error)[:2000] if error is not None else None,
+                 now,claim["id"],claim["attempts"],claim["locked_at"],claim["plan_step_id"])).rowcount
+            if changed != 1:
+                raise ValueError("Plan execution claim lost")
+            journal = db.execute("""UPDATE task_attempts SET status=?,finished_at=?,failure_class=?,retryable=?,
+                error_code=?,result_sha256=? WHERE task_id=? AND attempt_no=? AND plan_step_id=?
+                AND claim_stamp=? AND status='running'""",
+                ('succeeded' if error is None else 'failed',now,failure,int(retryable),code,
+                 digest(encoded) if encoded is not None else None,claim['id'],claim['attempts'],
+                 claim['plan_step_id'],claim['locked_at'])).rowcount
+            # Legacy running claims have no new journal and remain recoverable by
+            # their original fencing rules; do not invent historical attempts.
+            if journal != 1 and db.execute("SELECT 1 FROM task_attempts WHERE task_id=? AND attempt_no=?",(claim['id'],claim['attempts'])).fetchone():
+                raise ValueError('Attempt journal claim lost')
+            db.commit()
+        return self.get(claim["id"])
+
+    def list_plan_attempts(self, task_id, limit=100):
+        """Authorized local evidence only. No payload/result/error text in journal."""
+        if type(limit) is not int or not 1<=limit<=100:
+            raise ValueError("Attempt history limit must be 1 to 100")
+        with self._connect() as db:
+            rows = db.execute('SELECT * FROM (SELECT * FROM task_attempts WHERE task_id=? ORDER BY attempt_no DESC LIMIT ?) ORDER BY attempt_no', (task_id,limit)).fetchall()
+        return [dict(row) for row in rows]
 
     def complete(self, task_id, result):
         encoded = json.dumps(result, separators=(",", ":"), sort_keys=True, default=str)
@@ -154,7 +259,7 @@ class TaskQueue:
         with self._connect() as db:
             changed = db.execute(
                 """UPDATE tasks SET status=?, result=?, last_error=?, run_at=COALESCE(?, run_at),
-                   locked_at=NULL, updated_at=? WHERE id=? AND status='running'""",
+                   locked_at=NULL, updated_at=? WHERE id=? AND status='running' AND plan_step_id IS NULL""",
                 (status, result, error, run_at, now, task_id),
             ).rowcount
         if not changed:

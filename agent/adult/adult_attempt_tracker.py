@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 
 from agent.adult.adult_task_store import ACTIVE_STATUSES, AdultTaskStore
 from agent.adult.adult_task_store import LeaseLost, TaskNotFound
-from agent.adult.models import AdultModelValidationError, RouteCandidate
+from agent.adult.models import AdultModelValidationError, RouteCandidate, TaskLease
 
 
 _ATTEMPT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$")
@@ -287,13 +287,17 @@ class AdultAttemptTracker:
         store: AdultTaskStore,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        route_validator: Callable | None = None,
     ) -> None:
         if not isinstance(store, AdultTaskStore):
             raise TypeError("store must be an AdultTaskStore.")
         if not callable(clock):
             raise TypeError("clock must be callable.")
+        if route_validator is not None and not callable(route_validator):
+            raise TypeError("route_validator must be callable.")
         self._store = store
         self._clock = clock
+        self._route_validator = route_validator
 
     def _now(self) -> str:
         return _utc_text(self._clock())
@@ -395,7 +399,7 @@ class AdultAttemptTracker:
     def begin(
         self, task_id: str, step_id: str, route: RouteCandidate,
         input_fingerprint: str, config_fingerprint: str,
-        *, retry_reason: str | None = None,
+        *, retry_reason: str | None = None, lease: TaskLease | None = None,
     ) -> AttemptHandle:
         _validate_identifier("task_id", task_id)
         _validate_identifier("step_id", step_id)
@@ -418,6 +422,10 @@ class AdultAttemptTracker:
             ).fetchone()
             if task is None:
                 raise TaskNotFound("Task does not exist.")
+            if lease is not None:
+                # Bind a caller-owned execution to its fenced lease, atomically
+                # with attempt creation. Legacy direct callers remain unchanged.
+                self._store._require_current_lease(task, task_id, lease, now)
             if task["status"] in {"completed", "failed", "cancelled"}:
                 raise AttemptNotAvailable("Terminal tasks cannot start new attempts.")
             if task["status"] not in ACTIVE_STATUSES:
@@ -429,6 +437,8 @@ class AdultAttemptTracker:
                 or task["lease_expires_at"] <= now or task["lease_generation"] <= 0
             ):
                 raise LeaseLost("A current unexpired task lease is required.")
+            if self._route_validator is not None and self._route_validator(db, route, now) is not True:
+                raise AttemptNotAvailable("Selected route is no longer verified and enabled.")
             if task["deadline_at"] <= now:
                 raise AttemptBudgetExhausted("Task wall-time budget is exhausted.")
             if task["failed_attempts_since_approval"] >= 5:
@@ -765,6 +775,40 @@ class AdultAttemptTracker:
         if result is None:
             raise AttemptTrackerError("Attempt failure did not produce a result.")
         return result
+
+    def list_summaries(self, task_id: str) -> tuple[AttemptSummary, ...]:
+        """Read this task's bounded attempt metadata, never input/output bytes."""
+        _validate_identifier("task_id", task_id)
+        with self._store._connect() as db:
+            rows = db.execute("SELECT * FROM adult_attempts WHERE task_id=? ORDER BY attempt_no LIMIT 20",
+                              (task_id,)).fetchall()
+            return tuple(self._summary(row) for row in rows)
+
+    def list_skipped(self, task_id: str, limit: int = 20) -> tuple[dict, ...]:
+        """Latest bounded duplicate audit, separate from actual provider attempts.
+
+        Do not return audit metadata, approach keys, error summaries or content.
+        Join to the original attempt to avoid trusting duplicate-event metadata.
+        """
+        _validate_identifier("task_id", task_id)
+        if type(limit) is not int or not 1 <= limit <= 20:
+            raise AttemptValidationError("Invalid skipped history limit.")
+        db = self._store._connect()
+        try:
+            rows = db.execute(
+                """SELECT e.event_id,e.created_at,a.attempt_id,a.attempt_no,
+                          a.adapter_id,a.adapter_version,a.provider_id,a.model_id,
+                          a.tool_id,a.status
+                   FROM adult_attempt_events e
+                   JOIN adult_attempts a ON a.task_id=e.task_id
+                       AND a.approach_key=e.approach_key
+                   WHERE e.task_id=? AND e.event_type='approach_skipped'
+                   ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?""",
+                (task_id, limit),
+            ).fetchall()
+            return tuple({**dict(row), "skipped_as_duplicate": True} for row in reversed(rows))
+        finally:
+            db.close()
 
     def find_prior_approach(
         self, task_id: str, approach_key: str

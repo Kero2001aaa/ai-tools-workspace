@@ -103,11 +103,13 @@ class ImageAnalysisRequest:
     step_id: str
     input_payload_id: str
     mime_type: str
+    prompt_payload_id: str | None = None
 
     def __post_init__(self) -> None:
         _identifier("task_id", self.task_id)
         _identifier("step_id", self.step_id)
         _identifier("input_payload_id", self.input_payload_id)
+        _identifier("prompt_payload_id", self.prompt_payload_id, optional=True)
         if self.mime_type not in {"image/png", "image/jpeg", "image/webp"}:
             raise ValueError("Unsupported image MIME type.")
 

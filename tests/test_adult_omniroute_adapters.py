@@ -24,8 +24,8 @@ class AdultOmniRouteAdapterTests(unittest.TestCase):
     def test_adult_config_reads_adult_namespace_only_and_hides_key(self):
         values = {
             "MODEL_API_KEY": "workspace-secret",
-            "MODEL_NAME": "workspace-model",
-            "MODEL_BASE_URL": "https://workspace.example/v1",
+            "MODEL_NAME": "openrouter/free",
+            "MODEL_BASE_URL": "https://openrouter.ai/api/v1",
             "ADULT_OMNIROUTE_API_KEY": "adult-secret",
             "ADULT_OMNIROUTE_BASE_URL": "https://adult.example/v1",
         }
@@ -67,25 +67,25 @@ class AdultOmniRouteAdapterTests(unittest.TestCase):
     def test_explicit_factory_uses_bounded_no_retry_configuration(self):
         with patch("langchain_openai.ChatOpenAI") as chat_model:
             build_chat_model(
-                api_key="test-key", model="test-model",
-                base_url="https://example.invalid/v1",
+                api_key="test-key", model="openrouter/free",
+                base_url="https://openrouter.ai/api/v1",
             )
         options = chat_model.call_args.kwargs
         self.assertEqual(30, options["timeout"])
         self.assertEqual(0, options["max_retries"])
-        self.assertEqual("https://example.invalid/v1", options["base_url"])
+        self.assertEqual("https://openrouter.ai/api/v1", options["base_url"])
 
     def test_workspace_loader_keeps_existing_model_namespace(self):
         with patch.dict(os.environ, {
             "MODEL_API_KEY": "workspace-key",
-            "MODEL_NAME": "workspace-model",
-            "MODEL_BASE_URL": "https://workspace.example/v1",
+            "MODEL_NAME": "openrouter/free",
+            "MODEL_BASE_URL": "https://openrouter.ai/api/v1",
         }, clear=True), patch("agent.model.load_dotenv"), patch("langchain_openai.ChatOpenAI") as chat_model:
             load_chat_model()
         options = chat_model.call_args.kwargs
         self.assertEqual("workspace-key", options["api_key"])
-        self.assertEqual("workspace-model", options["model"])
-        self.assertEqual("https://workspace.example/v1", options["base_url"])
+        self.assertEqual("openrouter/free", options["model"])
+        self.assertEqual("https://openrouter.ai/api/v1", options["base_url"])
 
     def test_adapter_and_artifact_results_reject_unsafe_metadata(self):
         from agent.adult.integrations.protocols import AdapterResult, ArtifactResult

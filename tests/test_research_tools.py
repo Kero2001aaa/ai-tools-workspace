@@ -53,6 +53,32 @@ class ResearchToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status["firecrawl_configured"])
         self.assertNotIn("secret-exa", str(status))
 
+    def test_bounded_source_evidence_digest_and_count(self):
+        import hashlib
+        item = {'title': 'T' * 500, 'url': 'https://example.com/source', 'text': 'x' * 20000}
+        results = _normalize_exa_results({'results': [item] * 20})
+        self.assertEqual(10, len(results))
+        self.assertEqual(12000, len(results[0]['snippet']))
+        self.assertEqual(300, len(results[0]['title']))
+        self.assertTrue(results[0]['truncated'])
+        self.assertEqual(hashlib.sha256(('x' * 12000).encode()).hexdigest(), results[0]['evidence_sha256'])
+
+    def test_malformed_and_unsafe_sources_fail_closed(self):
+        for payload in ({'results': {}}, {'results': [None]}, {'results': [{'url': 'http://127.0.0.1'}]},
+                        {'results': [{'url': 'https://example.com', 'text': {}}]},
+                        {'results': [{'url': 'https://example.com', 'highlights': 'bad'}]}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                _normalize_exa_results(payload)
+        for payload in ([], {'data': {'web': 'bad'}}, {'data': [None]}):
+            with self.assertRaises(ValueError):
+                _normalize_firecrawl_results(payload)
+
+    async def test_invalid_search_bounds_never_create_client(self):
+        with patch('agent.research_mcp_server.httpx.AsyncClient', side_effect=AssertionError('no network')):
+            for query, limit in ((None, 1), ('x' * 2001, 1), ('valid', True), ('valid', 11)):
+                with self.assertRaises(ValueError):
+                    await search_web(query, limit)
+
 
 if __name__ == "__main__":
     unittest.main()

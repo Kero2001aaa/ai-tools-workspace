@@ -39,7 +39,7 @@ class ControlPlaneTests(unittest.TestCase):
             queue = TaskQueue(task_path)
             queue.enqueue("workspace_status")
             with patch("agent.control_plane.MemoryStore", return_value=store), \
-                 patch("agent.control_plane.TaskQueue", return_value=queue):
+                 patch("agent.task_monitoring.DEFAULT_DB", task_path):
                 self.assertEqual(1, len(memory_snapshot(10)))
                 self.assertEqual(1, len(task_snapshot(20)))
 

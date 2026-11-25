@@ -131,6 +131,7 @@ class ArtifactChunk:
     mime_type: str
     next_offset: int
     eof: bool
+    sha256: str | None = None
 
 
 def _validate_task_id(task_id: str) -> None:
@@ -719,6 +720,28 @@ class AdultArtifactStore:
             )
             return PayloadRef(payload_id, task_id, True, expiry)
 
+    def restore_transient_input(self, task_id: str, payload_id: str, data: bytes) -> None:
+        """Restore an absent original input reference, never persist or overwrite.
+
+        The trusted application verifies the task/type/keyed fingerprint first.
+        A byte-identical cached value makes a response-loss retry idempotent.
+        """
+        _validate_task_id(task_id)
+        _validate_payload_id(payload_id)
+        if not isinstance(data, bytes):
+            raise TypeError("Input payload must be bytes.")
+        if len(data) > self.max_input_bytes:
+            raise PayloadTooLarge("Input payload exceeds its configured size limit.")
+        with self._lock:
+            if self._get_record(payload_id) is not None:
+                raise InvalidPayloadReference("Persistent input cannot be restored as transient.")
+            existing = self.cache.get_input(task_id, payload_id)
+            if existing is not None:
+                if not hmac.compare_digest(existing, data):
+                    raise InvalidPayloadReference("Transient input reference already exists.")
+                return
+            self.cache._put_reference(task_id, payload_id, data, kind="input")
+
     def load_input(self, payload_id: str, task_id: str) -> bytes:
         _validate_task_id(task_id)
         _validate_payload_id(payload_id)
@@ -770,9 +793,14 @@ class AdultArtifactStore:
             return ArtifactRef(artifact_id, task_id, mime_type, len(data), True, expiry)
 
     def read_chunk(
-        self, artifact_id: str, offset: int, max_bytes: int = _DEFAULT_CHUNK_BYTES
+        self, artifact_id: str, offset: int, max_bytes: int = _DEFAULT_CHUNK_BYTES,
+        *, task_id: str | None = None, include_digest: bool = False,
     ) -> ArtifactChunk:
         _validate_payload_id(artifact_id)
+        if type(include_digest) is not bool:
+            raise ValueError("include_digest must be a boolean.")
+        if task_id is not None:
+            _validate_task_id(task_id)
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ValueError("offset must be a non-negative integer.")
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or not 1 <= max_bytes <= _DEFAULT_CHUNK_BYTES:
@@ -784,8 +812,10 @@ class AdultArtifactStore:
                 if transient_info is None:
                     raise PayloadNotFound("Artifact is unavailable.")
                 self._transient_artifacts.move_to_end(artifact_id)
-                task_id, mime_type, expected_size, _attempt_id = transient_info
-                data = self.cache.get(task_id, artifact_id)
+                stored_task_id, mime_type, expected_size, _attempt_id = transient_info
+                if task_id is not None and stored_task_id != task_id:
+                    raise PayloadNotFound("Artifact does not belong to this task.")
+                data = self.cache.get(stored_task_id, artifact_id)
                 if data is None:
                     self._transient_artifacts.pop(artifact_id, None)
                     raise PayloadUnavailable("Transient artifact is no longer available.")
@@ -794,6 +824,8 @@ class AdultArtifactStore:
             else:
                 if record["kind"] != "output":
                     raise PayloadNotFound("Artifact is unavailable.")
+                if task_id is not None and record["task_id"] != task_id:
+                    raise PayloadNotFound("Artifact does not belong to this task.")
                 if _parse_utc(str(record["expires_at"])) <= self._now():
                     raise PayloadExpired("Artifact retention has expired.")
                 self._verify_record_key(record)
@@ -813,6 +845,7 @@ class AdultArtifactStore:
             return ArtifactChunk(
                 artifact_id, offset, chunk, len(data), mime_type,
                 next_offset, next_offset >= len(data),
+                hashlib.sha256(data).hexdigest() if include_digest else None,
             )
 
     def discard_output(self, artifact_id: str, task_id: str, attempt_id: str) -> bool:
@@ -849,6 +882,25 @@ class AdultArtifactStore:
             self.cache.discard_ref(task_id, artifact_id)
             self._transient_artifacts.pop(artifact_id, None)
             return True
+
+    def discard_input(self, payload_id: str, task_id: str) -> bool:
+        """Remove one uncommitted input, never an output or another task's data."""
+        _validate_payload_id(payload_id)
+        _validate_task_id(task_id)
+        with self._lock:
+            record = self._get_record(payload_id)
+            if record is not None:
+                if record["task_id"] != task_id or record["kind"] != "input":
+                    raise PayloadNotFound("Input does not belong to this task.")
+                try:
+                    self._payload_path(payload_id).unlink(missing_ok=True)
+                except OSError as exc:
+                    raise PayloadStorageError("Uncommitted input could not be discarded safely.") from exc
+                self._remove_records([payload_id])
+                return True
+            if self.cache.get_input(task_id, payload_id) is None:
+                return False
+            return self.cache.discard_ref(task_id, payload_id)
 
     def delete_task_inputs(self, task_id: str) -> int:
         """Delete retained and transient inputs after task completion or cancellation."""

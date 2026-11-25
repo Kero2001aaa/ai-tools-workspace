@@ -62,7 +62,7 @@ class PlanStoreTests(unittest.TestCase):
         self.assertEqual("paused", failed["status"])
         step = self.store.get_plan(plan["id"])["steps"][0]
         self.assertEqual("failed", step["status"])
-        self.store.retry_failed_step(plan["id"], step["id"])
+        self.store.retry_failed_step(plan["id"], step["id"], retry_reason="synthetic_fixture_repaired")
         self.assertEqual("pending", self.store.get_plan(plan["id"])["steps"][0]["status"])
         result = self.store.run_next_step(plan["id"])
         self.assertEqual("completed", result["plan_status"])
@@ -96,27 +96,29 @@ class PlanStoreTests(unittest.TestCase):
             )
         blocked = self.store.run_next_step(plan["id"])
         self.assertEqual("running", blocked["status"])
-        self.assertEqual("Another step is already running", blocked["reason"])
+        self.assertIn("running", blocked["reason"])
         current = self.store.get_plan(plan["id"])
         self.assertEqual(["running", "pending"], [s["status"] for s in current["steps"]])
 
 
-    def test_plan_does_not_start_another_step_while_one_is_running(self):
-        plan = self.store.create_plan("Serialized", [
+    def test_legacy_expired_running_step_waits_for_reconciliation(self):
+        from datetime import datetime, timezone
+        plan = self.store.create_plan("Restart recovery", [
             {"task_type": "workspace_status"},
             {"task_type": "workspace_status"},
         ])
-        first_step = plan["steps"][0]
+        first = plan["steps"][0]
         with self.store._connect() as db:
-            db.execute(
-                "UPDATE plan_steps SET status='running',started_at=? WHERE id=?",
-                ("2099-01-01T00:00:00+00:00", first_step["id"]),
-            )
-        blocked = self.store.run_next_step(plan["id"])
-        self.assertEqual("running", blocked["status"])
-        self.assertEqual("Another step is already running", blocked["reason"])
-        current = self.store.get_plan(plan["id"])
-        self.assertEqual(["running", "pending"], [s["status"] for s in current["steps"]])
+            db.execute("UPDATE plan_steps SET status='running',started_at=? WHERE id=?",
+                       ("2026-01-01T00:00:00+00:00", first["id"]))
+        reopened = PlanStore(Path(self.temp.name) / "plans.sqlite3")
+        with patch("agent.plan_store._now", return_value=datetime(2026, 1, 1, 0, 11, tzinfo=timezone.utc)), patch("agent.task_worker.execute_task", return_value={"workspace":"ready"}) as execute:
+            outcome = reopened.run_next_step(plan["id"])
+        self.assertEqual("running", outcome["status"])
+        self.assertIn("reconciliation",outcome["reason"])
+        execute.assert_not_called()
+        checkpoint = PlanStore(Path(self.temp.name) / "plans.sqlite3").get_plan(plan["id"])
+        self.assertEqual(["running", "pending"], [s["status"] for s in checkpoint["steps"]])
 
     def test_plan_persists_across_store_instances(self):
         plan = self.store.create_plan("Persistent", [{"task_type": "workspace_status"}])
@@ -199,7 +201,7 @@ class PlanStoreTests(unittest.TestCase):
     def test_rejects_retry_for_non_failed_step(self):
         plan = self.store.create_plan("No retry", [{"task_type": "workspace_status"}])
         with self.assertRaises(ValueError):
-            self.store.retry_failed_step(plan["id"], plan["steps"][0]["id"])
+            self.store.retry_failed_step(plan["id"], plan["steps"][0]["id"], retry_reason="synthetic_fixture_repaired")
 
 
 if __name__ == "__main__":

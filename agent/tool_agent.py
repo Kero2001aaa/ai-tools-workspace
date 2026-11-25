@@ -115,7 +115,7 @@ def get_recursion_limit(env=None):
     return limit
 
 
-def build_tool_agent(model, tools):
+def build_tool_agent(model, tools, *, proposal_validator=None):
     """Build a ReAct-style graph using explicitly supplied tools."""
     if model is None:
         raise ValueError("A configured chat model is required for tool calling.")
@@ -151,7 +151,7 @@ def build_tool_agent(model, tools):
                 "when relevant. The task queue tools are state-changing: enqueue or run "
                 "tasks only when the user explicitly requests task execution or it is a necessary "
                 "step in their requested workflow. Use only the documented allowlisted task types. "
-                "Never invent tasks or imply that queued work runs automatically. The planner tools create durable plans with at most ten steps, and each step is restricted to workspace_status or memory_recent read-only operations. Use planning for explicitly requested multi-step local workflows. run_next_plan_step executes exactly one step. When the user explicitly asks for bounded autonomous execution or to run a plan until done, use run_plan_until_done; it executes at most the requested bounded step/time budget and commits a checkpoint after each step. If it returns checkpointed, invoke it again only when the user has authorized continued execution. A paused plan requires explicit retry approval through retry_failed_plan_step. Plans never run in the background and do not survive a stopped Codespace as an active process; their saved state can be resumed when the workspace is started again. "
+                "Never invent tasks or imply that queued work runs automatically. The planner tools create durable plans with at most ten steps, and each step is restricted to workspace_status, memory_recent, or explicitly configured local_code_report read-only operations. local_code_report needs a trusted operator-configured context hash and exact approved file selections; never invent these, choose a root, change configuration or claim code analysis from a quote-only report. Use planning for explicitly requested multi-step local workflows. run_next_plan_step executes exactly one step. When the user explicitly asks for bounded autonomous execution or to run a plan until done, use run_plan_until_done; it executes at most the requested bounded step/time budget and commits a checkpoint after each step. If it returns checkpointed, invoke it again only when the user has authorized continued execution. A paused plan requires explicit retry approval through retry_failed_plan_step. Plans never run in the background and do not survive a stopped Codespace as an active process; their saved state can be resumed when the workspace is started again. "
                 "When optional specialist tools are available, use supervise_request for tasks that materially benefit from multiple perspectives. It performs one bounded plan, up to two sequential research/coding assignments, then one review; at most four model calls total. Specialists receive only bounded text and have no tools or side effects. Invalid plans fail closed, and failures are not retried. The synthesis is an aggregation of returned findings, not a separate model inference. The workflow may consume provider quota. Use delegate_specialist directly only for a single focused analysis. "
                 "Agent Reach tools are public-read-only: use only their fixed GitHub API and V2EX API "
                 "routes. Never attempt login, session reuse, setup, installation, or other management "
@@ -161,7 +161,10 @@ def build_tool_agent(model, tools):
             )),
             *history,
         ]
-        return {"messages": [model_with_tools.invoke(messages)]}
+        response = model_with_tools.invoke(messages)
+        if proposal_validator is not None:
+            proposal_validator.validate_model_message(response)
+        return {"messages": [response]}
 
     workflow = StateGraph(MessagesState)
     workflow.add_node("assistant", call_model)

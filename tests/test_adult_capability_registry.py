@@ -304,6 +304,10 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
             db.execute("DROP INDEX idx_adult_capability_identity")
             db.execute("DROP TABLE adult_capability_events")
             db.execute("DROP TABLE adult_model_capabilities")
+            db.execute("DROP TRIGGER validate_adult_feedback_update")
+            db.execute("DROP TRIGGER prevent_adult_feedback_delete")
+            db.execute("DROP TABLE adult_feedback_proposals")
+            db.execute("DELETE FROM adult_schema_migrations WHERE version=4")
             db.execute("DELETE FROM adult_schema_migrations WHERE version=3")
             db.commit()
         finally:
@@ -328,6 +332,7 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
             (1, "adult_operational_store_v1"),
             (2, "adult_attempt_tracking_v2"),
             (3, "adult_capability_registry_v3"),
+            (4, "adult_feedback_proposals_v4"),
         ], versions)
 
     def test_v2_to_v3_migration_failure_rolls_back(self):
@@ -342,6 +347,10 @@ class AdultCapabilityRegistryTests(unittest.TestCase):
             db.execute("DROP INDEX idx_adult_capability_identity")
             db.execute("DROP TABLE adult_capability_events")
             db.execute("DROP TABLE adult_model_capabilities")
+            db.execute("DROP TRIGGER validate_adult_feedback_update")
+            db.execute("DROP TRIGGER prevent_adult_feedback_delete")
+            db.execute("DROP TABLE adult_feedback_proposals")
+            db.execute("DELETE FROM adult_schema_migrations WHERE version=4")
             db.execute("DELETE FROM adult_schema_migrations WHERE version=3")
             db.commit()
         finally:

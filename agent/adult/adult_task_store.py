@@ -220,11 +220,45 @@ _SCHEMA: Final[tuple[str, ...]] = (
        BEGIN SELECT RAISE(ABORT, 'adult task events are append-only'); END""",
 )
 
-LATEST_SCHEMA_VERSION: Final = 3
+LATEST_SCHEMA_VERSION: Final = 4
 ATTEMPT_SCHEMA_VERSION: Final = 2
 ATTEMPT_SCHEMA_NAME: Final = "adult_attempt_tracking_v2"
 CAPABILITY_SCHEMA_VERSION: Final = 3
 CAPABILITY_SCHEMA_NAME: Final = "adult_capability_registry_v3"
+
+FEEDBACK_SCHEMA_VERSION: Final = 4
+FEEDBACK_SCHEMA_NAME: Final = "adult_feedback_proposals_v4"
+_FEEDBACK_SCHEMA: Final[tuple[str, ...]] = (
+    """CREATE TABLE adult_feedback_proposals (
+        feedback_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES adult_tasks(task_id) ON DELETE RESTRICT,
+        feedback_type TEXT NOT NULL CHECK(length(feedback_type) BETWEEN 1 AND 64),
+        sanitized_summary TEXT NOT NULL CHECK(length(sanitized_summary) BETWEEN 1 AND 1000),
+        recommendation_json TEXT NOT NULL CHECK(json_valid(recommendation_json)
+            AND json_type(recommendation_json)='object' AND length(CAST(recommendation_json AS BLOB))<=4096),
+        status TEXT NOT NULL CHECK(status IN ('proposed','published')),
+        source_fingerprint TEXT NOT NULL CHECK(length(source_fingerprint)=64 AND source_fingerprint NOT GLOB '*[^0-9a-f]*'),
+        private_memory_id INTEGER NOT NULL UNIQUE CHECK(private_memory_id>0),
+        published_memory_id INTEGER CHECK(published_memory_id>0),
+        created_at TEXT NOT NULL,
+        published_at TEXT,
+        CHECK((status='proposed' AND published_memory_id IS NULL AND published_at IS NULL)
+           OR (status='published' AND published_memory_id IS NOT NULL AND published_at IS NOT NULL))
+    )""",
+    "CREATE INDEX idx_adult_feedback_task_created ON adult_feedback_proposals(task_id,created_at)",
+    """CREATE TRIGGER validate_adult_feedback_update BEFORE UPDATE ON adult_feedback_proposals
+       WHEN NEW.feedback_id IS NOT OLD.feedback_id OR NEW.task_id IS NOT OLD.task_id
+         OR NEW.feedback_type IS NOT OLD.feedback_type OR NEW.sanitized_summary IS NOT OLD.sanitized_summary
+         OR NEW.recommendation_json IS NOT OLD.recommendation_json
+         OR NEW.source_fingerprint IS NOT OLD.source_fingerprint
+         OR NEW.private_memory_id IS NOT OLD.private_memory_id OR NEW.created_at IS NOT OLD.created_at
+         OR NOT ((OLD.status='proposed' AND NEW.status='published')
+           OR (OLD.status='published' AND NEW.status='published'
+             AND NEW.published_memory_id IS OLD.published_memory_id AND NEW.published_at IS OLD.published_at))
+       BEGIN SELECT RAISE(ABORT, 'invalid adult feedback mutation'); END""",
+    """CREATE TRIGGER prevent_adult_feedback_delete BEFORE DELETE ON adult_feedback_proposals
+       BEGIN SELECT RAISE(ABORT, 'adult feedback history is immutable'); END""",
+)
 
 _ATTEMPT_SCHEMA: Final[tuple[str, ...]] = (
     """CREATE TABLE adult_attempts (
@@ -464,11 +498,32 @@ _ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
 class AdultTaskStore:
     """Owns the isolated Adult operational database; no provider integration."""
 
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(self, db_path: str | Path | None = None, *, read_only: bool = False):
         if sqlite3.sqlite_version_info < MIN_SQLITE_VERSION:
             raise TaskStoreSchemaError("SQLite 3.38.0 or later is required.")
         configured = db_path if db_path is not None else os.environ.get("ADULT_STATE_DB")
         self._db_path = Path(configured) if configured is not None else DEFAULT_DB_PATH
+        if type(read_only) is not bool:
+            raise TypeError("read_only must be a boolean.")
+        self._read_only = read_only
+        if read_only:
+            if not self._db_path.is_file():
+                raise TaskStoreSchemaError("Read-only Adult store must already exist.")
+            connection = self._connect()
+            try:
+                history = [(row["version"], row["name"]) for row in connection.execute(
+                    "SELECT version,name FROM adult_schema_migrations ORDER BY version"
+                ).fetchall()]
+                expected = [(SCHEMA_VERSION, SCHEMA_NAME),
+                            (ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME),
+                            (CAPABILITY_SCHEMA_VERSION, CAPABILITY_SCHEMA_NAME),
+                            (FEEDBACK_SCHEMA_VERSION, FEEDBACK_SCHEMA_NAME)]
+                if history != expected:
+                    raise TaskStoreSchemaError("Read-only store requires current schema.")
+                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
+            finally:
+                connection.close()
+            return
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         existed = self._db_path.exists()
         self._migrate()
@@ -476,9 +531,13 @@ class AdultTaskStore:
             os.chmod(self._db_path, stat.S_IRUSR | stat.S_IWUSR)
 
     def _connect(self) -> sqlite3.Connection:
+        read_only = getattr(self, "_read_only", False)
         connection = sqlite3.connect(
-            str(self._db_path), timeout=10, isolation_level=None,
+            self._db_path.resolve().as_uri() + "?mode=ro" if read_only else str(self._db_path),
+            uri=read_only, timeout=10, isolation_level=None,
         )
+        if read_only:
+            connection.execute("PRAGMA query_only=ON")
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
@@ -524,47 +583,29 @@ class AdultTaskStore:
 
     def _migrate(self) -> None:
         connection = self._connect()
+        migrations = ((SCHEMA_VERSION, SCHEMA_NAME, _SCHEMA),
+                      (ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME, _ATTEMPT_SCHEMA),
+                      (CAPABILITY_SCHEMA_VERSION, CAPABILITY_SCHEMA_NAME, _CAPABILITY_SCHEMA),
+                      (FEEDBACK_SCHEMA_VERSION, FEEDBACK_SCHEMA_NAME, _FEEDBACK_SCHEMA))
         try:
             connection.execute("BEGIN IMMEDIATE")
             exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='adult_schema_migrations'"
             ).fetchone()
-            if not exists:
-                for statement in _SCHEMA:
+            history = [] if not exists else [(row['version'], row['name']) for row in connection.execute(
+                "SELECT version,name FROM adult_schema_migrations ORDER BY version")]
+            expected = [(version, name) for version, name, _ in migrations]
+            if history != expected[:len(history)] or len(history)>len(expected) or (exists and not history):
+                raise TaskStoreSchemaError("Unsupported Adult task database migration history.")
+            if history:
+                self._validate_schema(connection, schema_version=history[-1][0])
+            for version, name, statements in migrations[len(history):]:
+                for statement in statements:
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO adult_schema_migrations(version,name,applied_at) VALUES(?,?,?)",
-                    (SCHEMA_VERSION, SCHEMA_NAME, _utc_now()),
-                )
-                self._validate_schema(connection, schema_version=SCHEMA_VERSION)
-                self._apply_attempt_migration(connection)
-                self._validate_schema(connection, schema_version=ATTEMPT_SCHEMA_VERSION)
-                self._apply_capability_migration(connection)
-                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
-                connection.commit()
-                return
-
-            rows = connection.execute(
-                "SELECT version,name FROM adult_schema_migrations ORDER BY version"
-            ).fetchall()
-            history = [(row["version"], row["name"]) for row in rows]
-            expected_v1 = [(SCHEMA_VERSION, SCHEMA_NAME)]
-            expected_v2 = expected_v1 + [(ATTEMPT_SCHEMA_VERSION, ATTEMPT_SCHEMA_NAME)]
-            expected_v3 = expected_v2 + [(CAPABILITY_SCHEMA_VERSION, CAPABILITY_SCHEMA_NAME)]
-            if history == expected_v1:
-                self._validate_schema(connection, schema_version=SCHEMA_VERSION)
-                self._apply_attempt_migration(connection)
-                self._validate_schema(connection, schema_version=ATTEMPT_SCHEMA_VERSION)
-                self._apply_capability_migration(connection)
-                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
-            elif history == expected_v2:
-                self._validate_schema(connection, schema_version=ATTEMPT_SCHEMA_VERSION)
-                self._apply_capability_migration(connection)
-                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
-            elif history == expected_v3:
-                self._validate_schema(connection, schema_version=LATEST_SCHEMA_VERSION)
-            else:
-                raise TaskStoreSchemaError("Unsupported Adult task database migration history.")
+                    (version,name,_utc_now()))
+                self._validate_schema(connection,schema_version=version)
             connection.commit()
         except Exception:
             if connection.in_transaction:
@@ -585,10 +626,14 @@ class AdultTaskStore:
             expected_tables = _EXPECTED_TABLES_V2
             expected_indexes = _EXPECTED_INDEXES_V2
             expected_triggers = _EXPECTED_TRIGGERS_V2
-        elif schema_version == LATEST_SCHEMA_VERSION:
+        elif schema_version == CAPABILITY_SCHEMA_VERSION:
             expected_tables = _EXPECTED_TABLES_V3
             expected_indexes = _EXPECTED_INDEXES_V3
             expected_triggers = _EXPECTED_TRIGGERS_V3
+        elif schema_version == FEEDBACK_SCHEMA_VERSION:
+            expected_tables = _EXPECTED_TABLES_V3 | {"adult_feedback_proposals"}
+            expected_indexes = _EXPECTED_INDEXES_V3 | {"idx_adult_feedback_task_created"}
+            expected_triggers = _EXPECTED_TRIGGERS_V3 | {"validate_adult_feedback_update", "prevent_adult_feedback_delete"}
         else:
             raise TaskStoreSchemaError("Unsupported Adult task schema version.")
 
@@ -615,11 +660,13 @@ class AdultTaskStore:
         statements = _SCHEMA
         if schema_version >= ATTEMPT_SCHEMA_VERSION:
             statements += _ATTEMPT_SCHEMA
-        if schema_version >= LATEST_SCHEMA_VERSION:
+        if schema_version >= CAPABILITY_SCHEMA_VERSION:
             statements += _CAPABILITY_SCHEMA
+        if schema_version >= FEEDBACK_SCHEMA_VERSION:
+            statements += _FEEDBACK_SCHEMA
         normalize_sql = lambda value: " ".join(value.split()).casefold()
         for statement in statements:
-            match = re.match(r"CREATE\s+(?:UNIQUE\s+)?(INDEX|TRIGGER)\s+(\w+)", statement, re.I)
+            match = re.match(r"CREATE\s+(?:UNIQUE\s+)?(INDEX|TRIGGER|TABLE)\s+(\w+)", statement, re.I)
             if match is None:
                 continue
             kind, name = match.groups()
@@ -1155,6 +1202,55 @@ class AdultTaskStore:
             raise TaskStoreSchemaError("Created task could not be reloaded.")
         return result
 
+    def attach_input(
+        self, task_id: str, payload_id: str, lease: TaskLease,
+        expected_state_version: int,
+    ) -> AdultTaskSnapshot:
+        """Attach an opaque input reference once during leased intake.
+
+        The intake caller must first validate payload ownership and fingerprint
+        through AdultArtifactStore. This layer never reads payload bytes.
+        No attempts or execution steps may exist yet. Reattachment is denied.
+        """
+        if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
+            raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if not isinstance(payload_id, str) or not re.fullmatch(r"[0-9a-f]{32}", payload_id):
+            raise AdultModelValidationError("payload_id must be an opaque payload identifier.")
+        if (not isinstance(expected_state_version, int)
+                or isinstance(expected_state_version, bool) or expected_state_version < 0):
+            raise AdultModelValidationError("expected_state_version must be a non-negative integer.")
+        now = _utc_now()
+        with self._transaction() as db:
+            task = db.execute("SELECT * FROM adult_tasks WHERE task_id=?", (task_id,)).fetchone()
+            if task is None:
+                raise TaskNotFound("Task does not exist.")
+            self._require_current_lease(task, task_id, lease, now)
+            if task["state_version"] != expected_state_version:
+                raise StaleTaskVersion("Task state version changed.")
+            steps = db.execute(
+                "SELECT * FROM adult_steps WHERE task_id=? ORDER BY sequence_no", (task_id,),
+            ).fetchall()
+            if (task["status"] != "analyzing" or task["payload_id"] is not None
+                    or task["total_attempts"] != 0 or task["cancel_requested"]
+                    or len(steps) != 1 or steps[0]["operation"] != "intake"
+                    or steps[0]["status"] != "pending"):
+                raise InvalidTaskTransition("Input can only be attached once during initial intake.")
+            db.execute(
+                "UPDATE adult_tasks SET payload_id=?,state_version=state_version+1,updated_at=? "
+                "WHERE task_id=? AND state_version=?",
+                (payload_id, now, task_id, expected_state_version),
+            )
+            db.execute(
+                "INSERT INTO adult_task_events "
+                "(event_id,task_id,event_type,from_status,to_status,metadata_json,created_at) "
+                "VALUES (?,?,'state_transition','analyzing','analyzing',?,?)",
+                (str(uuid.uuid4()), task_id, '{"reason_code":"input_attached"}', now),
+            )
+        result = self.get_task(task_id)
+        if result is None:
+            raise TaskStoreSchemaError("Attached task could not be reloaded.")
+        return result
+
     def get_task(self, task_id: str) -> AdultTaskSnapshot | None:
         if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
             raise AdultModelValidationError("task_id must be a bounded identifier.")
@@ -1273,7 +1369,9 @@ class AdultTaskStore:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TaskStoreSchemaError("Stored checkpoint metadata is invalid.") from exc
 
-    def list_events(self, task_id: str, limit: int = 50) -> list[TaskEvent]:
+    def list_events(self, task_id: str, limit: int = 50, *, newest_first: bool = False) -> list[TaskEvent]:
+        if type(newest_first) is not bool:
+            raise AdultModelValidationError("newest_first must be a boolean.")
         if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
             raise AdultModelValidationError("task_id must be a bounded identifier.")
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
@@ -1281,7 +1379,7 @@ class AdultTaskStore:
         with self._connect() as db:
             rows = db.execute(
                 """SELECT * FROM adult_task_events WHERE task_id=?
-                   ORDER BY created_at,event_id LIMIT ?""",
+                   ORDER BY """ + ("created_at DESC,event_id DESC" if newest_first else "created_at,event_id") + " LIMIT ?",
                 (task_id, limit),
             ).fetchall()
         try:
@@ -1989,12 +2087,20 @@ class AdultTaskStore:
             raise TaskStoreSchemaError("Resumed task could not be reloaded.")
         return result
 
-    def request_cancel(self, task_id: str) -> AdultTaskSnapshot:
+    def request_cancel(self, task_id: str, *, expected_state_version: int | None = None,
+                       decision_id: str | None = None) -> AdultTaskSnapshot:
         """Persist a cancellation request with active-worker acknowledgement semantics."""
         if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
             raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if (expected_state_version is None) != (decision_id is None):
+            raise AdultModelValidationError("Version and decision ID must be supplied together.")
+        if decision_id is not None:
+            if (type(expected_state_version) is not int or expected_state_version < 0
+                    or type(decision_id) is not str
+                    or re.fullmatch(r"[0-9a-f]{32}", decision_id) is None):
+                raise AdultModelValidationError("Invalid cancellation decision.")
         now = _utc_now()
-        event_id = str(uuid.uuid4())
+        event_id = decision_id if decision_id is not None else str(uuid.uuid4())
         db = self._connect()
         try:
             db.execute("BEGIN IMMEDIATE")
@@ -2003,6 +2109,20 @@ class AdultTaskStore:
             ).fetchone()
             if task is None:
                 raise TaskNotFound("Task does not exist.")
+            if decision_id is not None:
+                prior = db.execute("SELECT task_id,event_type,metadata_json FROM adult_task_events WHERE event_id=?",
+                                   (decision_id,)).fetchone()
+                metadata = {"reason_code": "user_cancelled", "expected_state_version": expected_state_version}
+                if prior is not None:
+                    if (prior["task_id"] != task_id or prior["event_type"] not in {"cancel_requested", "task_cancelled"}
+                            or json.loads(prior["metadata_json"]) != metadata):
+                        raise StaleTaskVersion("Cancellation decision conflicts with an earlier request.")
+                    db.commit()
+                    return self._snapshot_from_row(task)
+                if task["state_version"] != expected_state_version:
+                    raise StaleTaskVersion("Task changed before cancellation decision.")
+                if task["status"] == "cancelled" or task["cancel_requested"]:
+                    raise InvalidTaskTransition("A new decision cannot replace an existing cancellation.")
             if task["status"] in {"completed", "failed"}:
                 raise TaskTerminal("Completed or failed tasks cannot be cancelled.")
             if task["status"] == "cancelled" or (
@@ -2029,6 +2149,8 @@ class AdultTaskStore:
             if cursor.rowcount != 1:
                 raise StaleTaskVersion("Task state changed while requesting cancellation.")
             metadata = {"reason_code": "user_cancelled"}
+            if decision_id is not None:
+                metadata["expected_state_version"] = expected_state_version
             TaskEvent(
                 event_id=event_id, task_id=task_id, event_type=event_type,
                 from_status=task["status"], to_status=new_status,

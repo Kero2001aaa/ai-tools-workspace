@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import platform
+import re
 import secrets
 import hmac
 import sqlite3
@@ -15,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 
@@ -32,7 +33,7 @@ def _safe_db_summary(path, table):
         return 0
     import sqlite3
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2) as db:
+        with sqlite3.connect(path.expanduser().absolute().as_uri() + "?mode=ro", uri=True, timeout=2) as db:
             return db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     except (sqlite3.Error, OSError):
         return None
@@ -74,7 +75,91 @@ def status_snapshot():
 
 
 def task_snapshot(limit=20):
-    return TaskQueue().list_tasks(limit)
+    from agent.task_monitoring import task_snapshot as read_tasks
+    return read_tasks(limit)
+
+
+_ADULT_REASON_CODES = frozenset({
+    "initial", "step_completed", "approval_required", "manual_yield", "lease_recovered",
+    "needs_input", "paused", "cancelled", "worker_released", "yielded",
+    "cancel_observed", "budget_exhausted",
+})
+_ADULT_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def _adult_store():
+    """Open the Adult store only if it already exists; a status read never creates it."""
+    from agent.adult.adult_task_store import AdultTaskStore, DEFAULT_DB_PATH
+    configured = os.environ.get("ADULT_STATE_DB")
+    path = Path(configured) if configured else DEFAULT_DB_PATH
+    if not path.is_file():
+        return None
+    return AdultTaskStore(path, read_only=True)
+
+
+def _adult_task_view(task):
+    """Allowlisted lifecycle fields only: no fingerprints, payload/artifact ids or metadata."""
+    return {
+        "task_id": task.task_id, "task_type": task.task_type, "status": task.status,
+        "created_at": task.created_at, "updated_at": task.updated_at,
+        "state_version": task.state_version, "attempt_count": task.attempt_count,
+        "failed_attempts_since_approval": task.failed_attempts_since_approval,
+        "provider_calls": task.provider_calls, "max_total_attempts": task.max_total_attempts,
+        "max_provider_calls": task.max_provider_calls, "spent_cost_microusd": task.spent_cost_microusd,
+        "deadline_at": task.deadline_at, "has_result": task.latest_result_artifact_id is not None,
+        "last_error_code": task.last_error_code, "user_action_required": task.user_action_required,
+        "cancel_requested": task.cancel_requested,
+    }
+
+
+def _adult_event_view(event):
+    reason = event.metadata.get("reason_code") if isinstance(event.metadata, dict) else None
+    return {
+        "event_type": event.event_type, "from_status": event.from_status,
+        "to_status": event.to_status, "created_at": event.created_at,
+        "reason_code": reason if isinstance(reason, str) and reason in _ADULT_REASON_CODES else None,
+    }
+
+
+def _adult_checkpoint_view(checkpoint):
+    if checkpoint is None:
+        return None
+    snap = checkpoint.snapshot
+    return {
+        "revision": checkpoint.revision, "reason": checkpoint.reason,
+        "created_at": checkpoint.created_at, "status": snap.status,
+        "user_action_required": checkpoint.user_action_required,
+        "completed_steps": len(snap.completed_step_ids), "pending_steps": len(snap.pending_step_ids),
+        "total_attempts": snap.total_attempts, "remaining_attempts": snap.remaining_attempts,
+        "remaining_wall_seconds": snap.remaining_wall_seconds,
+        "last_error_code": snap.last_error_code, "allowed_decisions": list(snap.allowed_decisions),
+    }
+
+
+def adult_tasks_snapshot(limit=20, status=None):
+    store = _adult_store()
+    if store is None:
+        return {"available": False, "tasks": []}
+    page = store.list_tasks(status=status, limit=limit)
+    tasks = []
+    for task in page.items:
+        view = _adult_task_view(task)
+        events = store.list_events(task.task_id, limit=1, newest_first=True)
+        view["latest_event"] = _adult_event_view(events[0]) if events else None
+        view["latest_checkpoint"] = _adult_checkpoint_view(store.get_latest_checkpoint(task.task_id))
+        tasks.append(view)
+    return {"available": True, "tasks": tasks, "has_more": page.has_more}
+
+
+def adult_task_detail(task_id):
+    store = _adult_store()
+    task = store.get_task(task_id) if store is not None else None
+    if task is None:
+        return None
+    view = _adult_task_view(task)
+    view["events"] = [_adult_event_view(e) for e in reversed(store.list_events(task_id, limit=50, newest_first=True))]
+    view["latest_checkpoint"] = _adult_checkpoint_view(store.get_latest_checkpoint(task_id))
+    return view
 
 
 def memory_snapshot(limit=10):
@@ -96,8 +181,8 @@ def allowed_authorities(port, env=None):
 
 def _page():
     return """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Workspace Control Plane</title>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Workspace Control Plane · لوحة مساحة العمل</title>
 <style>
 :root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#10151d;color:#e8edf5}
 body{margin:0 auto;max-width:1100px;padding:32px 20px}h1{margin-bottom:6px}p,.muted{color:#9aa8ba}
@@ -105,52 +190,99 @@ body{margin:0 auto;max-width:1100px;padding:32px 20px}h1{margin-bottom:6px}p,.mu
 .card{background:#192331;border:1px solid #2a394b;border-radius:12px;padding:18px}
 h2{font-size:1rem;margin:0 0 12px}.value{font-size:1.8rem;font-weight:700}
 ul{padding-left:20px;line-height:1.8}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#c6d4e4}
+pre,input{direction:ltr;text-align:left;unicode-bidi:plaintext}pre{font-size:0.85rem;line-height:1.6}label{display:block;margin-top:10px}button,select{margin-block:5px;max-width:100%}ul{padding-inline-start:20px}bdi{unicode-bidi:isolate}
 button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px;cursor:pointer}
 </style></head><body>
-<h1>AI Workspace</h1><p>Local control plane · authenticated monitoring and task controls · no secrets exposed</p>
-<section class="card"><h2>Unlock monitoring</h2>
-<p class="muted">Enter the access token printed in the terminal. Required for private monitoring and actions. It stays in this page only.</p>
-<input id="control-token" type="password" autocomplete="off" placeholder="Control token" style="width:min(100%,420px);box-sizing:border-box;padding:10px">
-<button onclick="load().catch(showLoadError)">Load private data</button></section>
+<h1>مساحة العمل <bdi>AI Workspace</bdi></h1><p>لوحة محلية خاصة · المتابعة والإجراءات تحتاج رمز دخول · لا تعرض قيم الأسرار</p>
+<section class="card"><h2>فتح المتابعة</h2>
+<p class="muted">أدخل رمز الدخول الظاهر في الطرفية. مطلوب للمتابعة الخاصة والإجراءات، ولا يُحفظ بعد مغادرة الصفحة.</p>
+<input id="control-token" type="password" autocomplete="off" placeholder="رمز الدخول" aria-label="رمز الدخول" style="width:min(100%,420px);box-sizing:border-box;padding:10px">
+<button onclick="load().catch(showLoadError)">تحميل البيانات الخاصة</button></section>
+<p class="muted">دليل الحالة: <bdi>online</bdi> متصل · <bdi>Locked</bdi> مقفل · <bdi>completed</bdi> مكتمل · <bdi>cancelled</bdi> ملغى. تبقى معرّفات المهام والحالات التقنية والنتائج بلغتها الأصلية دون ترجمة.</p>
 <div class="grid">
-<section class="card"><h2>Workspace</h2><div class="value" id="state">Loading</div><p id="runtime" class="muted"></p></section>
-<section class="card"><h2>Memory records</h2><div class="value" id="memories">—</div></section>
-<section class="card"><h2>Task records</h2><div class="value" id="tasks">—</div></section>
+<section class="card"><h2>متابعة مساحة العمل</h2><div class="value" id="state">بانتظار التحميل</div><p id="runtime" class="muted"></p></section>
+<section class="card"><h2>سجلات الذاكرة</h2><div class="value" id="memories">—</div></section>
+<section class="card"><h2>سجلات المهام</h2><div class="value" id="tasks">—</div></section>
 </div>
 <div class="grid">
-<section class="card"><h2>Integrations</h2><ul id="integrations"></ul></section>
-<section class="card"><h2>Security posture</h2><pre id="security"></pre></section>
+<section class="card"><h2>التكاملات</h2><ul id="integrations"></ul></section>
+<section class="card"><h2>إعدادات الأمان</h2><pre id="security"></pre></section>
 </div>
-<section class="card"><h2>Recent tasks</h2><pre id="task-list">Loading…</pre></section>
-<section class="card"><h2>Recent memory</h2><pre id="memory-list">Loading…</pre></section>
-<section class="card"><h2>AI Agent</h2>
-<p class="muted">Runs one explicit request through the configured model and approved MCP tools. Provider charges or free-tier limits may apply. Disabled until ENABLE_DASHBOARD_AGENT=true is set in the private .env file.</p>
-<textarea id="agent-request" rows="5" maxlength="4000" placeholder="Describe the research or task for the agent" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #40536a;background:#10151d;color:#fff"></textarea>
-<button onclick="runAgent()">Run AI request</button>
+<section class="card"><h2>آخر المهام</h2><pre id="task-list">بانتظار التحميل</pre></section>
+<section class="card"><h2>الخطط العامة</h2><p class="muted">عرض حالة الخطط للقراءة فقط. العمل الجاري ذو النتيجة المجهولة ينتظر التحقق، ولا يُعاد تلقائيًا.</p><pre id="plan-list" aria-live="polite">مقفل</pre>
+<h3>إلغاء الباقي من خطة غير جارية</h3>
+<p class="muted">اختر خطة من آخر قراءة ثم أكد إلغاء الباقي. لا يوقف عملية جارية ولا يمحو نتيجة مكتملة. الإلغاء نهائي ولا يمكن استكمال الخطة بعده. الحالة القديمة أو المجهولة تُرفض، أعد القراءة قبل المحاولة التالية.</p>
+<label>الخطة <select id="cancel-plan" style="max-width:100%;padding:8px"><option value="">حمّل المتابعة أولًا</option></select></label>
+<pre id="cancel-plan-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;direction:ltr;text-align:left"></pre>
+<button id="cancel-plan-button" onclick="cancelSelectedPlan()">مراجعة وإلغاء الباقي</button>
+<pre id="plan-cancel-result" aria-live="polite"></pre></section>
+<section class="card"><h2>تقرير اقتباسات الكود المحفوظ</h2>
+<p class="muted">اعرض تقريرًا محليًا مكتملًا من اقتباسات فقط. لا يقرأ المصدر ولا ينفذ مهمة أو يستدعي نموذجًا. نسخة محفوظة كنص غير مشفر، وليست الكود الحالي أو فهمًا بنموذج.</p>
+<label>معرّف الخطة <bdi>Plan ID</bdi> <input id="report-plan" maxlength="36" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px"></label>
+<label>معرّف الخطوة <bdi>Step ID</bdi> <input id="report-step" maxlength="36" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px"></label>
+<button onclick="loadSavedReport()">عرض التقرير المحفوظ</button>
+<pre id="saved-report" aria-live="polite">مقفل</pre></section>
+<section class="card"><h2>آخر الذكريات</h2><pre id="memory-list">بانتظار التحميل</pre></section>
+<section class="card"><h2>طلب للمساعد</h2>
+<p class="muted">ينفذ طلبًا صريحًا واحدًا بالنموذج المُعدّ والأدوات المسموحة. قد تُستهلك حصة مجانية؛ لا يُسمح بمسار مدفوع تلقائي. معطل حتى يفعّله المشغّل في الإعداد الخاص: ENABLE_DASHBOARD_AGENT=true.</p>
+<textarea id="agent-request" rows="5" maxlength="4000" placeholder="اكتب طلب البحث أو المهمة للمساعد" dir="auto" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #40536a;background:#10151d;color:#fff"></textarea>
+<button onclick="runAgent()">تنفيذ طلب المساعد</button>
 <pre id="agent-result" aria-live="polite"></pre></section>
-<section class="card"><h2>Controlled task actions</h2>
-<p class="muted">Enter the one-time access token printed in the Codespaces terminal. Enqueue and execution are separate actions.</p>
+<section class="card"><h2>إجراءات المهام المحدودة</h2>
+<p class="muted">يجب إدخال رمز الدخول الظاهر في طرفية Codespaces. إضافة المهمة للطابور لا تشغّلها؛ التنفيذ إجراء منفصل.</p>
 
-<select id="task-type" style="padding:10px;margin:8px"><option value="workspace_status">Workspace status</option><option value="memory_recent">Recent memories (read-only)</option></select>
-<button onclick="enqueueTask()">Enqueue task</button><button onclick="runTask()">Run one queued task</button>
+<select id="task-type" style="padding:10px;margin:8px"><option value="workspace_status">حالة مساحة العمل</option><option value="memory_recent">آخر الذكريات (قراءة فقط)</option></select>
+<button onclick="enqueueTask()">إضافة للطابور</button><button onclick="runTask()">تنفيذ مهمة واحدة من الطابور</button>
 <pre id="action-result" aria-live="polite"></pre></section>
-<p class="muted">Refreshes every 30 seconds. Task execution is limited to the two allowlisted task types; no shell or arbitrary code execution.</p>
+<p class="muted">تغيير رمز الدخول يخفي النتائج الخاصة، لكنه لا يلغي طلبات أُرسلت بالفعل. افحص الحالة الحالية قبل إعادة إجراء لا تعرف نتيجته.</p>
+<p class="muted">تتحدث المتابعة كل 30 ثانية. تسمح اللوحة بإضافة حالة مساحة العمل وآخر الذكريات فقط. لا تعرض أنواع مهام الخادم الأخرى، ولا تنفيذ shell أو كود عشوائي.</p>
 <script>
+let monitoringEpoch=0;
+let monitoringRequest=0;
+let reportRequest=0;
+let actionRequest=0;
+let agentRequest=0;
+let cancelRequest=0;
+let cancelInFlight=false;
+let cancellablePlans=new Map();
+function clearPlanCancellation(){
+ cancelRequest++;
+ cancellablePlans.clear();
+ const select=document.getElementById('cancel-plan');
+ select.textContent='';
+ document.getElementById('cancel-plan-preview').textContent='';
+ document.getElementById('plan-cancel-result').textContent='';
+}
 function clearPrivateData(){
+ monitoringEpoch++;
+ clearPlanCancellation();
+ reportRequest++;
+ actionRequest++;
+ agentRequest++;
+ document.getElementById('agent-result').textContent='';
+ document.getElementById('action-result').textContent='';
+ document.getElementById('saved-report').textContent='';
  document.getElementById('state').textContent='Locked';
- for(const id of ['runtime','memories','tasks','integrations','security','task-list','memory-list']) document.getElementById(id).textContent='';
+ for(const id of ['runtime','memories','tasks','integrations','security','task-list','memory-list','plan-list']) document.getElementById(id).textContent='';
 }
 function showLoadError(){clearPrivateData();document.getElementById('state').textContent='Locked: check access token or connection';}
 document.getElementById('control-token').addEventListener('input',clearPrivateData);
 async function load(){
  const token=document.getElementById('control-token').value;
  if(!token){clearPrivateData();return}
- const [s,t,m]=await Promise.all(['/api/status','/api/tasks','/api/memories'].map(async path=>{
+ const epoch=monitoringEpoch;
+ const request=++monitoringRequest;
+ let data;
+ try{data=await Promise.all(['/api/status','/api/tasks','/api/memories','/api/plans'].map(async path=>{
   const response=await fetch(path,{headers:{Authorization:'Bearer '+token}});
   if(!response.ok) throw new Error('Monitoring unavailable');
   return response.json();
- }));
- if(document.getElementById('control-token').value!==token) return;
+ }));}catch(error){
+  if(document.getElementById('control-token').value!==token || monitoringEpoch!==epoch || monitoringRequest!==request) return;
+  throw error;
+ }
+ const [s,t,m,p]=data;
+ if(document.getElementById('control-token').value!==token || monitoringEpoch!==epoch || monitoringRequest!==request) return;
  document.getElementById('state').textContent=s.status;
  document.getElementById('runtime').textContent='Python '+s.python+' · '+s.checked_at;
  document.getElementById('memories').textContent=s.memory_records??'Unavailable';
@@ -159,14 +291,124 @@ async function load(){
  document.getElementById('security').textContent=JSON.stringify(s.security,null,2);
  document.getElementById('task-list').textContent=JSON.stringify(t,null,2);
  document.getElementById('memory-list').textContent=JSON.stringify(m,null,2);
+ renderPlans(p);
+}
+function renderPlans(snapshot){
+ if(!cancelInFlight){
+ cancellablePlans.clear();
+ const select=document.getElementById('cancel-plan');
+ const previous=select.value;
+ select.textContent='';
+ const empty=document.createElement('option');empty.value='';empty.textContent='اختر خطة غير جارية';select.appendChild(empty);
+ for(const plan of snapshot.plans||[]){
+  if(['queued','checkpointed','paused'].includes(plan.status) && !plan.steps.some(step=>step.status==='running'||step.outcome_reconciliation_required)){
+   cancellablePlans.set(plan.id,{id:plan.id,updated_at:plan.updated_at,status:plan.status,completed:plan.completed_steps,total:plan.total_steps});
+   const option=document.createElement('option');option.value=plan.id;option.textContent=plan.id+' · '+plan.status+' · '+plan.completed_steps+'/'+plan.total_steps;select.appendChild(option);
+  }
+ }
+ if(cancellablePlans.has(previous))select.value=previous;
+ updateCancelPreview();
+ }
+ const panel=document.getElementById('plan-list');
+ if(!snapshot.available){panel.textContent='Plan store unavailable. No database created.';return}
+ if(!snapshot.plans.length){panel.textContent='No plans yet.';return}
+ const lines=[];
+ for(const plan of snapshot.plans){
+  lines.push('Plan '+plan.id+' · '+plan.status+' · '+plan.completed_steps+'/'+plan.total_steps+' completed');
+  for(const step of plan.steps){
+   lines.push('  '+step.position+'. '+step.task_type+' · '+step.status+' · execution '+(step.execution_status||'not bound')+' · attempts '+step.attempts);
+   if(step.task_id) lines.push('     Task '+step.task_id);
+   if(step.outcome_reconciliation_required) lines.push('     Waiting: outcome reconciliation required. No automatic replay.');
+  }
+  lines.push('');
+ }
+ if(snapshot.has_more) lines.push('More plans exist. Showing the latest bounded page.');
+ panel.textContent=lines.join('\\n');
+}
+function updateCancelPreview(){
+ const plan=cancellablePlans.get(document.getElementById('cancel-plan').value);
+ document.getElementById('cancel-plan-preview').textContent=plan?'Plan '+plan.id+' · '+plan.status+' · '+plan.completed+'/'+plan.total:'';
+}
+document.getElementById('cancel-plan').addEventListener('change',()=>{cancelRequest++;document.getElementById('plan-cancel-result').textContent='';updateCancelPreview();});
+async function cancelSelectedPlan(){
+ const output=document.getElementById('plan-cancel-result');
+ const token=document.getElementById('control-token').value;
+ const id=document.getElementById('cancel-plan').value;
+ const plan=cancellablePlans.get(id);
+ if(cancelInFlight)return;
+ if(!token||!plan){output.textContent='حمّل المتابعة واختر خطة غير جارية أولًا.';return}
+ const epoch=monitoringEpoch;const request=++cancelRequest;
+ if(!confirm('إلغاء الباقي من الخطة '+plan.id+'؟ الحالة '+plan.status+'، المكتمل '+plan.completed+'/'+plan.total+'. لا إيقاف لعملية جارية ولا حذف للمكتمل. لا يمكن استكمال الخطة بعد الإلغاء.'))return;
+ if(document.getElementById('control-token').value!==token||monitoringEpoch!==epoch||document.getElementById('cancel-plan').value!==id)return;
+ cancelInFlight=true;
+ monitoringRequest++;
+ document.getElementById('cancel-plan-button').disabled=true;
+ const current=()=>document.getElementById('control-token').value===token&&monitoringEpoch===epoch&&cancelRequest===request&&document.getElementById('cancel-plan').value===id;
+ try{
+  const response=await fetch('/api/plans/cancel',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({plan_id:id,expected_updated_at:plan.updated_at})});
+  const result=await response.json();
+  if(!current())return;
+  output.textContent=response.ok?'تم إلغاء الباقي. أعد تحميل المتابعة لرؤية الحالة الحالية.':'رُفض الإلغاء. أعد قراءة الحالة، لا تعاود تلقائيًا.';
+  cancellablePlans.clear();
+  document.getElementById('cancel-plan').textContent='';updateCancelPreview();
+ }catch(error){if(current()){output.textContent='نتيجة الإلغاء غير معروفة. أعد قراءة الحالة قبل أي محاولة أخرى.';cancellablePlans.clear();document.getElementById('cancel-plan').textContent='';updateCancelPreview();}}
+ finally{monitoringRequest++;cancelInFlight=false;document.getElementById('cancel-plan-button').disabled=false;}
+}
+function clearSavedReport(){reportRequest++;document.getElementById('saved-report').textContent='';}
+document.getElementById('report-plan').addEventListener('input',clearSavedReport);
+document.getElementById('report-step').addEventListener('input',clearSavedReport);
+async function loadSavedReport(){
+ const output=document.getElementById('saved-report');
+ const token=document.getElementById('control-token').value;
+ const plan=document.getElementById('report-plan').value;
+ const step=document.getElementById('report-step').value;
+ const epoch=monitoringEpoch;const request=++reportRequest;
+ if(!token){output.textContent='Enter the access token first.';return}
+ const current=()=>document.getElementById('control-token').value===token && monitoringEpoch===epoch && reportRequest===request && document.getElementById('report-plan').value===plan && document.getElementById('report-step').value===step;
+ output.textContent='Reading saved report...';
+ try{
+  const response=await fetch('/api/code-report?plan_id='+encodeURIComponent(plan)+'&step_id='+encodeURIComponent(step),{headers:{Authorization:'Bearer '+token}});
+  if(!response.ok) throw new Error('Report unavailable');
+  const result=await response.json();
+  if(!current())return;
+  const lines=['Saved quote-only report',result.question,''];
+  for(const item of result.citations){
+   lines.push(item.path+' · lines '+item.start_line+'-'+item.end_line);
+   lines.push(item.quote);
+   lines.push('File SHA256: '+item.file_sha256);
+   lines.push('Excerpt SHA256: '+item.excerpt_sha256);
+   lines.push('Untrusted source snapshot'+(item.truncated?' · excerpt only':'')+'\\n');
+  }
+  lines.push('Verification: '+result.verification);
+  lines.push(...result.limitations);
+  output.textContent=lines.join('\\n');
+  if(document.getElementById('state').textContent.startsWith('Locked')){
+   document.getElementById('state').textContent='Not loaded';
+   document.getElementById('runtime').textContent='Saved report authenticated. Load monitoring separately.';
+  }
+ }catch(error){if(current())output.textContent='Saved report unavailable. Check IDs, token and completed state.';}
 }
 async function controlPost(path,body){
  const token=document.getElementById('control-token').value;
- if(!token){document.getElementById('action-result').textContent='Enter the one-time token first.';return}
- const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(body)});
- const data=await response.json();
- document.getElementById('action-result').textContent=JSON.stringify(data,null,2);
- if(response.ok) await load();
+ const epoch=monitoringEpoch;const request=++actionRequest;
+ const output=document.getElementById('action-result');
+ if(!token){output.textContent='Enter the one-time token first.';return}
+ const current=()=>document.getElementById('control-token').value===token && monitoringEpoch===epoch && actionRequest===request;
+ try{
+  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(body)});
+  const data=await response.json();
+  if(!current())return;
+  output.textContent=JSON.stringify(data,null,2);
+  if(response.ok){
+   try{await load();}
+   catch(error){
+    if(current()){
+     document.getElementById('state').textContent='Monitoring unavailable';
+     document.getElementById('runtime').textContent='Action response retained below. Monitoring refresh failed; do not repeat a successful action.';
+    }
+   }
+  }
+ }catch(error){if(current())output.textContent='Action result unavailable. Check current state before retrying; a submitted action may already have completed.';}
 }
 async function runAgent(){
  const request=document.getElementById('agent-request').value.trim();
@@ -175,24 +417,24 @@ async function runAgent(){
  const token=document.getElementById('control-token').value;
  if(!token){document.getElementById('agent-result').textContent='Enter the one-time token first.';return}
  const output=document.getElementById('agent-result');
+ const epoch=monitoringEpoch;const currentRequest=++agentRequest;
+ const current=()=>document.getElementById('control-token').value===token && monitoringEpoch===epoch && agentRequest===currentRequest;
  output.textContent='Agent is working…';
  try{
   const response=await fetch('/api/agent/run',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({request})});
   const data=await response.json();
-  output.textContent=JSON.stringify(data,null,2);
- }catch(e){output.textContent=String(e)}
+  if(current())output.textContent=JSON.stringify(data,null,2);
+ }catch(error){if(current())output.textContent='Agent result unavailable. A submitted request may already have completed; check state before retrying.';}
 }
 async function enqueueTask(){
  if(!confirm('Enqueue this allowlisted task?')) return;
  const type=document.getElementById('task-type').value;
  const payload=type==='memory_recent'?{limit:5}:{};
- try{await controlPost('/api/tasks/enqueue',{task_type:type,payload,max_attempts:1})}
- catch(e){document.getElementById('action-result').textContent=String(e)}
+ await controlPost('/api/tasks/enqueue',{task_type:type,payload,max_attempts:1});
 }
 async function runTask(){
  if(!confirm('Execute exactly one due task from the allowlist?')) return;
- try{await controlPost('/api/tasks/run-once',{})}
- catch(e){document.getElementById('action-result').textContent=String(e)}
+ await controlPost('/api/tasks/run-once',{});
 }
 clearPrivateData();
 setInterval(()=>load().catch(showLoadError),30000);
@@ -239,13 +481,20 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _read_json(self):
+    def _read_json(self, *, unique_keys=False):
         if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
             raise ValueError("Content-Type must be application/json")
         raw_length = self.headers.get("Content-Length", "")
         if not raw_length.isdigit() or not 1 <= int(raw_length) <= 8192:
             raise ValueError("Request body must be between 1 and 8192 bytes")
-        value = json.loads(self.rfile.read(int(raw_length)))
+        def pairs(items):
+            result = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("Duplicate JSON field")
+                result[key] = value
+            return result
+        value = json.loads(self.rfile.read(int(raw_length)), object_pairs_hook=pairs if unique_keys else dict)
         if not isinstance(value, dict):
             raise ValueError("Request body must be a JSON object")
         return value
@@ -285,19 +534,134 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, _page(), "text/html; charset=utf-8")
         if path.startswith("/api/") and not self._authorized():
             return
+        if path == "/api/code-report":
+            try:
+                from agent.code_report_cli import read_saved_report
+                query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if set(query) != {"plan_id", "step_id"} or any(len(value) != 1 for value in query.values()):
+                    raise ValueError("unsupported_query")
+                database = os.environ.get("WORKSPACE_PLAN_DB", ".data/plans.sqlite3")
+                result = read_saved_report(database, query["plan_id"][0], query["step_id"][0])
+                return self._send(200, json.dumps(result, ensure_ascii=True), "application/json")
+            except (ValueError, sqlite3.Error, OSError):
+                return self._send(404, '{"error":"saved code report unavailable"}', "application/json")
+        if path == "/api/plans":
+            try:
+                from agent.plan_monitoring import plan_snapshot
+                query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if set(query) - {"limit"} or any(len(value) != 1 for value in query.values()):
+                    raise ValueError("unsupported_query")
+                limit = int(query["limit"][0]) if "limit" in query else 20
+                if not 1 <= limit <= 50:
+                    raise ValueError("invalid_limit")
+                return self._send(200, json.dumps(plan_snapshot(limit)), "application/json")
+            except ValueError:
+                return self._send(400, '{"error":"invalid plan query or store"}', "application/json")
+            except (sqlite3.Error, OSError):
+                return self._send(503, '{"error":"plan monitoring unavailable"}', "application/json")
         if path == "/api/status":
             return self._send(200, json.dumps(status_snapshot()), "application/json")
         if path == "/api/tasks":
-            return self._send(200, json.dumps(task_snapshot(), default=str), "application/json")
+            try:
+                return self._send(200, json.dumps(task_snapshot(), default=str), "application/json")
+            except (ValueError, sqlite3.Error, OSError):
+                return self._send(503, '{"error":"task monitoring unavailable"}', "application/json")
+        if path == "/api/adult/tasks" or path.startswith("/api/adult/tasks/"):
+            return self._adult_get(path)
         if path == "/api/memories":
             return self._send(200, json.dumps(memory_snapshot(), default=str), "application/json")
         return self._send(404, '{"error":"not found"}', "application/json")
+
+    def _adult_get(self, path):
+        from agent.adult.models import AdultModelValidationError, TASK_STATUSES
+        from agent.adult.adult_task_store import AdultTaskStoreError
+        try:
+            if path == "/api/adult/tasks":
+                query = parse_qs(urlparse(self.path).query)
+                if set(query) - {"limit", "status"} or any(len(v) != 1 for v in query.values()):
+                    raise ValueError("unsupported query")
+                limit = int(query["limit"][0]) if "limit" in query else 20
+                status = query["status"][0] if "status" in query else None
+                if not 1 <= limit <= 50 or (status is not None and status not in TASK_STATUSES):
+                    raise ValueError("invalid query")
+                return self._send(200, json.dumps(adult_tasks_snapshot(limit, status)), "application/json")
+            task_id = path[len("/api/adult/tasks/"):]
+            if urlparse(self.path).query or not _ADULT_TASK_ID_RE.fullmatch(task_id):
+                raise ValueError("invalid task id")
+            detail = adult_task_detail(task_id)
+            if detail is None:
+                return self._send(404, '{"error":"not found"}', "application/json")
+            return self._send(200, json.dumps(detail), "application/json")
+        except (ValueError, AdultModelValidationError):
+            return self._send(400, '{"error":"invalid request"}', "application/json")
+        except (AdultTaskStoreError, sqlite3.Error, OSError):
+            return self._send(503, '{"error":"Adult status unavailable"}', "application/json")
+
+    def _adult_decision(self, path):
+        """Local control-token holder cancellation only, never owner identity proof."""
+        if path != "/api/adult/cancel":
+            return self._send(503, '{"error":"Adult execution disabled"}', "application/json")
+        from agent.adult.adult_task_store import (AdultTaskStore, StaleTaskVersion,
+            InvalidTaskTransition, TaskTerminal, TaskNotFound, AdultTaskStoreError)
+        try:
+            body = self._read_json(unique_keys=True)
+            if set(body) != {"task_id", "expected_state_version", "decision_id"}:
+                raise ValueError("invalid decision fields")
+            if (type(body["task_id"]) is not str or not _ADULT_TASK_ID_RE.fullmatch(body["task_id"])
+                    or type(body["expected_state_version"]) is not int or body["expected_state_version"] < 0
+                    or type(body["decision_id"]) is not str or not re.fullmatch(r"[0-9a-f]{32}",body["decision_id"])):
+                raise ValueError("invalid decision")
+            readonly = _adult_store()
+            if readonly is None:
+                return self._send(404, '{"error":"task unavailable"}', "application/json")
+            # Read the same configured path. No body field can choose an owner,
+            # path, application, model, endpoint or execution permission.
+            tasks = AdultTaskStore(readonly._db_path)
+            task = tasks.request_cancel(body["task_id"], expected_state_version=body["expected_state_version"],
+                                        decision_id=body["decision_id"])
+            cleanup = "deferred_to_worker"
+            if task.status == "cancelled":
+                try:
+                    from agent.adult.payload_store import AdultArtifactStore
+                    artifacts = getattr(self.server, "adult_artifacts", None)
+                    if artifacts is None:
+                        root = Path(os.environ.get("ADULT_PAYLOAD_DIR") or ".data/adult_payloads")
+                        if root.is_dir():
+                            artifacts = AdultArtifactStore.from_environment()
+                    if artifacts is None:
+                        cleanup = "no_input_store"
+                    elif isinstance(artifacts, AdultArtifactStore):
+                        artifacts.delete_task_inputs(task.task_id)
+                        cleanup = "input_removed"
+                    else:
+                        cleanup = "cleanup_failed"
+                except Exception:
+                    cleanup = "cleanup_failed"
+            return self._send(200, json.dumps({"task":_adult_task_view(task), "input_cleanup":cleanup}), "application/json")
+        except TaskNotFound:
+            return self._send(404, '{"error":"task unavailable"}', "application/json")
+        except (StaleTaskVersion, InvalidTaskTransition, TaskTerminal):
+            return self._send(409, '{"error":"decision conflict"}', "application/json")
+        except ValueError:
+            return self._send(400, '{"error":"invalid decision"}', "application/json")
+        except (AdultTaskStoreError, sqlite3.Error, OSError):
+            return self._send(503, '{"error":"Adult decision unavailable"}', "application/json")
 
     def do_POST(self):
         if not self._trusted_host():
             return
         path = urlparse(self.path).path
-        if path not in {"/api/tasks/enqueue", "/api/tasks/run-once", "/api/agent/run"}:
+        if path in {"/api/adult/cancel", "/api/adult/continue", "/api/adult/run"}:
+            if not self._authorized():
+                return
+            with self.server.action_lock:
+                now = time.monotonic()
+                self.server.action_times = [stamp for stamp in self.server.action_times if now - stamp < 60]
+                if len(self.server.action_times) >= 10:
+                    return self._send(429, '{"error":"action rate limit exceeded"}', "application/json")
+                self.server.action_times.append(now)
+            return self._adult_decision(path)
+        if path not in {"/api/tasks/enqueue", "/api/tasks/run-once", "/api/agent/run", "/api/plans/cancel"}:
             return self._send(405, '{"error":"unsupported action"}', "application/json")
         if not self._authorized():
             return
@@ -308,7 +672,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(429, '{"error":"action rate limit exceeded"}', "application/json")
             self.server.action_times.append(now)
         try:
-            body = self._read_json()
+            body = self._read_json(unique_keys=path == "/api/plans/cancel")
+            if path == "/api/plans/cancel":
+                if set(body) != {"plan_id", "expected_updated_at"}:
+                    return self._send(400, '{"error":"invalid plan cancellation request"}', "application/json")
+                try:
+                    from agent.plan_control import cancel_existing_plan
+                    result = cancel_existing_plan(body["plan_id"], body["expected_updated_at"])
+                except (ValueError, sqlite3.Error, OSError):
+                    return self._send(409, '{"error":"plan cancellation refused; reload current state"}', "application/json")
+                return self._send(200, json.dumps(result), "application/json")
             if path == "/api/agent/run":
                 enabled = os.environ.get("ENABLE_DASHBOARD_AGENT", "").strip().lower() in {"1", "true", "yes", "on"}
                 if not enabled:

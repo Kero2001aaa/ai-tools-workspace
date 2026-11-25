@@ -6,6 +6,7 @@ feedback callers must receive one of the fixed scope factories.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
@@ -488,8 +489,11 @@ class MemoryStore:
     def __init__(self, db_path: str | Path | None = None):
         configured = db_path or os.getenv("WORKSPACE_MEMORY_DB") or str(DEFAULT_DB)
         self.db_path = Path(configured).expanduser()
+        if str(self.db_path) == ':memory:':
+            raise ValueError('MemoryStore requires a normal filesystem database path')
         existed_before_open = self.db_path.exists()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        from agent.private_sqlite import prepare_database
+        prepare_database(self.db_path)
         self._initialize(existed_before_open=existed_before_open)
 
     def _connect(self) -> sqlite3.Connection:
@@ -787,6 +791,31 @@ class ScopedMemoryStore:
     def recent(self, limit: int = 10) -> list[MemoryRecord]:
         return self._read(None, limit, operation="recent")
 
+    def get_owned(self, memory_id: int) -> MemoryRecord | None:
+        """Exact-ID read of the fixed namespace only, never cross-scope lookup."""
+        if not isinstance(memory_id, int) or isinstance(memory_id, bool) or memory_id < 1:
+            raise ValueError("memory_id must be a positive integer.")
+        connection = self._connection()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            _validate_acl(connection)
+            row = connection.execute(
+                "SELECT m.* FROM memories m WHERE m.id=? AND m.namespace=? "
+                "AND m.owner_agent=? AND EXISTS (SELECT 1 FROM memory_namespace_acl "
+                "WHERE principal=? AND namespace=m.namespace AND can_read=1)",
+                (memory_id, self.__namespace, self.__owner_agent, self.__principal),
+            ).fetchone()
+            result = _decode_row(row) if row is not None else None
+            self._audit(connection, "recall", self.__namespace, result.id if result else None)
+            connection.commit()
+            return result
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def recall_owned(self, query: str, limit: int = 5) -> list[MemoryRecord]:
         return self._read(query, limit, operation="recall", owned_only=True)
 
@@ -850,8 +879,10 @@ class FeedbackPublisherStore:
             raise ValueError("Feedback contains a prohibited identifier, path, URL, or secret.")
         return feedback
 
-    def publish_sanitized_feedback(self, feedback: SanitizedFeedback) -> MemoryRef:
+    def publish_sanitized_feedback(self, feedback: SanitizedFeedback, *, idempotent: bool = False) -> MemoryRef:
         clean = self._validate_feedback(feedback)
+        if not isinstance(idempotent, bool):
+            raise ValueError("idempotent must be boolean.")
         created_at = _utc_now()
         metadata = {
             "category": clean.category,
@@ -864,23 +895,45 @@ class FeedbackPublisherStore:
             "source_fingerprint": clean.source_fingerprint,
         }
         metadata_json = json.dumps(metadata, ensure_ascii=False, allow_nan=False)
+        # Domain-separated digest covers only already-sanitized publication data.
+        # BEGIN IMMEDIATE serializes lookup+insert, including separate processes.
+        publication_hash = hashlib.sha256(("adult-feedback-publication-v1:" +
+            json.dumps({"lesson": clean.lesson, **metadata}, sort_keys=True,
+                       ensure_ascii=True, separators=(",", ":"))).encode()).hexdigest() if idempotent else None
         tags = [clean.category]
         connection = self.__store._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             _validate_acl(connection)
+            if publication_hash is not None:
+                prior = connection.execute(
+                    "SELECT * FROM memories WHERE content_hash=? AND namespace='workspace' "
+                    "AND owner_agent='feedback_publisher' AND visibility='shareable' AND memory_type='lesson'",
+                    (publication_hash,),
+                ).fetchone()
+                if prior is not None:
+                    record = _decode_row(prior)
+                    if record.content != clean.lesson or record.metadata != metadata:
+                        raise MemoryDataIntegrityError(record.id, "publication_mismatch")
+                    connection.execute(
+                        "INSERT INTO memory_access_audit(principal,operation,namespace,memory_id,created_at) "
+                        "VALUES ('feedback_publisher','publish_feedback','workspace',?,?)",
+                        (record.id, _utc_now()),
+                    )
+                    connection.commit()
+                    return MemoryRef(record.id, record.created_at, record.tags)
             cursor = connection.execute(
                 """INSERT INTO memories
                    (content, tags, created_at, namespace, memory_type, visibility,
                     sensitivity, task_id, content_hash, metadata_json, owner_agent)
                    SELECT ?, ?, ?, 'workspace', 'lesson', 'shareable',
-                          'unknown', NULL, NULL, ?, 'feedback_publisher'
+                          'unknown', NULL, ?, ?, 'feedback_publisher'
                    WHERE EXISTS (
                      SELECT 1 FROM memory_namespace_acl
                      WHERE principal='feedback_publisher'
                        AND namespace='workspace' AND can_write=1
                    )""",
-                (clean.lesson, json.dumps(tags), created_at, metadata_json),
+                (clean.lesson, json.dumps(tags), created_at, publication_hash, metadata_json),
             )
             if cursor.rowcount != 1:
                 connection.execute(

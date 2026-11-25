@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from agent.adult.adult_task_store import (
     AdultTaskStore, TaskStoreSchemaError, SCHEMA_NAME, ATTEMPT_SCHEMA_NAME,
-    CAPABILITY_SCHEMA_NAME, _SCHEMA,
+    CAPABILITY_SCHEMA_NAME, FEEDBACK_SCHEMA_NAME, _SCHEMA,
 )
 
 
@@ -707,13 +707,13 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
                 "adult_schema_migrations", "adult_tasks", "adult_steps",
                 "adult_checkpoints", "adult_task_events", "adult_attempts",
                 "adult_attempt_events", "adult_model_capabilities",
-                "adult_capability_events",
+                "adult_capability_events", "adult_feedback_proposals",
             }, tables)
             migrations = connection.execute(
                 "SELECT version,name FROM adult_schema_migrations ORDER BY version"
             ).fetchall()
             self.assertEqual(
-                [(1, SCHEMA_NAME), (2, ATTEMPT_SCHEMA_NAME), (3, CAPABILITY_SCHEMA_NAME)],
+                [(1, SCHEMA_NAME), (2, ATTEMPT_SCHEMA_NAME), (3, CAPABILITY_SCHEMA_NAME), (4, FEEDBACK_SCHEMA_NAME)],
                 [tuple(row) for row in migrations],
             )
             self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
@@ -748,6 +748,10 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
                 connection.execute(f"DROP INDEX {index}")
             connection.execute("DROP TABLE adult_capability_events")
             connection.execute("DROP TABLE adult_model_capabilities")
+            connection.execute("DROP TRIGGER validate_adult_feedback_update")
+            connection.execute("DROP TRIGGER prevent_adult_feedback_delete")
+            connection.execute("DROP TABLE adult_feedback_proposals")
+            connection.execute("DELETE FROM adult_schema_migrations WHERE version=4")
             connection.execute("DELETE FROM adult_schema_migrations WHERE version=3")
             connection.execute("DROP TABLE adult_attempt_events")
             connection.execute("DROP TABLE adult_attempts")
@@ -766,7 +770,7 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
                     "SELECT version,name FROM adult_schema_migrations ORDER BY version"
                 )
             ]
-            self.assertEqual([(1, SCHEMA_NAME), (2, ATTEMPT_SCHEMA_NAME), (3, CAPABILITY_SCHEMA_NAME)], migrations)
+            self.assertEqual([(1, SCHEMA_NAME), (2, ATTEMPT_SCHEMA_NAME), (3, CAPABILITY_SCHEMA_NAME), (4, FEEDBACK_SCHEMA_NAME)], migrations)
             self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
             self.assertEqual([], connection.execute("PRAGMA foreign_key_check").fetchall())
         self.assertEqual(before, after)
@@ -812,9 +816,9 @@ class AdultTaskStoreSchemaTests(unittest.TestCase):
             AdultTaskStore(self.db)
 
     def test_canonical_owned_definitions_validate_for_each_supported_schema_version(self):
-        from agent.adult.adult_task_store import _ATTEMPT_SCHEMA, _CAPABILITY_SCHEMA
+        from agent.adult.adult_task_store import _ATTEMPT_SCHEMA, _CAPABILITY_SCHEMA, _FEEDBACK_SCHEMA
         statements = ()
-        for version, additions in ((1, _SCHEMA), (2, _ATTEMPT_SCHEMA), (3, _CAPABILITY_SCHEMA)):
+        for version, additions in ((1, _SCHEMA), (2, _ATTEMPT_SCHEMA), (3, _CAPABILITY_SCHEMA), (4, _FEEDBACK_SCHEMA)):
             statements += additions
             with self.subTest(version=version):
                 connection = sqlite3.connect(':memory:')

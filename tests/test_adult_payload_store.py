@@ -86,6 +86,19 @@ class AdultArtifactStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_optional_output_owner_check_rejects_other_task_before_decrypt(self):
+        output=self.store.save_output('task-1','attempt-1',b'private result','text/plain')
+        with patch.object(self.cipher,'decrypt',side_effect=AssertionError('ownership must precede decryption')):
+            with self.assertRaises(PayloadNotFound):self.store.read_chunk(output.artifact_id,0,task_id='task-2')
+        self.assertEqual(b'private result',self.store.read_chunk(output.artifact_id,0,task_id='task-1').data)
+        self.assertEqual(b'private result',self.store.read_chunk(output.artifact_id,0).data)
+
+    def test_optional_transient_output_owner_check_preserves_original_output(self):
+        store=AdultArtifactStore(self.root/'transient-owner')
+        output=store.save_output('task-1','attempt-1',b'private transient result','text/plain')
+        with self.assertRaises(PayloadNotFound):store.read_chunk(output.artifact_id,0,task_id='task-2')
+        self.assertEqual(b'private transient result',store.read_chunk(output.artifact_id,0,task_id='task-1').data)
+
     def test_retained_input_is_encrypted_and_metadata_contains_no_plaintext_or_key(self):
         secret = b"distinctive-private-input-9b3d2e"
         reference = self.store.save_input("task-1", secret, "text/plain", retain_encrypted=True)

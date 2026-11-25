@@ -1,5 +1,6 @@
 """MCP interface for bounded persistent plans."""
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictInt
 
 from agent.plan_store import PlanStore
 
@@ -35,21 +36,47 @@ def run_next_plan_step(plan_id: str) -> dict:
 
 
 @mcp.tool()
-def run_plan_until_done(plan_id: str, max_steps: int = 3, max_seconds: int = 60) -> dict:
+def run_plan_until_done(plan_id: str, max_steps: StrictInt = 3, max_seconds: StrictInt = 60) -> dict:
     """Run a plan autonomously up to bounded step/time budgets; each step is checkpointed and resumable."""
     return store.run_until_done(plan_id, max_steps=max_steps, max_seconds=max_seconds)
 
 
 @mcp.tool()
-def supervise_plan(plan_id: str, max_steps: int = 3, max_seconds: int = 60) -> dict:
+def supervise_plan(plan_id: str, max_steps: StrictInt = 3, max_seconds: StrictInt = 60) -> dict:
     """Inspect plan state and make one bounded run, resume-later, wait, or stop decision."""
     return store.supervise(plan_id, max_steps=max_steps, max_seconds=max_seconds)
 
 
 @mcp.tool()
-def retry_failed_plan_step(plan_id: str, step_id: str) -> dict:
-    """Explicitly requeue one failed step; a subsequent run_next_plan_step or authorized run_plan_until_done call is required to execute it."""
-    return store.retry_failed_step(plan_id, step_id)
+def retry_failed_plan_step(plan_id: str, step_id: str, retry_reason: str = "explicit_retry_requested") -> dict:
+    """Requeue a known failure, without executing it. Nonretryable journaled failures require a specific repair/changed-condition reason, recorded as an unverified assertion. Transient and legacy failures allow the default. A subsequent authorized run is required."""
+    return store.retry_failed_step(plan_id, step_id, retry_reason)
+
+
+@mcp.tool()
+def cancel_plan(plan_id: str, expected_updated_at: str) -> dict:
+    """Explicitly cancel only inactive remaining plan work using its last-read updated_at.
+
+    Never interrupts running work or rolls back completed steps. Reload after a
+    stale state refusal. Cancelled plans cannot be resumed or retried.
+    """
+    return store.cancel_plan(plan_id, expected_updated_at)
+
+
+@mcp.tool()
+def get_failure_checkpoint(plan_id: str) -> dict:
+    """Inspect recorded failures and whether the five-failure continuation gate is closed."""
+    return store.get_failure_checkpoint(plan_id)
+
+
+@mcp.tool()
+def continue_after_decision(plan_id: str, expected_updated_at: str, expected_failure_count: StrictInt, decision_id: str) -> dict:
+    """Record a separately obtained explicit continue decision without dispatch or requeue.
+
+    Trusted entry must authenticate the owner's reply. This tool does not prove
+    owner identity or waive permissions, repair gates or execution authority.
+    """
+    return store.continue_after_decision(plan_id,expected_updated_at,expected_failure_count,decision_id)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent.memory_store import MemoryStore
-from agent.task_queue import TaskQueue
+from agent.task_queue import TaskQueue, ALLOWED_TASK_TYPES
+from agent.code_task import execute_code_report
 
 
 def _workspace_status_worker(payload):
@@ -30,6 +31,7 @@ def _memory_recent_worker(payload):
 
 # Each allowlisted task is routed to its own narrowly scoped deterministic worker.
 WORKER_REGISTRY = {
+    "local_code_report": execute_code_report,
     "workspace_status": _workspace_status_worker,
     "memory_recent": _memory_recent_worker,
 }
@@ -65,7 +67,7 @@ def main():
     parser = argparse.ArgumentParser(description="Manage the local approved-task queue.")
     sub = parser.add_subparsers(dest="command", required=True)
     add = sub.add_parser("enqueue", help="Add an allowlisted task")
-    add.add_argument("task_type", choices=("workspace_status", "memory_recent"))
+    add.add_argument("task_type", choices=sorted(ALLOWED_TASK_TYPES))
     add.add_argument("--payload", default="{}", help="JSON object")
     add.add_argument("--max-attempts", type=int, default=3)
     sub.add_parser("run-once", help="Claim and execute at most one due task")

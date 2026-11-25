@@ -35,13 +35,18 @@ def _reject_non_finite(value: str) -> None:
     raise ValueError("Non-finite JSON values are not supported.")
 
 
-def _expected_keys(task_type: str) -> set[str]:
+def _expected_key_sets(task_type: str) -> frozenset[frozenset[str]]:
+    base = frozenset({"schema_version", "task_type"})
     if task_type == "image.analyze":
-        return {"schema_version", "task_type", "image_payload_id"}
+        # The optional analysis prompt keeps the promptless envelope valid.
+        return frozenset({
+            base | {"image_payload_id"},
+            base | {"image_payload_id", "prompt_payload_id"},
+        })
     if task_type == "image.generate":
-        return {"schema_version", "task_type", "prompt_payload_id"}
+        return frozenset({base | {"prompt_payload_id"}})
     if task_type == "image.edit":
-        return {"schema_version", "task_type", "image_payload_id", "prompt_payload_id"}
+        return frozenset({base | {"image_payload_id", "prompt_payload_id"}})
     raise ImageInputError("invalid_envelope")
 
 
@@ -81,7 +86,7 @@ def decode_image_input(data: bytes, expected_task_type: str) -> ImageInputEnvelo
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         raise ImageInputError("invalid_envelope") from None
-    if not isinstance(value, dict) or set(value) != _expected_keys(expected_task_type):
+    if not isinstance(value, dict) or frozenset(value) not in _expected_key_sets(expected_task_type):
         raise ImageInputError("invalid_envelope")
     if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
         raise ImageInputError("invalid_envelope")

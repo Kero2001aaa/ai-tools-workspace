@@ -18,7 +18,7 @@ from agent.adult.integrations.protocols import (
 from agent.adult.models import (
     AdultModelValidationError, AdultTaskRequest, AdultTaskSnapshot,
     CapabilityQuery, CostPolicy, EvaluationResult, PolicyDecision,
-    RouteCandidate, StepRecord,
+    RouteCandidate, StepRecord, TaskLease,
 )
 from agent.adult.payload_store import AdultArtifactStore, ArtifactRef
 
@@ -162,6 +162,7 @@ class AdultImagePipeline:
         task_request: AdultTaskRequest,
         config_fingerprint: str,
         excluded_approach_keys: set[str],
+        *, lease: TaskLease | None = None,
     ) -> ImagePipelineOutcome:
         """Execute no more than one adapter call; the caller retains lease ownership."""
         if not isinstance(task, AdultTaskSnapshot) or not isinstance(task_request, AdultTaskRequest):
@@ -199,7 +200,7 @@ class AdultImagePipeline:
             envelope = decode_image_input(raw_envelope, task_type)
             if task_type != "image.generate":
                 image = self._load_image(envelope.image_payload_id, task.task_id)
-            if task_type != "image.analyze":
+            if envelope.prompt_payload_id is not None:
                 decode_image_prompt(self._artifact_store.load_input(envelope.prompt_payload_id, task.task_id))
         except (ImageInputError, ImageValidationError):
             return self._outcome(task, step_id, "rejected", "INVALID_INPUT")
@@ -261,6 +262,7 @@ class AdultImagePipeline:
         try:
             handle = self._attempt_tracker.begin(
                 task.task_id, step_id, route, task_request.input_fingerprint, config_fingerprint,
+                **({"lease": lease} if lease is not None else {}),
             )
         except Exception:
             return self._outcome(task, step_id, "unavailable", "ATTEMPT_UNAVAILABLE", route)
@@ -274,7 +276,10 @@ class AdultImagePipeline:
 
         try:
             if task_type == "image.analyze":
-                request = ImageAnalysisRequest(task.task_id, step_id, envelope.image_payload_id, image.mime_type)
+                request = ImageAnalysisRequest(
+                    task.task_id, step_id, envelope.image_payload_id, image.mime_type,
+                    prompt_payload_id=envelope.prompt_payload_id,
+                )
             elif task_type == "image.generate":
                 request = ImageGenerationRequest(task.task_id, step_id, envelope.prompt_payload_id)
             else:
