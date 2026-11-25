@@ -48,3 +48,5 @@ class SavedReportHTTPTests(unittest.TestCase):
         self.assertIn('reportRequest===request',page)
         self.assertIn("document.getElementById('saved-report').textContent='';",page)
         self.assertNotIn('output.innerHTML',page)
+        self.assertIn('Other server task types are not offered here',page)
+        self.assertNotIn('two allowlisted task types',page)

@@ -225,7 +225,7 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 <select id="task-type" style="padding:10px;margin:8px"><option value="workspace_status">Workspace status</option><option value="memory_recent">Recent memories (read-only)</option></select>
 <button onclick="enqueueTask()">Enqueue task</button><button onclick="runTask()">Run one queued task</button>
 <pre id="action-result" aria-live="polite"></pre></section>
-<p class="muted">Refreshes every 30 seconds. Task execution is limited to the two allowlisted task types; no shell or arbitrary code execution.</p>
+<p class="muted">Refreshes every 30 seconds. The dashboard can enqueue only Workspace status and Recent memories. Other server task types are not offered here; no shell or arbitrary code execution.</p>
 <script>
 let monitoringEpoch=0;
 let monitoringRequest=0;
