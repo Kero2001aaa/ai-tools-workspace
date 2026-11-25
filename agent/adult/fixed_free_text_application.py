@@ -1,6 +1,6 @@
 """Text-only application boundary over a fixed injected free service.
 
-Not the full AdultAgent contract: ephemeral/image submission and approval resume
+Not the full AdultAgent contract: image submission and approval resume
 are deliberately not exposed. No transport registration or background execution.
 """
 from __future__ import annotations
@@ -45,11 +45,10 @@ class FixedFreeTextApplication:
         return task
 
     def submit_text_task(self, task_type: str, text: str, instruction: str = '', *, retain_payload=False):
-        # The service can only resume encrypted input. Do not turn an omitted or
-        # false retention choice into durable storage without explicit consent.
-        if retain_payload is not True:
-            raise ValueError('encrypted_retention_consent_required')
-        outcome = self._service.submit(task_type, text, instruction, budget=self._budget)
+        if not isinstance(retain_payload, bool):
+            raise ValueError('retention_boolean_required')
+        outcome = self._service.submit(task_type, text, instruction, budget=self._budget,
+                                       retain_payload=retain_payload)
         return self.get_task(outcome.task_id)
 
     def run_task(self, task_id: str, *, max_seconds: int = 120):
