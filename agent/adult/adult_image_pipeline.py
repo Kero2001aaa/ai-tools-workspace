@@ -200,7 +200,7 @@ class AdultImagePipeline:
             envelope = decode_image_input(raw_envelope, task_type)
             if task_type != "image.generate":
                 image = self._load_image(envelope.image_payload_id, task.task_id)
-            if task_type != "image.analyze":
+            if envelope.prompt_payload_id is not None:
                 decode_image_prompt(self._artifact_store.load_input(envelope.prompt_payload_id, task.task_id))
         except (ImageInputError, ImageValidationError):
             return self._outcome(task, step_id, "rejected", "INVALID_INPUT")
@@ -276,7 +276,10 @@ class AdultImagePipeline:
 
         try:
             if task_type == "image.analyze":
-                request = ImageAnalysisRequest(task.task_id, step_id, envelope.image_payload_id, image.mime_type)
+                request = ImageAnalysisRequest(
+                    task.task_id, step_id, envelope.image_payload_id, image.mime_type,
+                    prompt_payload_id=envelope.prompt_payload_id,
+                )
             elif task_type == "image.generate":
                 request = ImageGenerationRequest(task.task_id, step_id, envelope.prompt_payload_id)
             else:
