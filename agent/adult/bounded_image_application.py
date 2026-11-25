@@ -111,10 +111,12 @@ class BoundedImageApplication:
         task = self._task(task_id)
         if type(decision) is not str or decision not in {'continue', 'cancel'}:
             raise ValueError('invalid_resume_decision')
+        if decision == 'cancel':
+            if task.status not in {'waiting_user', 'checkpointed', 'paused', 'needs_input'}:
+                raise ValueError('image_resume_unavailable')
+            return self.cancel_task(task_id)
         if task.status not in {'waiting_user', 'checkpointed'}:
             raise ValueError('image_resume_unavailable')
-        if decision == 'cancel':
-            return self.cancel_task(task_id)
         # Internal caller must ground authenticated real approval separately.
         was_waiting = task.status == 'waiting_user'
         resumed = self.tasks.resume(task_id, 'continue')
