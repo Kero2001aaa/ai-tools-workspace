@@ -122,3 +122,26 @@ print(json.dumps({'status':result.status,'attempts':service.tasks.get_task(resul
             'TEST_KEY':key,'TEST_TASK':task},capture_output=True,text=True,timeout=20)
         self.assertEqual(0,result.returncode,result.stderr)
         self.assertEqual({'status':'needs_input','attempts':0},json.loads(result.stdout))
+
+    def test_input_lost_after_lease_precheck_leaves_pending_step_and_can_restore(self):
+        app=self.app(1);task=app.submit_text_task('text.analyze','Safe original.')['task_id']
+        original=self.pipeline.run_one_attempt
+        def evict_then_run(*args,**kwargs):
+            self.artifacts.cache.discard(task)
+            return original(*args,**kwargs)
+        with patch.object(self.pipeline,'run_one_attempt',side_effect=evict_then_run):
+            outcome=app.run_task(task)
+        self.assertEqual('needs_input',outcome['task']['status'])
+        self.assertEqual((0,0),(self.tasks.get_task(task).attempt_count,self.adapters[0].calls))
+        step=self.tasks.get_step(task,self.tasks.get_task(task).current_step_id)
+        self.assertEqual('pending',step.status)
+        result=app.restore_input_and_resume(task,'Safe original.',max_attempts=1)
+        self.assertEqual('completed',result['task']['status'])
+        self.assertEqual(1,self.adapters[0].calls)
+
+    def test_no_attempt_route_loss_keeps_pending_step(self):
+        app=self.app(0);task=app.submit_text_task('text.analyze','Safe original.')['task_id']
+        result=app.run_task(task)
+        self.assertEqual('paused',result['task']['status'])
+        self.assertEqual(0,self.tasks.get_task(task).attempt_count)
+        self.assertEqual('pending',self.tasks.get_step(task,self.tasks.get_task(task).current_step_id).status)
