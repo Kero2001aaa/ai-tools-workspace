@@ -18,6 +18,11 @@ class ImageInputEnvelopeTests(unittest.TestCase):
     def test_canonical_round_trip_for_all_image_operations(self):
         envelopes = (
             ImageInputEnvelope("image.analyze", image_payload_id="image-ref-1"),
+            ImageInputEnvelope(
+                "image.analyze",
+                image_payload_id="image-ref-1",
+                prompt_payload_id="prompt-ref-1",
+            ),
             ImageInputEnvelope("image.generate", prompt_payload_id="prompt-ref-1"),
             ImageInputEnvelope(
                 "image.edit",
@@ -56,7 +61,8 @@ class ImageInputEnvelopeTests(unittest.TestCase):
         cases = (
             b'{"image_payload_id":"image-ref","schema_version":1,"task_type":"image.analyze","extra":"x"}',
             b'{"schema_version":1,"task_type":"image.analyze"}',
-            b'{"image_payload_id":"image-ref","prompt_payload_id":"prompt-ref","schema_version":1,"task_type":"image.analyze"}',
+            b'{"prompt_payload_id":"prompt-ref","schema_version":1,"task_type":"image.analyze"}',
+            b'{"image_payload_id":"image-ref","prompt_payload_id":"prompt-ref","schema_version":1,"task_type":"image.generate"}',
         )
         for raw in cases:
             with self.subTest(raw_length=len(raw)), self.assertRaises(ImageInputError):
