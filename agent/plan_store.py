@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from agent.task_queue import ALLOWED_TASK_TYPES
+from agent.task_queue import ALLOWED_TASK_TYPES, TaskQueue
 
 DEFAULT_DB = Path(".data") / "plans.sqlite3"
 MAX_STEPS = 10
@@ -54,6 +54,7 @@ class PlanStore:
         configured = os.getenv("WORKSPACE_PLAN_DB", "").strip()
         self.db_path = Path(db_path or configured or DEFAULT_DB).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.queue = TaskQueue(self.db_path)
         with self._connect() as db:
             db.execute("""
                 CREATE TABLE IF NOT EXISTS plans (
@@ -147,93 +148,89 @@ class PlanStore:
         return [dict(row) for row in rows]
 
     def run_next_step(self, plan_id):
-        """Execute exactly one next step; a stale running step is recovered after its lease."""
-        now = _now()
-        now_stamp = _stamp(now)
-        stale_before = _stamp(now - timedelta(minutes=LEASE_MINUTES))
+        """One stable queue identity per step; never replay an unknown running task."""
+        now_stamp = _stamp(_now())
         db = self._connect()
         try:
             db.execute("BEGIN IMMEDIATE")
-            plan = db.execute("SELECT * FROM plans WHERE id=?", (plan_id,)).fetchone()
+            plan = db.execute("SELECT * FROM plans WHERE id=?",(plan_id,)).fetchone()
             if not plan:
                 raise ValueError("Plan not found")
-            db.execute(
-                """UPDATE plan_steps SET status='pending',started_at=NULL
-                WHERE plan_id=? AND status='running' AND started_at<?""",
-                (plan_id, stale_before),
-            )
-            failed_count = db.execute(
-                "SELECT COUNT(*) FROM plan_steps WHERE plan_id=? AND status='failed'", (plan_id,)
-            ).fetchone()[0]
-            if failed_count:
-                db.execute("UPDATE plans SET status='paused',updated_at=? WHERE id=?", (now_stamp, plan_id))
+            steps = db.execute("SELECT * FROM plan_steps WHERE plan_id=? ORDER BY position",(plan_id,)).fetchall()
+            failed = next((step for step in steps if step["status"]=="failed"),None)
+            if failed:
                 db.commit()
-                return {"status": "paused", "plan_id": plan_id, "step": None,
-                        "reason": "A failed step must be explicitly retried before continuing"}
-            running_count = db.execute(
-                "SELECT COUNT(*) FROM plan_steps WHERE plan_id=? AND status='running'", (plan_id,)
-            ).fetchone()[0]
-            if running_count:
-                db.execute("UPDATE plans SET status='running',updated_at=? WHERE id=?", (now_stamp, plan_id))
-                db.commit()
-                return {"status": "running", "plan_id": plan_id, "step": None,
-                        "reason": "Another step is already running"}
-            step = db.execute(
-                "SELECT * FROM plan_steps WHERE plan_id=? AND status='pending' ORDER BY position LIMIT 1",
-                (plan_id,),
-            ).fetchone()
+                return {"status":"paused","plan_id":plan_id,"step":None,
+                        "reason":"A failed step must be explicitly retried before continuing"}
+            step = next((step for step in steps if step["status"]!="succeeded"),None)
             if step is None:
-                failed = db.execute(
-                    "SELECT COUNT(*) FROM plan_steps WHERE plan_id=? AND status='failed'", (plan_id,)
-                ).fetchone()[0]
-                pending = db.execute(
-                    "SELECT COUNT(*) FROM plan_steps WHERE plan_id=? AND status IN ('pending','running')",
-                    (plan_id,),
-                ).fetchone()[0]
-                status = "paused" if failed else ("completed" if pending == 0 else "running")
-                db.execute("UPDATE plans SET status=?,updated_at=? WHERE id=?", (status, now_stamp, plan_id))
+                db.execute("UPDATE plans SET status='completed',updated_at=? WHERE id=?",(now_stamp,plan_id))
                 db.commit()
-                return {"status": status, "plan_id": plan_id, "step": None}
-            db.execute(
-                "UPDATE plan_steps SET status='running',started_at=? WHERE id=? AND status='pending'",
-                (now_stamp, step["id"]),
-            )
-            db.execute("UPDATE plans SET status='running',updated_at=? WHERE id=?", (now_stamp, plan_id))
+                return {"status":"completed","plan_id":plan_id,"step":None}
+            # Old pre-binding running steps have unknown outcomes. Do not silently
+            # introduce a queue task that could duplicate their work after upgrade.
+            task_id = str(uuid.uuid5(uuid.NAMESPACE_URL,"workspace-plan-step:"+step["id"]))
+            existing = db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
+            if step["status"]=="running" and existing is None:
+                db.commit()
+                return {"status":"running","plan_id":plan_id,"step":None,
+                        "reason":"Legacy running step requires outcome reconciliation"}
+            task = self.queue.bind_plan_step(db,step)
+            if task["status"]=="succeeded":
+                db.execute("UPDATE plan_steps SET status='succeeded',result=?,last_error=NULL,completed_at=? WHERE id=?",
+                    (json.dumps(task["result"],separators=(",",":"),sort_keys=True),now_stamp,step["id"]))
+            elif task["status"]=="failed":
+                db.execute("UPDATE plan_steps SET status='failed',last_error=?,completed_at=? WHERE id=?",
+                    (task["last_error"],now_stamp,step["id"]))
+                db.execute("UPDATE plans SET status='paused',updated_at=? WHERE id=?",(now_stamp,plan_id))
+                db.commit()
+                return {"status":"paused","plan_id":plan_id,"step_id":step["id"],"task_id":task_id,"error":task["last_error"]}
+            else:
+                db.execute("UPDATE plan_steps SET status='running',started_at=COALESCE(started_at,?) WHERE id=?",(now_stamp,step["id"]))
+                db.execute("UPDATE plans SET status='running',updated_at=? WHERE id=?",(now_stamp,plan_id))
             db.commit()
         except Exception:
             db.rollback()
             raise
         finally:
             db.close()
-
-        from agent.task_worker import execute_task
-        task = {"task_type": step["task_type"], "payload": json.loads(step["payload"])}
-        try:
-            result = execute_task(task)
-            encoded = json.dumps(result, separators=(",", ":"), sort_keys=True, default=str)
-            if len(encoded) > 20000:
-                raise ValueError("Plan step result exceeds 20,000 characters")
-        except Exception as exc:
-            with self._connect() as db:
-                db.execute(
-                    "UPDATE plan_steps SET status='failed',last_error=?,completed_at=? WHERE id=? AND status='running'",
-                    (str(exc)[:2000], _stamp(_now()), step["id"]),
-                )
-                db.execute("UPDATE plans SET status='paused',updated_at=? WHERE id=?", (_stamp(_now()), plan_id))
-            return {"status": "paused", "plan_id": plan_id, "step_id": step["id"], "error": str(exc)}
-
+        if task["status"]!="succeeded":
+            claim = self.queue.claim_plan_task(task_id)
+            if claim is None:
+                return {"status":"running","plan_id":plan_id,"task_id":task_id,"step":None,
+                        "reason":"Another step is already running or its outcome needs reconciliation"}
+            from agent.task_worker import execute_task
+            try:
+                result = execute_task(claim)
+                task = self.queue.finish_plan_task(claim,result=result)
+            except Exception as exc:
+                # A failed durable completion can mean success already committed.
+                # Inspect the queue before considering failure; never redispatch.
+                task = self.queue.get(task_id)
+                if task["status"]=="running":
+                    task = self.queue.finish_plan_task(claim,error=exc)
+                if task["status"]!="succeeded":
+                    with self._connect() as db:
+                        db.execute("UPDATE plan_steps SET status='failed',last_error=?,completed_at=? WHERE id=? AND status='running'",
+                            (task["last_error"],_stamp(_now()),step["id"]))
+                        db.execute("UPDATE plans SET status='paused',updated_at=? WHERE id=?",(_stamp(_now()),plan_id))
+                    return {"status":"paused","plan_id":plan_id,"task_id":task_id,"step_id":step["id"],"error":task["last_error"]}
         with self._connect() as db:
-            db.execute(
-                "UPDATE plan_steps SET status='succeeded',result=?,last_error=NULL,completed_at=? WHERE id=? AND status='running'",
-                (encoded, _stamp(_now()), step["id"]),
-            )
-            remaining = db.execute(
-                "SELECT COUNT(*) FROM plan_steps WHERE plan_id=? AND status!='succeeded'", (plan_id,)
-            ).fetchone()[0]
-            status = "completed" if remaining == 0 else "checkpointed"
-            db.execute("UPDATE plans SET status=?,updated_at=? WHERE id=?", (status, _stamp(_now()), plan_id))
-        return {"status": "step_succeeded", "plan_status": status, "plan_id": plan_id,
-                "step_id": step["id"], "position": step["position"], "result": result}
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE plan_steps SET status='succeeded',result=?,last_error=NULL,completed_at=? WHERE id=? AND status IN ('running','succeeded')",
+                (json.dumps(task["result"],separators=(",",":"),sort_keys=True),_stamp(_now()),step["id"]))
+            remaining=db.execute("SELECT COUNT(*) FROM plan_steps WHERE plan_id=? AND status!='succeeded'",(plan_id,)).fetchone()[0]
+            status="completed" if remaining==0 else "checkpointed"
+            active=db.execute("SELECT COUNT(*) FROM plan_steps WHERE plan_id=? AND status='running'",(plan_id,)).fetchone()[0]
+            failed=db.execute("SELECT COUNT(*) FROM plan_steps WHERE plan_id=? AND status='failed'",(plan_id,)).fetchone()[0]
+            if failed:
+                status="paused"
+            elif active:
+                status="running"
+            db.execute("UPDATE plans SET status=?,updated_at=? WHERE id=?",(status,_stamp(_now()),plan_id))
+            db.commit()
+        return {"status":"step_succeeded","plan_status":status,"plan_id":plan_id,
+                "step_id":step["id"],"task_id":task_id,"position":step["position"],"result":task["result"]}
 
     def run_until_done(self, plan_id, max_steps=3, max_seconds=60):
         """Run a bounded batch, checkpointing after every step for later resume."""
@@ -307,10 +304,10 @@ class PlanStore:
         if status == "paused":
             return {"decision": "stop", "status": status, "plan_id": plan_id,
                     "reason": "A failed step requires an explicit retry", "run": None}
-        if status == "running":
-            return {"decision": "wait", "status": status, "plan_id": plan_id,
-                    "reason": "A step is already running; avoid concurrent execution", "run": None}
-        if status not in {"queued", "checkpointed"}:
+        # A running plan may have a committed queue outcome not yet projected
+        # into plan_steps after interruption. Targeted claims make reconciliation
+        # safe; genuinely running/unknown work returns wait without redispatch.
+        if status not in {"queued", "checkpointed", "running"}:
             raise ValueError(f"Unsupported plan state: {status}")
         run = self.run_until_done(plan_id, max_steps=max_steps, max_seconds=max_seconds)
         if run["status"] == "completed":
@@ -327,6 +324,11 @@ class PlanStore:
     def retry_failed_step(self, plan_id, step_id):
         now = _stamp(_now())
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            task_id=str(uuid.uuid5(uuid.NAMESPACE_URL,"workspace-plan-step:"+step_id))
+            task=db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
+            if task is not None and task["status"] != "failed":
+                raise ValueError("Only known failed execution may be explicitly retried")
             changed = db.execute(
                 """UPDATE plan_steps SET status='pending',last_error=NULL,result=NULL,
                 started_at=NULL,completed_at=NULL WHERE id=? AND plan_id=? AND status='failed'""",
@@ -334,5 +336,7 @@ class PlanStore:
             ).rowcount
             if not changed:
                 raise ValueError("No failed step with that ID exists in this plan")
+            db.execute("UPDATE tasks SET status='pending',result=NULL,last_error=NULL,locked_at=NULL,updated_at=? WHERE id=? AND status='failed'",(now,task_id))
             db.execute("UPDATE plans SET status='queued',updated_at=? WHERE id=?", (now, plan_id))
+            db.commit()
         return self.get_plan(plan_id)

@@ -96,12 +96,12 @@ class PlanStoreTests(unittest.TestCase):
             )
         blocked = self.store.run_next_step(plan["id"])
         self.assertEqual("running", blocked["status"])
-        self.assertEqual("Another step is already running", blocked["reason"])
+        self.assertIn("running", blocked["reason"])
         current = self.store.get_plan(plan["id"])
         self.assertEqual(["running", "pending"], [s["status"] for s in current["steps"]])
 
 
-    def test_expired_running_step_recovers_after_store_reopen(self):
+    def test_legacy_expired_running_step_waits_for_reconciliation(self):
         from datetime import datetime, timezone
         plan = self.store.create_plan("Restart recovery", [
             {"task_type": "workspace_status"},
@@ -114,10 +114,11 @@ class PlanStoreTests(unittest.TestCase):
         reopened = PlanStore(Path(self.temp.name) / "plans.sqlite3")
         with patch("agent.plan_store._now", return_value=datetime(2026, 1, 1, 0, 11, tzinfo=timezone.utc)), patch("agent.task_worker.execute_task", return_value={"workspace":"ready"}) as execute:
             outcome = reopened.run_next_step(plan["id"])
-        self.assertEqual("step_succeeded", outcome["status"])
-        execute.assert_called_once()
+        self.assertEqual("running", outcome["status"])
+        self.assertIn("reconciliation",outcome["reason"])
+        execute.assert_not_called()
         checkpoint = PlanStore(Path(self.temp.name) / "plans.sqlite3").get_plan(plan["id"])
-        self.assertEqual(["succeeded", "pending"], [s["status"] for s in checkpoint["steps"]])
+        self.assertEqual(["running", "pending"], [s["status"] for s in checkpoint["steps"]])
 
     def test_plan_persists_across_store_instances(self):
         plan = self.store.create_plan("Persistent", [{"task_type": "workspace_status"}])

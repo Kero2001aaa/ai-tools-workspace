@@ -40,6 +40,10 @@ class TaskQueue:
                     updated_at TEXT NOT NULL
                 )
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
+            if "plan_step_id" not in columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN plan_step_id TEXT")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_plan_step ON tasks(plan_step_id) WHERE plan_step_id IS NOT NULL")
             db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_ready ON tasks(status, run_at, created_at)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_lease ON tasks(status, locked_at)")
 
@@ -100,7 +104,7 @@ class TaskQueue:
             db.execute("BEGIN IMMEDIATE")
             stale = db.execute(
                 "SELECT id, attempts, max_attempts FROM tasks "
-                "WHERE status = 'running' AND locked_at < ?", (cutoff,)
+                "WHERE status = 'running' AND plan_step_id IS NULL AND locked_at < ?", (cutoff,)
             ).fetchall()
             for row in stale:
                 status = "pending" if row["attempts"] < row["max_attempts"] else "failed"
@@ -109,7 +113,7 @@ class TaskQueue:
                     (status, "Worker lease expired", current_stamp, row["id"]),
                 )
             row = db.execute(
-                "SELECT id FROM tasks WHERE status='pending' AND run_at<=? "
+                "SELECT id FROM tasks WHERE status='pending' AND plan_step_id IS NULL AND run_at<=? "
                 "ORDER BY run_at, created_at LIMIT 1", (current_stamp,)
             ).fetchone()
             if row is None:
@@ -127,6 +131,54 @@ class TaskQueue:
             raise
         finally:
             db.close()
+
+    def bind_plan_step(self, db, step):
+        """Bind inside the caller's plan transaction, on this exact database."""
+        if step["task_type"] not in ALLOWED_TASK_TYPES:
+            raise ValueError("Unsupported plan task type")
+        payload = json.loads(step["payload"])
+        if not isinstance(payload, dict) or len(step["payload"]) > 4000:
+            raise ValueError("Invalid plan payload")
+        # Reuse the plan's operation-specific payload validator without broadening
+        # either the queue allowlist or any tool's input schema.
+        from agent.plan_store import _validate_step
+        _validate_step({"task_type":step["task_type"],"payload":payload})
+        task_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "workspace-plan-step:" + step["id"]))
+        now = _stamp(_now())
+        db.execute("""INSERT OR IGNORE INTO tasks
+            (id,task_type,payload,status,attempts,max_attempts,run_at,created_at,updated_at,plan_step_id)
+            VALUES(?,?,?,'pending',0,1,?,?,?,?)""",
+            (task_id,step["task_type"],step["payload"],now,now,now,step["id"]))
+        task = db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
+        if (task is None or task["plan_step_id"] != step["id"]
+                or task["task_type"] != step["task_type"] or task["payload"] != step["payload"]):
+            raise ValueError("Plan execution identity conflict")
+        return self._as_dict(task)
+
+    def claim_plan_task(self, task_id):
+        """Targeted claim. Unknown running outcomes are never automatically replayed."""
+        now = _stamp(_now())
+        with self._connect() as db:
+            changed = db.execute("""UPDATE tasks SET status='running',attempts=attempts+1,
+                locked_at=?,updated_at=? WHERE id=? AND status='pending' AND plan_step_id IS NOT NULL""",
+                (now,now,task_id)).rowcount
+        return self.get(task_id) if changed else None
+
+    def finish_plan_task(self, claim, *, result=None, error=None):
+        """Fence completion to the exact persisted claim, not just a running ID."""
+        if not isinstance(claim, dict) or not claim.get("plan_step_id"):
+            raise ValueError("Plan task claim required")
+        encoded = json.dumps(result,separators=(",",":"),sort_keys=True,default=str) if error is None else None
+        if encoded is not None and len(encoded)>20000:
+            raise ValueError("Task result must be 20,000 characters or fewer")
+        with self._connect() as db:
+            changed = db.execute("""UPDATE tasks SET status=?,result=?,last_error=?,locked_at=NULL,updated_at=?
+                WHERE id=? AND status='running' AND attempts=? AND locked_at=? AND plan_step_id=?""",
+                ("succeeded" if error is None else "failed",encoded,str(error)[:2000] if error is not None else None,
+                 _stamp(_now()),claim["id"],claim["attempts"],claim["locked_at"],claim["plan_step_id"])).rowcount
+        if changed != 1:
+            raise ValueError("Plan execution claim lost")
+        return self.get(claim["id"])
 
     def complete(self, task_id, result):
         encoded = json.dumps(result, separators=(",", ":"), sort_keys=True, default=str)
@@ -154,7 +206,7 @@ class TaskQueue:
         with self._connect() as db:
             changed = db.execute(
                 """UPDATE tasks SET status=?, result=?, last_error=?, run_at=COALESCE(?, run_at),
-                   locked_at=NULL, updated_at=? WHERE id=? AND status='running'""",
+                   locked_at=NULL, updated_at=? WHERE id=? AND status='running' AND plan_step_id IS NULL""",
                 (status, result, error, run_at, now, task_id),
             ).rowcount
         if not changed:
