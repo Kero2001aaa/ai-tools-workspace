@@ -1328,3 +1328,28 @@ External API/protocol contracts to re-verify during implementation:
 - [SQLite Database File Format and WAL](https://www.sqlite.org/fileformat.html)
 
 Provider/model capabilities, pricing, retention, and terms can change. Re-verify against the deployed versions and official provider terms before enabling a route.
+
+### Local control-token cancellation boundary
+
+`POST /api/adult/cancel` reuses the local control plane's bearer token,
+Host/Origin/Fetch-Site checks and loopback/private-port requirement. The token
+proves only possession of the current process capability. It does not prove a
+remote human owner identity. Do not expose this server or the generic MCP gateway.
+
+The exact JSON fields are `task_id`, nonnegative integer `expected_state_version`
+and `decision_id` (32 lowercase hexadecimal characters). Unknown or duplicate
+fields are rejected. The existing task-event transaction binds the decision ID to
+one task, state version and cancellation action. An exact durable retry is
+idempotent; stale versions, conflicting decision reuse and new decisions against
+terminal/cancel-requested states are refused. No approval count or provider call
+is added. Active tasks keep their worker lease so only the fenced worker can
+acknowledge cancellation; inactive cancellation clears the lease. Completed task
+outputs are not deleted. Task input cleanup is attempted only once cancellation
+is terminal, including on exact retry after a cleanup failure. A cleanup failure
+is returned explicitly and does not undo the persisted cancellation.
+
+`POST /api/adult/continue` and `/api/adult/run` authenticate, then return 503 without
+reading a decision, changing a task or recording approval. These are explicit
+disabled boundaries, not executable actions. Safe authenticated reads remain
+available. Remote HTTPS/owner identity, real semantic screening and available
+zero-cost provider evidence are unresolved and are not supplied by this slice.

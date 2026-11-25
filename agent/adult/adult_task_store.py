@@ -2087,12 +2087,20 @@ class AdultTaskStore:
             raise TaskStoreSchemaError("Resumed task could not be reloaded.")
         return result
 
-    def request_cancel(self, task_id: str) -> AdultTaskSnapshot:
+    def request_cancel(self, task_id: str, *, expected_state_version: int | None = None,
+                       decision_id: str | None = None) -> AdultTaskSnapshot:
         """Persist a cancellation request with active-worker acknowledgement semantics."""
         if not isinstance(task_id, str) or not task_id or len(task_id) > 128:
             raise AdultModelValidationError("task_id must be a bounded identifier.")
+        if (expected_state_version is None) != (decision_id is None):
+            raise AdultModelValidationError("Version and decision ID must be supplied together.")
+        if decision_id is not None:
+            if (type(expected_state_version) is not int or expected_state_version < 0
+                    or type(decision_id) is not str
+                    or re.fullmatch(r"[0-9a-f]{32}", decision_id) is None):
+                raise AdultModelValidationError("Invalid cancellation decision.")
         now = _utc_now()
-        event_id = str(uuid.uuid4())
+        event_id = decision_id if decision_id is not None else str(uuid.uuid4())
         db = self._connect()
         try:
             db.execute("BEGIN IMMEDIATE")
@@ -2101,6 +2109,20 @@ class AdultTaskStore:
             ).fetchone()
             if task is None:
                 raise TaskNotFound("Task does not exist.")
+            if decision_id is not None:
+                prior = db.execute("SELECT task_id,event_type,metadata_json FROM adult_task_events WHERE event_id=?",
+                                   (decision_id,)).fetchone()
+                metadata = {"reason_code": "user_cancelled", "expected_state_version": expected_state_version}
+                if prior is not None:
+                    if (prior["task_id"] != task_id or prior["event_type"] not in {"cancel_requested", "task_cancelled"}
+                            or json.loads(prior["metadata_json"]) != metadata):
+                        raise StaleTaskVersion("Cancellation decision conflicts with an earlier request.")
+                    db.commit()
+                    return self._snapshot_from_row(task)
+                if task["state_version"] != expected_state_version:
+                    raise StaleTaskVersion("Task changed before cancellation decision.")
+                if task["status"] == "cancelled" or task["cancel_requested"]:
+                    raise InvalidTaskTransition("A new decision cannot replace an existing cancellation.")
             if task["status"] in {"completed", "failed"}:
                 raise TaskTerminal("Completed or failed tasks cannot be cancelled.")
             if task["status"] == "cancelled" or (
@@ -2127,6 +2149,8 @@ class AdultTaskStore:
             if cursor.rowcount != 1:
                 raise StaleTaskVersion("Task state changed while requesting cancellation.")
             metadata = {"reason_code": "user_cancelled"}
+            if decision_id is not None:
+                metadata["expected_state_version"] = expected_state_version
             TaskEvent(
                 event_id=event_id, task_id=task_id, event_type=event_type,
                 from_status=task["status"], to_status=new_status,

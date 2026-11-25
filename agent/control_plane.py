@@ -323,13 +323,20 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _read_json(self):
+    def _read_json(self, *, unique_keys=False):
         if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
             raise ValueError("Content-Type must be application/json")
         raw_length = self.headers.get("Content-Length", "")
         if not raw_length.isdigit() or not 1 <= int(raw_length) <= 8192:
             raise ValueError("Request body must be between 1 and 8192 bytes")
-        value = json.loads(self.rfile.read(int(raw_length)))
+        def pairs(items):
+            result = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("Duplicate JSON field")
+                result[key] = value
+            return result
+        value = json.loads(self.rfile.read(int(raw_length)), object_pairs_hook=pairs if unique_keys else dict)
         if not isinstance(value, dict):
             raise ValueError("Request body must be a JSON object")
         return value
@@ -404,10 +411,70 @@ class Handler(BaseHTTPRequestHandler):
         except (AdultTaskStoreError, sqlite3.Error, OSError):
             return self._send(503, '{"error":"Adult status unavailable"}', "application/json")
 
+    def _adult_decision(self, path):
+        """Local control-token holder cancellation only, never owner identity proof."""
+        if path != "/api/adult/cancel":
+            return self._send(503, '{"error":"Adult execution disabled"}', "application/json")
+        from agent.adult.adult_task_store import (AdultTaskStore, StaleTaskVersion,
+            InvalidTaskTransition, TaskTerminal, TaskNotFound, AdultTaskStoreError)
+        try:
+            body = self._read_json(unique_keys=True)
+            if set(body) != {"task_id", "expected_state_version", "decision_id"}:
+                raise ValueError("invalid decision fields")
+            if (type(body["task_id"]) is not str or not _ADULT_TASK_ID_RE.fullmatch(body["task_id"])
+                    or type(body["expected_state_version"]) is not int or body["expected_state_version"] < 0
+                    or type(body["decision_id"]) is not str or not re.fullmatch(r"[0-9a-f]{32}",body["decision_id"])):
+                raise ValueError("invalid decision")
+            readonly = _adult_store()
+            if readonly is None:
+                return self._send(404, '{"error":"task unavailable"}', "application/json")
+            # Read the same configured path. No body field can choose an owner,
+            # path, application, model, endpoint or execution permission.
+            tasks = AdultTaskStore(readonly._db_path)
+            task = tasks.request_cancel(body["task_id"], expected_state_version=body["expected_state_version"],
+                                        decision_id=body["decision_id"])
+            cleanup = "deferred_to_worker"
+            if task.status == "cancelled":
+                try:
+                    from agent.adult.payload_store import AdultArtifactStore
+                    artifacts = getattr(self.server, "adult_artifacts", None)
+                    if artifacts is None:
+                        root = Path(os.environ.get("ADULT_PAYLOAD_DIR") or ".data/adult_payloads")
+                        if root.is_dir():
+                            artifacts = AdultArtifactStore.from_environment()
+                    if artifacts is None:
+                        cleanup = "no_input_store"
+                    elif isinstance(artifacts, AdultArtifactStore):
+                        artifacts.delete_task_inputs(task.task_id)
+                        cleanup = "input_removed"
+                    else:
+                        cleanup = "cleanup_failed"
+                except Exception:
+                    cleanup = "cleanup_failed"
+            return self._send(200, json.dumps({"task":_adult_task_view(task), "input_cleanup":cleanup}), "application/json")
+        except TaskNotFound:
+            return self._send(404, '{"error":"task unavailable"}', "application/json")
+        except (StaleTaskVersion, InvalidTaskTransition, TaskTerminal):
+            return self._send(409, '{"error":"decision conflict"}', "application/json")
+        except ValueError:
+            return self._send(400, '{"error":"invalid decision"}', "application/json")
+        except (AdultTaskStoreError, sqlite3.Error, OSError):
+            return self._send(503, '{"error":"Adult decision unavailable"}', "application/json")
+
     def do_POST(self):
         if not self._trusted_host():
             return
         path = urlparse(self.path).path
+        if path in {"/api/adult/cancel", "/api/adult/continue", "/api/adult/run"}:
+            if not self._authorized():
+                return
+            with self.server.action_lock:
+                now = time.monotonic()
+                self.server.action_times = [stamp for stamp in self.server.action_times if now - stamp < 60]
+                if len(self.server.action_times) >= 10:
+                    return self._send(429, '{"error":"action rate limit exceeded"}', "application/json")
+                self.server.action_times.append(now)
+            return self._adult_decision(path)
         if path not in {"/api/tasks/enqueue", "/api/tasks/run-once", "/api/agent/run"}:
             return self._send(405, '{"error":"unsupported action"}', "application/json")
         if not self._authorized():
