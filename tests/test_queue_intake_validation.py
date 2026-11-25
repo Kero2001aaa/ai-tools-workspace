@@ -42,7 +42,7 @@ class QueueIntakeValidationTests(unittest.TestCase):
                 async with stdio_client(parameters) as (read,write):
                     async with ClientSession(read,write) as session:
                         await session.initialize()
-                        for arguments in ({'task_type':'workspace_status','payload':{'extra':'x'}},{'task_type':'memory_recent','payload':{'limit':True}}):
+                        for arguments in ({'task_type':'workspace_status','payload':{'extra':'x'}},{'task_type':'memory_recent','payload':{'limit':True}},*[{'task_type':'workspace_status','max_attempts':value} for value in (True,False,1.0,'1')]):
                             self.assertTrue((await session.call_tool('enqueue_task',arguments)).isError)
                         response=await session.call_tool('list_tasks',{});self.assertFalse(response.isError);self.assertEqual([],response.content)
                         response=await session.call_tool('enqueue_task',{'task_type':'workspace_status','max_attempts':1});self.assertFalse(response.isError)

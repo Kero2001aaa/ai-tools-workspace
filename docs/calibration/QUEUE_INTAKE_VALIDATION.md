@@ -16,3 +16,8 @@ The shared validator runs before insert for standalone tasks and before plan
 creation/binding. Actual MCP invalid-payload calls leave an empty queue, then a
 normal status task succeeds. This is an internal contract correction, not full
 Stage4.1 acceptance, source permission or model/tool activation.
+
+The task MCP max_attempts parameter uses Pydantic StrictInt to prevent FastMCP
+from coercing a boolean, float or numeric string before repository validation.
+Its JSON schema remains integer; the runtime no longer accepts those coercions.
+The actual stdio test rejects all four invalid values without queue inserts.
