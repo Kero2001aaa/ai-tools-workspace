@@ -11,7 +11,7 @@ from agent.adult.adult_policies import AdultPolicies
 from agent.adult.adult_router import AdultModelRouter
 from agent.adult.adult_supervisor import AdultSupervisor
 from agent.adult.adult_task_store import AdultTaskStore
-from agent.adult.adult_text_executor import AdultTextExecutor
+from agent.adult.adult_text_executor import AdultTextExecutor, TextExecutionResult
 from agent.adult.adult_text_input import encode_text_input
 from agent.adult.adult_text_intake import AdultTextIntake
 from agent.adult.adult_text_pipeline import AdultTextPipeline
@@ -19,7 +19,7 @@ from agent.adult.capability_registry import ModelCapabilityRegistry
 from agent.adult.integrations.omniroute_chat import AdultOmniRouteConfig
 from agent.adult.integrations.omniroute_text import OmniRouteTextAdapter
 from agent.adult.models import CapabilityQuery, CostPolicy, TaskBudget
-from agent.adult.payload_store import AdultArtifactStore, PayloadCipher
+from agent.adult.payload_store import AdultArtifactStore, PayloadCipher, PayloadUnavailable
 
 
 class FixedFreeTextService:
@@ -71,14 +71,18 @@ class FixedFreeTextService:
         return AdultTextExecutor(self.tasks, AdultTextIntake(self.tasks, self.artifacts, self.cipher),
                                  pipeline, self.cipher)
 
-    def submit(self, task_type: str, text: str, instruction: str = '', *, budget: TaskBudget):
+    def submit(self, task_type: str, text: str, instruction: str = '', *, budget: TaskBudget,
+               retain_payload: bool = True):
         if not isinstance(budget, TaskBudget) or budget.max_provider_calls < 1:
             raise ValueError('explicit_provider_call_budget_required')
+        if not isinstance(retain_payload, bool):
+            raise ValueError('retention_boolean_required')
         data = encode_text_input(task_type, text, instruction)
         executor = self._executor(task_type, self.cipher.fingerprint(data), budget)
         # Existing stage validates the environment key before creating the task.
         # Submission makes no adapter call, even with an available route.
-        return executor.stage_encrypted(task_type, data, budget)
+        return executor.stage(task_type, data, budget,
+            retention_policy="encrypted" if retain_payload else "ephemeral")
 
     def run(self, task_id: str, *, max_attempts=1, max_seconds=120):
         # Provider availability/rate-limit recovery is external, never a loop.
@@ -88,10 +92,22 @@ class FixedFreeTextService:
         if task is None or task.task_type not in {'text.analyze', 'text.generate', 'text.rewrite'}:
             raise ValueError('text_task_unavailable')
         request = self.tasks.get_task_request(task_id)
+        if task.status == 'needs_input':
+            return TextExecutionResult(task_id, 'needs_input', error_code='input_required')
         if task.status not in {'completed', 'failed', 'cancelled'}:
             if request.payload_id is None:
                 raise ValueError('retained_input_required')
-            data = self.artifacts.load_input(request.payload_id, task_id)
+            try:
+                data = self.artifacts.load_input(request.payload_id, task_id)
+            except PayloadUnavailable:
+                # Only an absent process-local input is a recoverable loss here.
+                # Never turn wrong keys, authentication errors or retained input
+                # expiry into a silent replacement permission.
+                if request.retention_policy != 'ephemeral' or task.status != 'checkpointed':
+                    raise
+                self.tasks.transition(task_id, {'checkpointed'}, 'needs_input',
+                    'state_transition', task.state_version)
+                return TextExecutionResult(task_id, 'needs_input', error_code='input_required')
             if self.cipher.fingerprint(data) != request.input_fingerprint:
                 raise ValueError('input_key_mismatch')
         budget = TaskBudget(max_total_attempts=task.max_total_attempts,
