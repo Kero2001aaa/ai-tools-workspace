@@ -19,3 +19,8 @@ normal monitoring unlock followed by saved-report read, at desktop and 390px.
 No live provider or user-secret content is involved. Full Arabic empty/error/
 confirmation coverage, accessibility audit and whole Stage 10 acceptance remain
 unfinished.
+
+The combined execution-result privacy warning is translated faithfully: changing
+the token hides results but does not cancel submitted requests; inspect current
+state before repeating an uncertain action. Generic action/model JS errors and
+monitoring-refresh messages remain English under this partial-locale policy.

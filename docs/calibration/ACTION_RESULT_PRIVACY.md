@@ -17,3 +17,7 @@ same. The correction does not make the dashboard safe for public hosting.
 Tests execute the actual JS for both action POST and agent POST using deferred
 responses and errors, token changes, same-token reentry and superseded requests.
 No actual model/provider or task dispatch is performed by those tests.
+
+A successful action response is retained if its separate follow-up monitoring
+refresh fails. The monitoring card shows that failure separately, with no new
+POST or retry. Existing latest-request/token fences also guard that message.
