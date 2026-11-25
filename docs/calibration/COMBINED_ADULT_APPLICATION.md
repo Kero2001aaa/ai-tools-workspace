@@ -12,10 +12,11 @@ raw input or input/config/approach fingerprints. Mixed task lists now work at
 this combined boundary; modality-specific facades remain fail-closed.
 
 Image submission validates actual decoding and any declared MIME before
-staging. An image analysis prompt is refused explicitly rather than silently
-lost: the existing strict analysis envelope supports only the image. Supporting
-an optional analysis instruction is a remaining contract gap, not an inferred
-instruction to change the lower schema.
+staging. Image analysis accepts an optional bounded prompt: it is validated
+like generate/edit prompts, stored as its own task-scoped payload, bound into
+the exact content fingerprint and restored only byte-identically. It reaches
+providers strictly as marked untrusted user data, never as system or developer
+instructions. Promptless analysis keeps its prior image-only envelope bytes.
 
 Exact zero-attempt ephemeral restoration has separate text/image methods so
 instruction and image/prompt shape stay explicit. Generic replacement_payload
