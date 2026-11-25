@@ -85,6 +85,25 @@ class BoundedTextApplication:
         return self._outcome(run(task_id, self.config_fingerprint,
                              max_attempts=max_attempts, max_seconds=max_seconds))
 
+    def restore_input_and_resume(self, task_id, text, instruction='', *, max_attempts=5, max_seconds=240):
+        """Restore the exact zero-attempt transient envelope and run one segment."""
+        import hmac
+        from agent.adult.adult_task_restore import resume_restored_ephemeral
+        self._bounds(max_attempts, max_seconds)
+        task = self._task(task_id)
+        request = self.tasks.get_task_request(task_id)
+        if (task.status != 'needs_input' or request.retention_policy != 'ephemeral'
+                or task.attempt_count != 0 or request.payload_id is None or task.cancel_requested):
+            raise ValueError('ephemeral_restore_unavailable')
+        data = encode_text_input(task.task_type, text, instruction)
+        if not hmac.compare_digest(self.executor.fingerprinter.fingerprint(data), request.input_fingerprint):
+            raise ValueError('restored_input_mismatch')
+        self.artifacts.restore_transient_input(task_id, request.payload_id, data)
+        # Any uncertain decision commit stops before execution, as in resume_task.
+        resume_restored_ephemeral(self.tasks, task_id, request.payload_id,
+                                  request.input_fingerprint, task.state_version)
+        return self.run_task(task_id, max_attempts=max_attempts, max_seconds=max_seconds)
+
     def cancel_task(self, task_id):
         from agent.adult.adult_text_executor import TextExecutionResult
         self._task(task_id)
