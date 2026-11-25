@@ -42,7 +42,8 @@ def _validated_parts(
         raise ImageInputError("invalid_envelope")
     if prompt is not None and not isinstance(prompt, str):
         raise ImageInputError("invalid_prompt")
-    if task_type == "image.analyze" and (image is None or prompt is not None):
+    if task_type == "image.analyze" and image is None:
+        # Analysis requires an image; its prompt is optional and validated below.
         raise ImageInputError("invalid_envelope")
     if task_type == "image.generate" and (prompt is None or image is not None):
         raise ImageInputError("invalid_envelope")
