@@ -489,6 +489,8 @@ class MemoryStore:
     def __init__(self, db_path: str | Path | None = None):
         configured = db_path or os.getenv("WORKSPACE_MEMORY_DB") or str(DEFAULT_DB)
         self.db_path = Path(configured).expanduser()
+        if str(self.db_path) == ':memory:':
+            raise ValueError('MemoryStore requires a normal filesystem database path')
         existed_before_open = self.db_path.exists()
         from agent.private_sqlite import prepare_database
         prepare_database(self.db_path)

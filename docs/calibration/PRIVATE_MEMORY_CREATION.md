@@ -17,7 +17,10 @@ This is not encryption, a retention or sharing change, a hostile-filesystem
 sandbox or remediation of broad permissions on an existing database. Trusted
 parent directories and concurrent filesystem writers remain assumptions. The
 MemoryStore path resolver still owns its original path semantics; this patch
-does not add SQLite in-memory support or a URI interface to MemoryStore.
+does not add SQLite in-memory support or a URI interface to MemoryStore. Exact
+`:memory:` is explicitly refused before disk creation: MemoryStore historically
+resolved it to a literal disk filename, not a true in-memory database. The
+TaskQueue/PlanStore exact in-memory semantics remain unchanged.
 
 Tests exercise real subprocesses under umask000/022, both scope factories,
 existing records/mode preservation, pre-existing empty and symlink refusal plus

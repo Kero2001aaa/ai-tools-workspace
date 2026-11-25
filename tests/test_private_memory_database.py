@@ -42,3 +42,18 @@ assert Path(PATH).stat().st_mode & 0o777 == 0o600
             link=root/'link';link.symlink_to(path)
             with self.assertRaises(ValueError):MemoryStore(link)
             self.assertEqual(0,path.stat().st_size)
+
+    def test_exact_memory_name_actual_store_refuses_before_disk_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            program="""import os
+from pathlib import Path
+from agent.memory_store import MemoryStore
+os.umask(0o022)
+try: MemoryStore(':memory:')
+except ValueError: pass
+else: raise AssertionError('MemoryStore memory name accepted')
+assert list(Path('.').iterdir())==[]
+"""
+            result=subprocess.run([sys.executable,'-c',program],cwd=directory,env={**os.environ,'PYTHONPATH':str(Path(__file__).resolve().parents[1])},capture_output=True,text=True,timeout=5)
+            self.assertEqual(0,result.returncode,result.stderr)
+            self.assertEqual([],list(Path(directory).iterdir()))
