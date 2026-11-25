@@ -10,6 +10,10 @@ import stat
 
 def prepare_database(path):
     path = Path(path).expanduser()
+    # sqlite3.connect uses this exact non-URI name for an in-memory database.
+    # Do not create a literal file; ordinary file: names are not URI-enabled here.
+    if str(path) == ':memory:':
+        return path
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)

@@ -55,3 +55,13 @@ class PrivateSQLiteTests(unittest.TestCase):
                 db.execute('CREATE TABLE note(value)');db.execute("INSERT INTO note VALUES('synthetic')");db.commit()
                 for suffix in ('-wal','-shm'):
                     sidecar=Path(str(path)+suffix);self.assertTrue(sidecar.exists());self.assertEqual(0o600,sidecar.stat().st_mode & 0o777)
+
+    def test_exact_sqlite_memory_name_creates_no_literal_disk_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            program="from agent.task_queue import TaskQueue;TaskQueue(':memory:')"
+            result=subprocess.run([sys.executable,'-c',program],cwd=directory,env={**os.environ,'PYTHONPATH':str(Path(__file__).resolve().parents[1])},capture_output=True,text=True,timeout=5)
+            self.assertEqual(0,result.returncode,result.stderr)
+            self.assertEqual([],list(Path(directory).iterdir()))
+            # file: names stay ordinary protected files because no uri=True is used.
+            path=Path(directory)/'file:ordinary.db';prepare_database(path)
+            self.assertEqual(0o600,path.stat().st_mode & 0o777)
