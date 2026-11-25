@@ -599,7 +599,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(429, '{"error":"action rate limit exceeded"}', "application/json")
                 self.server.action_times.append(now)
             return self._adult_decision(path)
-        if path not in {"/api/tasks/enqueue", "/api/tasks/run-once", "/api/agent/run"}:
+        if path not in {"/api/tasks/enqueue", "/api/tasks/run-once", "/api/agent/run", "/api/plans/cancel"}:
             return self._send(405, '{"error":"unsupported action"}', "application/json")
         if not self._authorized():
             return
@@ -610,7 +610,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(429, '{"error":"action rate limit exceeded"}', "application/json")
             self.server.action_times.append(now)
         try:
-            body = self._read_json()
+            body = self._read_json(unique_keys=path == "/api/plans/cancel")
+            if path == "/api/plans/cancel":
+                if set(body) != {"plan_id", "expected_updated_at"}:
+                    return self._send(400, '{"error":"invalid plan cancellation request"}', "application/json")
+                try:
+                    from agent.plan_control import cancel_existing_plan
+                    result = cancel_existing_plan(body["plan_id"], body["expected_updated_at"])
+                except (ValueError, sqlite3.Error, OSError):
+                    return self._send(409, '{"error":"plan cancellation refused; reload current state"}', "application/json")
+                return self._send(200, json.dumps(result), "application/json")
             if path == "/api/agent/run":
                 enabled = os.environ.get("ENABLE_DASHBOARD_AGENT", "").strip().lower() in {"1", "true", "yes", "on"}
                 if not enabled:
