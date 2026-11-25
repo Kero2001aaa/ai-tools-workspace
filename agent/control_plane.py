@@ -206,6 +206,7 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 <section class="card"><h2>Security posture</h2><pre id="security"></pre></section>
 </div>
 <section class="card"><h2>Recent tasks</h2><pre id="task-list">Loading…</pre></section>
+<section class="card"><h2>General plans</h2><p class="muted">Read-only lifecycle from the plan store. Unknown running work waits for reconciliation, never automatic replay.</p><pre id="plan-list" aria-live="polite">Locked</pre></section>
 <section class="card"><h2>Recent memory</h2><pre id="memory-list">Loading…</pre></section>
 <section class="card"><h2>AI Agent</h2>
 <p class="muted">Runs one explicit request through the configured model and approved MCP tools. Provider charges or free-tier limits may apply. Disabled until ENABLE_DASHBOARD_AGENT=true is set in the private .env file.</p>
@@ -220,21 +221,31 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 <pre id="action-result" aria-live="polite"></pre></section>
 <p class="muted">Refreshes every 30 seconds. Task execution is limited to the two allowlisted task types; no shell or arbitrary code execution.</p>
 <script>
+let monitoringEpoch=0;
+let monitoringRequest=0;
 function clearPrivateData(){
+ monitoringEpoch++;
  document.getElementById('state').textContent='Locked';
- for(const id of ['runtime','memories','tasks','integrations','security','task-list','memory-list']) document.getElementById(id).textContent='';
+ for(const id of ['runtime','memories','tasks','integrations','security','task-list','memory-list','plan-list']) document.getElementById(id).textContent='';
 }
 function showLoadError(){clearPrivateData();document.getElementById('state').textContent='Locked: check access token or connection';}
 document.getElementById('control-token').addEventListener('input',clearPrivateData);
 async function load(){
  const token=document.getElementById('control-token').value;
  if(!token){clearPrivateData();return}
- const [s,t,m]=await Promise.all(['/api/status','/api/tasks','/api/memories'].map(async path=>{
+ const epoch=monitoringEpoch;
+ const request=++monitoringRequest;
+ let data;
+ try{data=await Promise.all(['/api/status','/api/tasks','/api/memories','/api/plans'].map(async path=>{
   const response=await fetch(path,{headers:{Authorization:'Bearer '+token}});
   if(!response.ok) throw new Error('Monitoring unavailable');
   return response.json();
- }));
- if(document.getElementById('control-token').value!==token) return;
+ }));}catch(error){
+  if(document.getElementById('control-token').value!==token || monitoringEpoch!==epoch || monitoringRequest!==request) return;
+  throw error;
+ }
+ const [s,t,m,p]=data;
+ if(document.getElementById('control-token').value!==token || monitoringEpoch!==epoch || monitoringRequest!==request) return;
  document.getElementById('state').textContent=s.status;
  document.getElementById('runtime').textContent='Python '+s.python+' · '+s.checked_at;
  document.getElementById('memories').textContent=s.memory_records??'Unavailable';
@@ -243,6 +254,24 @@ async function load(){
  document.getElementById('security').textContent=JSON.stringify(s.security,null,2);
  document.getElementById('task-list').textContent=JSON.stringify(t,null,2);
  document.getElementById('memory-list').textContent=JSON.stringify(m,null,2);
+ renderPlans(p);
+}
+function renderPlans(snapshot){
+ const panel=document.getElementById('plan-list');
+ if(!snapshot.available){panel.textContent='Plan store unavailable. No database created.';return}
+ if(!snapshot.plans.length){panel.textContent='No plans yet.';return}
+ const lines=[];
+ for(const plan of snapshot.plans){
+  lines.push('Plan '+plan.id+' · '+plan.status+' · '+plan.completed_steps+'/'+plan.total_steps+' completed');
+  for(const step of plan.steps){
+   lines.push('  '+step.position+'. '+step.task_type+' · '+step.status+' · execution '+(step.execution_status||'not bound')+' · attempts '+step.attempts);
+   if(step.task_id) lines.push('     Task '+step.task_id);
+   if(step.outcome_reconciliation_required) lines.push('     Waiting: outcome reconciliation required. No automatic replay.');
+  }
+  lines.push('');
+ }
+ if(snapshot.has_more) lines.push('More plans exist. Showing the latest bounded page.');
+ panel.textContent=lines.join('\\n');
 }
 async function controlPost(path,body){
  const token=document.getElementById('control-token').value;
@@ -376,6 +405,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, _page(), "text/html; charset=utf-8")
         if path.startswith("/api/") and not self._authorized():
             return
+        if path == "/api/plans":
+            try:
+                from agent.plan_monitoring import plan_snapshot
+                query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if set(query) - {"limit"} or any(len(value) != 1 for value in query.values()):
+                    raise ValueError("unsupported_query")
+                limit = int(query["limit"][0]) if "limit" in query else 20
+                if not 1 <= limit <= 50:
+                    raise ValueError("invalid_limit")
+                return self._send(200, json.dumps(plan_snapshot(limit)), "application/json")
+            except ValueError:
+                return self._send(400, '{"error":"invalid plan query or store"}', "application/json")
+            except (sqlite3.Error, OSError):
+                return self._send(503, '{"error":"plan monitoring unavailable"}', "application/json")
         if path == "/api/status":
             return self._send(200, json.dumps(status_snapshot()), "application/json")
         if path == "/api/tasks":
