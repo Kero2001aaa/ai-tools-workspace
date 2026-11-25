@@ -71,6 +71,9 @@ class AdultAgent:
     def get_attempts(self, task_id, limit=20):
         return self._application(task_id).get_attempts(task_id, limit)
 
+    def get_attempt_history(self, task_id, limit=20):
+        return self._application(task_id).get_attempt_history(task_id, limit)
+
     def run_task(self, task_id, *, max_seconds=240, max_attempts=5):
         BoundedTextApplication._bounds(max_attempts, max_seconds)
         return self._application(task_id).run_task(task_id, max_attempts=max_attempts,
