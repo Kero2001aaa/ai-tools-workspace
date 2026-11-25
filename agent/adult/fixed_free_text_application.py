@@ -8,17 +8,23 @@ from __future__ import annotations
 import base64
 
 from agent.adult.fixed_free_text_service import FixedFreeTextService
+from agent.adult.adult_feedback import AdultFeedback
 from agent.adult.models import TaskBudget
 
 
 class FixedFreeTextApplication:
-    def __init__(self, service: FixedFreeTextService, *, budget: TaskBudget):
+    def __init__(self, service: FixedFreeTextService, *, budget: TaskBudget, feedback: AdultFeedback | None = None):
         if not isinstance(service, FixedFreeTextService):
             raise TypeError('fixed_free_service_required')
         if not isinstance(budget, TaskBudget) or budget.max_provider_calls < 1:
             raise ValueError('explicit_provider_budget_required')
+        if feedback is not None and (not isinstance(feedback, AdultFeedback)
+                or feedback.tasks is not service.tasks
+                or feedback.fingerprinter.key_id != service.cipher.key_id):
+            raise ValueError('matching_feedback_components_required')
         self._service = service
         self._budget = budget
+        self._feedback = feedback
 
     @staticmethod
     def _snapshot(task):
@@ -47,9 +53,26 @@ class FixedFreeTextApplication:
         return self.get_task(outcome.task_id)
 
     def run_task(self, task_id: str, *, max_seconds: int = 120):
-        self._task(task_id)
+        before = self._task(task_id)
         outcome = self._service.run(task_id, max_attempts=1, max_seconds=max_seconds)
-        return {'task': self.get_task(task_id), 'error_code': outcome.error_code}
+        after = self._task(task_id)
+        result = {'task': self._snapshot(after), 'error_code': outcome.error_code}
+        if self._feedback is not None:
+            result['feedback'] = {'status': 'not_applicable'}
+            # Only a new, durably finished attempt can trigger private proposal
+            # preparation. Terminal reruns and zero-call pauses never rebuild it.
+            if after.attempt_count > before.attempt_count:
+                try:
+                    proposal = self._feedback.build_proposal(task_id)
+                    if proposal is not None:
+                        result['feedback'] = {'status': 'private_proposal_created',
+                                              'private_proposal_id': proposal.feedback_id}
+                except Exception:
+                    # Task/result remain authoritative even if the separate
+                    # private feedback write failed. Never hide or replay work.
+                    result['feedback'] = {'status': 'proposal_failed',
+                                          'error_code': 'private_feedback_unavailable'}
+        return result
 
     def get_task(self, task_id: str):
         return self._snapshot(self._task(task_id))
