@@ -145,3 +145,49 @@ print(json.dumps({'status':result.status,'attempts':service.tasks.get_task(resul
         self.assertEqual('paused',result['task']['status'])
         self.assertEqual(0,self.tasks.get_task(task).attempt_count)
         self.assertEqual('pending',self.tasks.get_step(task,self.tasks.get_task(task).current_step_id).status)
+
+    def test_task_paging_and_attempt_history_are_safe_readonly(self):
+        app=self.app(1);ids=[app.submit_text_task('text.analyze','Safe original.')['task_id']
+                            for _ in range(2)]
+        app.run_task(ids[0])
+        page=app.list_tasks(limit=1)
+        self.assertEqual(1,len(page['tasks']));self.assertTrue(page['has_more'])
+        self.assertEqual(1,len(app.list_tasks(limit=1,cursor=page['next_cursor'])['tasks']))
+        attempts=app.get_attempts(ids[0])
+        self.assertEqual(1,len(attempts));self.assertEqual('succeeded',attempts[0]['status'])
+        for data in (page,attempts):
+            for forbidden in ('payload_id','input_fingerprint','approach_key','Safe original.'):
+                self.assertNotIn(forbidden,str(data))
+        before=(self.root/'tasks.sqlite3').read_bytes()
+        app.list_tasks();app.get_attempts(ids[0])
+        self.assertEqual(before,(self.root/'tasks.sqlite3').read_bytes())
+        for limit in (0,21,True,1.0):
+            with self.assertRaises(ValueError):app.list_tasks(limit=limit)
+            with self.assertRaises(ValueError):app.get_attempts(ids[0],limit=limit)
+
+    def test_mixed_lane_list_and_attempt_reads_fail_closed(self):
+        from agent.adult.models import AdultTaskRequest
+        app=self.app(0);app.submit_text_task('text.analyze','Safe original.')
+        image=self.tasks.create_task(AdultTaskRequest('image.generate',self.cipher.fingerprint(b'x')),
+                                     TaskBudget())
+        with self.assertRaises(ValueError):app.list_tasks()
+        with self.assertRaises(ValueError):app.get_attempts(image.task_id)
+
+    def test_cancel_during_finalization_returns_cancelled_and_cleans_input(self):
+        app=self.app(1);task=app.submit_text_task('text.analyze','Safe original.')['task_id']
+        adapter=self.pipeline._adapters[('offline-supervised-0','1')]
+        original=adapter.invoke
+        def cancel(request):
+            self.tasks.request_cancel(task)
+            return original(request)
+        with patch.object(adapter,'invoke',side_effect=cancel):result=app.run_task(task)
+        self.assertEqual('cancelled',result['task']['status'])
+        self.assertEqual('input_removed',result['input_cleanup']['status'])
+        self.assertIsNone(self.tasks.get_task(task).latest_result_artifact_id)
+        with self.assertRaises(ValueError):app.get_result_chunk(task)
+
+    def test_nonterminal_supervisor_exception_is_not_hidden(self):
+        app=self.app(0);task=app.submit_text_task('text.analyze','Safe original.')['task_id']
+        with patch.object(app.supervisor,'run_until_done',side_effect=RuntimeError()):
+            with self.assertRaises(RuntimeError):app.run_task(task)
+        self.assertEqual('checkpointed',self.tasks.get_task(task).status)
