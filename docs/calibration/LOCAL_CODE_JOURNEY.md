@@ -31,3 +31,19 @@ only until another consumer decodes it, so renderers must escape independently.
 The command makes the durable source-evidence subset repeatable for the project.
 Model-based research/specialist review, actual connected-provider qualification,
 publication and complete Stage5.1/5.3acceptance remain separate outcomes.
+
+### Saved report in the local control plane
+
+The authenticated local dashboard can read a completed saved quote-only report by
+its plan and step IDs. It uses the same bounded read-only retrieval as the CLI.
+The GET route `/api/code-report?plan_id=...&step_id=...` requires the existing
+Bearer token, allowed Host and same-origin protections. It reads only the configured
+`WORKSPACE_PLAN_DB` (default `.data/plans.sqlite3`), never source files or workers.
+Unknown, non-completed, mismatched or malformed records return a generic unavailable
+response. No report title, absolute source root or raw exception is returned.
+
+The UI renders untrusted source as literal text, clears it when token or selection
+changes, and ignores superseded responses. A report stays a stored plaintext
+snapshot with the original retention and source-consistency limits. This is not
+multi-user authorization, source authenticity or live model acceptance. The server
+must remain local/private; this route does not authorize public dashboard hosting.

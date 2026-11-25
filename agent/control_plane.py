@@ -207,6 +207,12 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 </div>
 <section class="card"><h2>Recent tasks</h2><pre id="task-list">Loading…</pre></section>
 <section class="card"><h2>General plans</h2><p class="muted">Read-only lifecycle from the plan store. Unknown running work waits for reconciliation, never automatic replay.</p><pre id="plan-list" aria-live="polite">Locked</pre></section>
+<section class="card"><h2>Saved code quote report</h2>
+<p class="muted">Read a completed local quote-only report. No source read, task execution or model call. Stored plaintext snapshot, not current code or model understanding.</p>
+<label>Plan ID <input id="report-plan" maxlength="36" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px"></label>
+<label>Step ID <input id="report-step" maxlength="36" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px"></label>
+<button onclick="loadSavedReport()">Read saved report</button>
+<pre id="saved-report" aria-live="polite">Locked</pre></section>
 <section class="card"><h2>Recent memory</h2><pre id="memory-list">Loading…</pre></section>
 <section class="card"><h2>AI Agent</h2>
 <p class="muted">Runs one explicit request through the configured model and approved MCP tools. Provider charges or free-tier limits may apply. Disabled until ENABLE_DASHBOARD_AGENT=true is set in the private .env file.</p>
@@ -223,8 +229,11 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 <script>
 let monitoringEpoch=0;
 let monitoringRequest=0;
+let reportRequest=0;
 function clearPrivateData(){
  monitoringEpoch++;
+ reportRequest++;
+ document.getElementById('saved-report').textContent='';
  document.getElementById('state').textContent='Locked';
  for(const id of ['runtime','memories','tasks','integrations','security','task-list','memory-list','plan-list']) document.getElementById(id).textContent='';
 }
@@ -272,6 +281,36 @@ function renderPlans(snapshot){
  }
  if(snapshot.has_more) lines.push('More plans exist. Showing the latest bounded page.');
  panel.textContent=lines.join('\\n');
+}
+function clearSavedReport(){reportRequest++;document.getElementById('saved-report').textContent='';}
+document.getElementById('report-plan').addEventListener('input',clearSavedReport);
+document.getElementById('report-step').addEventListener('input',clearSavedReport);
+async function loadSavedReport(){
+ const output=document.getElementById('saved-report');
+ const token=document.getElementById('control-token').value;
+ const plan=document.getElementById('report-plan').value;
+ const step=document.getElementById('report-step').value;
+ const epoch=monitoringEpoch;const request=++reportRequest;
+ if(!token){output.textContent='Enter the access token first.';return}
+ const current=()=>document.getElementById('control-token').value===token && monitoringEpoch===epoch && reportRequest===request && document.getElementById('report-plan').value===plan && document.getElementById('report-step').value===step;
+ output.textContent='Reading saved report...';
+ try{
+  const response=await fetch('/api/code-report?plan_id='+encodeURIComponent(plan)+'&step_id='+encodeURIComponent(step),{headers:{Authorization:'Bearer '+token}});
+  if(!response.ok) throw new Error('Report unavailable');
+  const result=await response.json();
+  if(!current())return;
+  const lines=['Saved quote-only report',result.question,''];
+  for(const item of result.citations){
+   lines.push(item.path+' · lines '+item.start_line+'-'+item.end_line);
+   lines.push(item.quote);
+   lines.push('File SHA256: '+item.file_sha256);
+   lines.push('Excerpt SHA256: '+item.excerpt_sha256);
+   lines.push('Untrusted source snapshot'+(item.truncated?' · excerpt only':'')+'\\n');
+  }
+  lines.push('Verification: '+result.verification);
+  lines.push(...result.limitations);
+  output.textContent=lines.join('\\n');
+ }catch(error){if(current())output.textContent='Saved report unavailable. Check IDs, token and completed state.';}
 }
 async function controlPost(path,body){
  const token=document.getElementById('control-token').value;
@@ -405,6 +444,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, _page(), "text/html; charset=utf-8")
         if path.startswith("/api/") and not self._authorized():
             return
+        if path == "/api/code-report":
+            try:
+                from agent.code_report_cli import read_saved_report
+                query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if set(query) != {"plan_id", "step_id"} or any(len(value) != 1 for value in query.values()):
+                    raise ValueError("unsupported_query")
+                database = os.environ.get("WORKSPACE_PLAN_DB", ".data/plans.sqlite3")
+                result = read_saved_report(database, query["plan_id"][0], query["step_id"][0])
+                return self._send(200, json.dumps(result, ensure_ascii=True), "application/json")
+            except (ValueError, sqlite3.Error, OSError):
+                return self._send(404, '{"error":"saved code report unavailable"}', "application/json")
         if path == "/api/plans":
             try:
                 from agent.plan_monitoring import plan_snapshot
