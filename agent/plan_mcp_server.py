@@ -1,5 +1,6 @@
 """MCP interface for bounded persistent plans."""
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictInt
 
 from agent.plan_store import PlanStore
 
@@ -35,13 +36,13 @@ def run_next_plan_step(plan_id: str) -> dict:
 
 
 @mcp.tool()
-def run_plan_until_done(plan_id: str, max_steps: int = 3, max_seconds: int = 60) -> dict:
+def run_plan_until_done(plan_id: str, max_steps: StrictInt = 3, max_seconds: StrictInt = 60) -> dict:
     """Run a plan autonomously up to bounded step/time budgets; each step is checkpointed and resumable."""
     return store.run_until_done(plan_id, max_steps=max_steps, max_seconds=max_seconds)
 
 
 @mcp.tool()
-def supervise_plan(plan_id: str, max_steps: int = 3, max_seconds: int = 60) -> dict:
+def supervise_plan(plan_id: str, max_steps: StrictInt = 3, max_seconds: StrictInt = 60) -> dict:
     """Inspect plan state and make one bounded run, resume-later, wait, or stop decision."""
     return store.supervise(plan_id, max_steps=max_steps, max_seconds=max_seconds)
 
