@@ -8,9 +8,9 @@ namespace, principal or arbitrary tool selection. No transport is registered.
 Methods implemented:
 
 - `submit_text_task`: zero-call encrypted staging, returns redacted task metadata.
-  `retain_payload=True` must be explicit. The omitted/false default is refused
-  before task creation. This durable-only slice does not silently turn the
-  specification's default ephemeral choice into persistent input storage.
+  Default `retain_payload=False` stages input only in the existing process-local
+  cache. `True` explicitly selects encrypted persistent input with configured key.
+  Non-boolean retention values are rejected before task creation.
 - `run_task`: one explicit bounded fixed-free service segment, at most one
   provider attempt. Returns the redacted snapshot and fixed error code. No
   background runner, auto-certification, alternate route or provider retry loop.
@@ -25,13 +25,13 @@ Methods implemented:
   arbitrary artifact ID. It intentionally returns generated result content.
 
 This is NOT the full AdultAgent interface or Stage 11 acceptance. It does not
-support ephemeral submission, image submission, a waiting-user approval resume,
+support image submission, a waiting-user approval resume,
 MCP registration or gateway integration. It has a distinct class/module name so
 that these missing parts cannot be mistaken for implemented contractual methods.
 The existing five-failure local supervisor remains separate from the fixed-free
 single-attempt service. No caller can use this boundary to certify a route.
 
-Tests exercise real stores, pagination, zero-call submission, explicit retention,
+Tests exercise real stores, pagination, zero-call submission, ephemeral/default and explicit encrypted retention,
 no-route pause, cancellation, bounded task-owned artifact reads and a patched
 fake-client completion with no duplicate call. No live AI result or provider
 availability is claimed. No image generation or editing success is claimed.
@@ -63,3 +63,20 @@ preserves existing trusted library callers; the application/CLI boundary always
 supplies it. Regression tests exercise both storage modes and reject a cross-task
 pointer before any plaintext read. This is boundary hardening, not evidence of an
 observed external attack or previous disclosure.
+
+Zero-call staging now uses the existing executor's general `stage` method.
+`stage_encrypted` remains the compatible explicit encrypted entry point, and the
+operator CLI keeps using `retain_payload=True`. The fixed service's low-level
+submit default stays encrypted for existing trusted callers, while the application
+boundary's default is ephemeral. No plaintext input row/file is persisted for an
+ephemeral request. This slice still uses the service's configured fingerprint and
+output-encryption key, even for transient input; keyless ephemeral service setup
+is not implemented or claimed.
+
+If transient input is absent after cache eviction, expiry or process restart, a
+checkpointed fixed-free task moves atomically to needs_input before any attempt.
+Repeated run calls keep that state without provider work. Wrong keys and retained
+input integrity/expiry errors are not reclassified as transient loss. Replacement
+input resume is not yet implemented; cancellation remains available. Tests include
+same-process fake completion, no input plaintext on disk, and an actual new Python
+process observing needs_input with zero attempts. No MCP tool is registered.
