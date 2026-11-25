@@ -14,7 +14,7 @@ from agent.adult.adult_task_store import AdultTaskStore, TaskBudgetExhausted
 from agent.adult.adult_text_intake import AdultTextIntake
 from agent.adult.adult_text_pipeline import AdultTextPipeline
 from agent.adult.models import AdultTaskRequest, CheckpointSnapshot, StepRecord, TaskBudget
-from agent.adult.payload_store import PayloadCipher
+from agent.adult.payload_store import PayloadCipher, PayloadUnavailable
 
 
 @dataclass(frozen=True)
@@ -175,6 +175,14 @@ class AdultTextExecutor:
                 self.intake.attach(task_id, canonical_input, lease, task.state_version)
                 task = self.tasks.get_task(task_id)
                 request = self.tasks.get_task_request(task_id)
+            if request.retention_policy == 'ephemeral':
+                try:
+                    self.intake.artifacts.load_input(request.payload_id, task_id)
+                except PayloadUnavailable:
+                    # An opaque reference survives restart, its bytes do not.
+                    # Do not classify cache loss as an attempted provider failure.
+                    self.tasks.release_lease(lease, task.state_version, 'needs_input')
+                    return TextExecutionResult(task_id, 'needs_input', error_code='input_required')
             intake_step = self.tasks.get_step(task_id, task.current_step_id) if task.current_step_id else None
             if intake_step and intake_step.operation == 'intake':
                 self.tasks.save_step(task_id, replace(intake_step, status='skipped',
