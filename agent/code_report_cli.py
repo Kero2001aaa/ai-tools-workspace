@@ -90,12 +90,23 @@ def main():
     parser.add_argument('--db', required=True)
     parser.add_argument('--plan-id', required=True)
     parser.add_argument('--step-id', required=True)
+    parser.add_argument('--supervisor-context', action='store_true',
+        help='Prepare bounded saved evidence JSON only; never invokes or authorizes a model.')
     args = parser.parse_args()
     try:
-        result = read_saved_report(args.db, args.plan_id, args.step_id)
+        if args.supervisor_context:
+            from agent.saved_code_context import saved_code_context
+            # The logical JSON string is the bounded supervisor input. Re-escape
+            # for a terminal-safe single-line transport, without extra indent.
+            result = json.loads(saved_code_context(args.db, args.plan_id, args.step_id))
+        else:
+            result = read_saved_report(args.db, args.plan_id, args.step_id)
     except ValueError:
         parser.exit(1, 'saved_code_report_unavailable\n')
-    print(json.dumps(result, ensure_ascii=True, indent=2))
+    if args.supervisor_context:
+        print(json.dumps(result, ensure_ascii=True, separators=(',', ':')))
+    else:
+        print(json.dumps(result, ensure_ascii=True, indent=2))
 
 
 if __name__ == '__main__':

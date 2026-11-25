@@ -24,3 +24,21 @@ Existing plaintext DB/backup retention and trusted-local caller limits remain.
 Decoded source strings are untrusted; downstream displays must escape them.
 Tests use actual saved results plus injected models only. No connected-provider
 qualification or full Stage5 acceptance follows from this helper.
+
+## Explicit CLI preparation
+
+```
+python -m agent.code_report_cli --db /private/plans.sqlite3 \
+  --plan-id PLAN_UUID --step-id STEP_UUID --supervisor-context
+```
+
+The existing CLI defaults to the full saved report as before. This explicit flag
+prepares bounded evidence only, without source reads, execution, persistence or
+model invocation. It prints single-line ASCII-escaped JSON so terminal control
+characters remain inert. The4000-character bound applies to the helper's logical
+Unicode JSON, not this terminal transport: ASCII escapes may be longer. A caller
+consuming terminal output must JSON-decode it and reserialize with ensure_ascii=False
+and compact separators before handing it to the existing supervisor. The helper
+is the direct in-process route. Do not blindly paste the longer escaped transport
+into a4000-character field or slice its JSON. Displays still must escape decoded
+source strings. No CLI option grants disclosure to a model or another audience.
