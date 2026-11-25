@@ -56,7 +56,8 @@ class PlanStore:
     def __init__(self, db_path=None):
         configured = os.getenv("WORKSPACE_PLAN_DB", "").strip()
         self.db_path = Path(db_path or configured or DEFAULT_DB).expanduser()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        from agent.private_sqlite import prepare_database
+        prepare_database(self.db_path)
         self.queue = TaskQueue(self.db_path)
         with self._connect() as db:
             db.execute("""
