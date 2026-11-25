@@ -41,14 +41,21 @@ class CanonicalImageInputTests(unittest.TestCase):
 
     def test_canonical_form_is_strictly_decodable(self):
         for task_type, image, prompt in (("image.analyze", png_bytes(), None),
+                                         ("image.analyze", png_bytes(), "what is shown?"),
                                          ("image.generate", None, "a red square"),
                                          ("image.edit", png_bytes(), "make it blue")):
             envelope = decode_image_input(canonical_image_input(task_type, image, prompt), task_type)
             self.assertEqual(task_type, envelope.task_type)
 
+    def test_optional_analysis_prompt_binds_distinct_canonical_bytes(self):
+        promptless = canonical_image_input("image.analyze", png_bytes(), None)
+        prompted = canonical_image_input("image.analyze", png_bytes(), "what is shown?")
+        self.assertNotEqual(promptless, prompted)
+        self.assertEqual(prompted, canonical_image_input("image.analyze", png_bytes(), "what is shown?"))
+
     def test_shape_and_content_rejections(self):
         for task_type, image, prompt in (
-            ("image.analyze", None, None), ("image.analyze", png_bytes(), "unexpected"),
+            ("image.analyze", None, None), ("image.analyze", None, "orphan prompt"),
             ("image.generate", png_bytes(), None), ("image.generate", None, None),
             ("image.edit", png_bytes(), None), ("image.edit", None, "make it blue"),
             ("image.analyze", b"not-an-image", None), ("text.analyze", None, None),
