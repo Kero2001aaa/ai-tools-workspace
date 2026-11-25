@@ -50,7 +50,7 @@ def plan_snapshot(limit=20):
             projected = []
             for step in steps:
                 _id(step['id'])
-                if (step['task_type'] not in {'workspace_status', 'memory_recent'}
+                if (step['task_type'] not in {'workspace_status', 'memory_recent', 'local_code_report'}
                         or step['status'] not in {'pending', 'running', 'succeeded', 'failed'}
                         or type(step['position']) is not int or not 1 <= step['position'] <= 10):
                     raise ValueError('invalid_plan_step')

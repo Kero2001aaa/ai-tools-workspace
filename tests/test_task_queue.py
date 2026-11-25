@@ -86,7 +86,10 @@ class TaskQueueTests(unittest.TestCase):
 
     def test_worker_registry_routes_only_to_specialized_allowlisted_handlers(self):
         from agent.task_worker import WORKER_REGISTRY, execute_task
-        self.assertEqual({'workspace_status', 'memory_recent'}, set(WORKER_REGISTRY))
+        self.assertEqual({'workspace_status', 'memory_recent', 'local_code_report'}, set(WORKER_REGISTRY))
+        with patch.dict('os.environ', {'WORKSPACE_CODE_CONTEXT': ''}):
+            with self.assertRaises(ValueError):
+                execute_task({'task_type': 'local_code_report', 'payload': {}})
         result = execute_task({'task_type': 'workspace_status', 'payload': {}})
         self.assertIn('python', result)
         with self.assertRaises(ValueError):

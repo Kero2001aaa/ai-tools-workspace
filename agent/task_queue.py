@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DEFAULT_DB = Path(".data") / "tasks.sqlite3"
-ALLOWED_TASK_TYPES = {"workspace_status", "memory_recent"}
+ALLOWED_TASK_TYPES = {"workspace_status", "memory_recent", "local_code_report"}
 
 
 def _now():
@@ -60,6 +60,9 @@ class TaskQueue:
         data = payload or {}
         if not isinstance(data, dict):
             raise ValueError("Task payload must be a JSON object")
+        if task_type == "local_code_report":
+            from agent.code_task import validate_payload
+            validate_payload(data)
         encoded = json.dumps(data, separators=(",", ":"), sort_keys=True)
         if len(encoded) > 4000:
             raise ValueError("Task payload must be 4,000 characters or fewer")

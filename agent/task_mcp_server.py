@@ -10,7 +10,7 @@ task_queue = TaskQueue()
 
 @mcp.tool()
 def enqueue_task(task_type: str, payload: dict | None = None, max_attempts: int = 3) -> dict:
-    """Queue one approved local task: workspace_status or memory_recent."""
+    """Queue one approved local task: workspace_status, memory_recent, or explicitly configured local_code_report."""
     if task_type not in ALLOWED_TASK_TYPES:
         raise ValueError(f"Unsupported task type: {task_type}")
     return task_queue.enqueue(task_type, payload, max_attempts=max_attempts)

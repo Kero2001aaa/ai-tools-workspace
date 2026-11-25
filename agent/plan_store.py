@@ -38,6 +38,9 @@ def _validate_step(step):
         limit = payload.get("limit", 5)
         if set(payload) - {"limit"} or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
             raise ValueError("memory_recent accepts only an integer limit from 1 to 20")
+    if task_type == "local_code_report":
+        from agent.code_task import validate_payload
+        validate_payload(payload)
     description = step.get("description", task_type)
     if not isinstance(description, str) or not description.strip() or len(description) > MAX_DESCRIPTION:
         raise ValueError(f"Step description must be 1 to {MAX_DESCRIPTION} characters")

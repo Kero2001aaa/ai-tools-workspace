@@ -31,7 +31,7 @@ def plan_evidence_envelope(db_path, plan_id, step_id, question, sources, citatio
             raise ValueError('research_context_unavailable')
         if row[0] not in {'queued', 'checkpointed', 'running', 'completed', 'paused'} or row[1] not in {'pending', 'running', 'succeeded', 'failed'}:
             raise ValueError('research_context_unavailable')
-        if row[2] not in {'workspace_status', 'memory_recent'}:
+        if row[2] not in {'workspace_status', 'memory_recent', 'local_code_report'}:
             raise ValueError('research_context_unavailable')
     except (sqlite3.Error, OSError, TypeError):
         raise ValueError('research_context_unavailable') from None
