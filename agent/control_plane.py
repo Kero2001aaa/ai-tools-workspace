@@ -33,7 +33,7 @@ def _safe_db_summary(path, table):
         return 0
     import sqlite3
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2) as db:
+        with sqlite3.connect(path.expanduser().absolute().as_uri() + "?mode=ro", uri=True, timeout=2) as db:
             return db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     except (sqlite3.Error, OSError):
         return None
@@ -75,7 +75,8 @@ def status_snapshot():
 
 
 def task_snapshot(limit=20):
-    return TaskQueue().list_tasks(limit)
+    from agent.task_monitoring import task_snapshot as read_tasks
+    return read_tasks(limit)
 
 
 _ADULT_REASON_CODES = frozenset({
@@ -499,7 +500,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/status":
             return self._send(200, json.dumps(status_snapshot()), "application/json")
         if path == "/api/tasks":
-            return self._send(200, json.dumps(task_snapshot(), default=str), "application/json")
+            try:
+                return self._send(200, json.dumps(task_snapshot(), default=str), "application/json")
+            except (ValueError, sqlite3.Error, OSError):
+                return self._send(503, '{"error":"task monitoring unavailable"}', "application/json")
         if path == "/api/adult/tasks" or path.startswith("/api/adult/tasks/"):
             return self._adult_get(path)
         if path == "/api/memories":
