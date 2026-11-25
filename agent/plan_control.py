@@ -17,11 +17,12 @@ class _ExistingCancelStore(PlanStore):
         db.execute('PRAGMA foreign_keys=ON')
         db.execute('PRAGMA trusted_schema=OFF')
         try:
-            from agent.plan_recovery import TABLES, COLUMNS
+            from agent.plan_recovery import TABLES, LEGACY_TABLES, COLUMNS
             objects=db.execute("SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
-            if {row[0] for row in objects if row[1]=='table'}!=TABLES or any(row[1] not in {'table','index'} for row in objects):
+            present={row[0] for row in objects if row[1]=='table'}
+            if present not in (TABLES,LEGACY_TABLES) or any(row[1] not in {'table','index'} for row in objects):
                 raise ValueError('plan_schema_unavailable')
-            for table in TABLES:
+            for table in present:
                 if {row[1] for row in db.execute('PRAGMA table_info('+table+')')}!=COLUMNS[table]:
                     raise ValueError('plan_schema_unavailable')
         except Exception:

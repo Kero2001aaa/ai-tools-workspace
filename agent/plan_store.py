@@ -350,7 +350,9 @@ class PlanStore:
             db.commit()
         return self.get_plan(plan_id)
 
-    def retry_failed_step(self, plan_id, step_id):
+    def retry_failed_step(self, plan_id, step_id, retry_reason="explicit_retry_requested"):
+        if not isinstance(retry_reason,str) or not 1<=len(retry_reason)<=240 or any(ord(c)<32 for c in retry_reason):
+            raise ValueError("A bounded explicit retry reason is required")
         now = _stamp(_now())
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -368,6 +370,7 @@ class PlanStore:
             ).rowcount
             if not changed:
                 raise ValueError("No failed step with that ID exists in this plan")
+            db.execute("UPDATE task_attempts SET retry_reason=? WHERE task_id=? AND attempt_no=(SELECT MAX(attempt_no) FROM task_attempts WHERE task_id=?) AND status='failed'",(retry_reason,task_id,task_id))
             db.execute("UPDATE tasks SET status='pending',result=NULL,last_error=NULL,locked_at=NULL,updated_at=? WHERE id=? AND status='failed'",(now,task_id))
             db.execute("UPDATE plans SET status='queued',updated_at=? WHERE id=?", (now, plan_id))
             db.commit()

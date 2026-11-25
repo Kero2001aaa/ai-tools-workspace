@@ -14,8 +14,11 @@ import tempfile
 import time
 
 MAX_BYTES = 64 * 1024 * 1024
-TABLES = {"plans", "plan_steps", "tasks"}
+TABLES = {"plans", "plan_steps", "tasks", "task_attempts"}
+LEGACY_TABLES = TABLES - {"task_attempts"}
+from agent.task_attempts import COLUMNS as ATTEMPT_COLUMNS
 COLUMNS = {
+    "task_attempts": ATTEMPT_COLUMNS,
     "plans": {"id", "title", "status", "created_at", "updated_at"},
     "plan_steps": {"id", "plan_id", "position", "task_type", "payload", "description", "status", "result", "last_error", "started_at", "completed_at"},
     "tasks": {"id", "task_type", "payload", "status", "attempts", "max_attempts", "run_at", "locked_at", "result", "last_error", "created_at", "updated_at", "plan_step_id"},
@@ -31,11 +34,12 @@ def _validate(db, deadline):
     if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
         raise ValueError("Snapshot integrity check failed")
     objects = db.execute("SELECT type,name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
-    if {name for kind, name in objects if kind == "table"} != TABLES:
+    present = {name for kind,name in objects if kind == "table"}
+    if present not in (TABLES, LEGACY_TABLES):
         raise ValueError("Only the general plan and queue database is supported")
     if any(kind not in {"table", "index"} for kind, name in objects):
         raise ValueError("Views and triggers are not supported")
-    for table in sorted(TABLES):
+    for table in sorted(present):
         if {row[1] for row in db.execute('PRAGMA table_info(' + table + ')')} != COLUMNS[table]:
             raise ValueError("Unsupported database schema")
     if db.execute("PRAGMA foreign_key_check").fetchone():
@@ -63,7 +67,31 @@ def _validate(db, deadline):
         step = db.execute("SELECT task_type,payload FROM plan_steps WHERE id=?", (step_id,)).fetchone()
         if task_id != str(uuid.uuid5(uuid.NAMESPACE_URL, "workspace-plan-step:" + step_id)) or step != (task_type, payload):
             raise ValueError("Snapshot execution identity mismatch")
-    return {table: db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0] for table in sorted(TABLES)}
+    if 'task_attempts' in present:
+        from agent.task_attempts import fingerprints, digest
+        for row in db.execute('SELECT task_id,attempt_no,plan_step_id,method_fingerprint,input_fingerprint,claim_stamp,started_at,finished_at,status,failure_class,retryable,error_code,result_sha256,retry_reason FROM task_attempts'):
+            if time.monotonic()>deadline:
+                raise ValueError('Snapshot validation time limit exceeded')
+            task=db.execute('SELECT task_type,payload,plan_step_id,attempts,status,result FROM tasks WHERE id=?',(row[0],)).fetchone()
+            if task is None or row[2]!=task[2] or not task[2] or type(row[1]) is not int or not 1<=row[1]<=task[3]:
+                raise ValueError('Snapshot attempt identity mismatch')
+            if (row[3],row[4])!=fingerprints(task[0],json.loads(task[1])):
+                raise ValueError('Snapshot attempt fingerprint mismatch')
+            if row[8] not in {'running','succeeded','failed'} or row[10] not in {0,1}:
+                raise ValueError('Snapshot attempt state invalid')
+            if row[8]=='running' and (row[7] is not None or row[9] is not None or row[11] is not None or row[12] is not None):
+                raise ValueError('Snapshot running attempt finalized')
+            if row[8]=='succeeded' and (not row[7] or row[9] is not None or row[10]!=0 or row[11] is not None or not isinstance(row[12],str) or len(row[12])!=64):
+                raise ValueError('Snapshot success evidence invalid')
+            if row[8]=='failed' and (not row[7] or row[9] not in {'permission','transient','storage','input_or_state','unknown'} or row[12] is not None or not row[11]):
+                raise ValueError('Snapshot failure evidence invalid')
+            if row[9]!='transient' and row[10]:
+                raise ValueError('Snapshot failure retry class invalid')
+            if row[13] is not None and (not isinstance(row[13],str) or not 1<=len(row[13])<=240 or any(ord(c)<32 for c in row[13])):
+                raise ValueError('Snapshot retry reason invalid')
+            if row[1]==task[3] and row[8]=='succeeded' and task[4]=='succeeded' and row[12]!=digest(task[5]):
+                raise ValueError('Snapshot result evidence mismatch')
+    return {table: db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0] for table in sorted(TABLES - {"task_attempts"})}
 
 
 def _copy_database(source, destination, *, tables, validate):
@@ -91,7 +119,7 @@ def _copy_database(source, destination, *, tables, validate):
             incoming.execute("PRAGMA trusted_schema=OFF")
             # Reject unrelated namespaces before making a copy.
             names = {row[0] for row in incoming.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-            if names != tables:
+            if names != tables and not (tables == TABLES and names == LEGACY_TABLES):
                 raise ValueError("Only the general plan and queue database is supported")
             pages = incoming.execute("PRAGMA page_count").fetchone()[0]
             size = incoming.execute("PRAGMA page_size").fetchone()[0]

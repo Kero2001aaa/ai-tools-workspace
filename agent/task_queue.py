@@ -58,6 +58,8 @@ class TaskQueue:
                     updated_at TEXT NOT NULL
                 )
             """)
+            from agent.task_attempts import initialize
+            initialize(db)
             columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
             if "plan_step_id" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN plan_step_id TEXT")
@@ -172,12 +174,25 @@ class TaskQueue:
 
     def claim_plan_task(self, task_id):
         """Targeted claim. Unknown running outcomes are never automatically replayed."""
+        from agent.task_attempts import fingerprints
         now = _stamp(_now())
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             changed = db.execute("""UPDATE tasks SET status='running',attempts=attempts+1,
                 locked_at=?,updated_at=? WHERE id=? AND status='pending' AND plan_step_id IS NOT NULL""",
                 (now,now,task_id)).rowcount
-        return self.get(task_id) if changed else None
+            if not changed:
+                db.commit()
+                return None
+            task = db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
+            method, inputs = fingerprints(task['task_type'], json.loads(task['payload']))
+            prior = db.execute("SELECT retry_reason FROM task_attempts WHERE task_id=? ORDER BY attempt_no DESC LIMIT 1",(task_id,)).fetchone()
+            db.execute("""INSERT INTO task_attempts
+                (task_id,attempt_no,plan_step_id,method_fingerprint,input_fingerprint,
+                 claim_stamp,started_at,status,retry_reason) VALUES(?,?,?,?,?,?,?,'running',?)""",
+                (task_id,task['attempts'],task['plan_step_id'],method,inputs,now,now,prior[0] if prior else None))
+            db.commit()
+        return self.get(task_id)
 
     def finish_plan_task(self, claim, *, result=None, error=None):
         """Fence completion to the exact persisted claim, not just a running ID."""
@@ -186,14 +201,37 @@ class TaskQueue:
         encoded = json.dumps(result,separators=(",",":"),sort_keys=True,default=str) if error is None else None
         if encoded is not None and len(encoded)>20000:
             raise ValueError("Task result must be 20,000 characters or fewer")
+        from agent.task_attempts import classify, digest
+        failure, retryable, code = classify(error) if error is not None else (None, False, None)
+        now = _stamp(_now())
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             changed = db.execute("""UPDATE tasks SET status=?,result=?,last_error=?,locked_at=NULL,updated_at=?
                 WHERE id=? AND status='running' AND attempts=? AND locked_at=? AND plan_step_id=?""",
                 ("succeeded" if error is None else "failed",encoded,str(error)[:2000] if error is not None else None,
-                 _stamp(_now()),claim["id"],claim["attempts"],claim["locked_at"],claim["plan_step_id"])).rowcount
-        if changed != 1:
-            raise ValueError("Plan execution claim lost")
+                 now,claim["id"],claim["attempts"],claim["locked_at"],claim["plan_step_id"])).rowcount
+            if changed != 1:
+                raise ValueError("Plan execution claim lost")
+            journal = db.execute("""UPDATE task_attempts SET status=?,finished_at=?,failure_class=?,retryable=?,
+                error_code=?,result_sha256=? WHERE task_id=? AND attempt_no=? AND plan_step_id=?
+                AND claim_stamp=? AND status='running'""",
+                ('succeeded' if error is None else 'failed',now,failure,int(retryable),code,
+                 digest(encoded) if encoded is not None else None,claim['id'],claim['attempts'],
+                 claim['plan_step_id'],claim['locked_at'])).rowcount
+            # Legacy running claims have no new journal and remain recoverable by
+            # their original fencing rules; do not invent historical attempts.
+            if journal != 1 and db.execute("SELECT 1 FROM task_attempts WHERE task_id=? AND attempt_no=?",(claim['id'],claim['attempts'])).fetchone():
+                raise ValueError('Attempt journal claim lost')
+            db.commit()
         return self.get(claim["id"])
+
+    def list_plan_attempts(self, task_id, limit=100):
+        """Authorized local evidence only. No payload/result/error text in journal."""
+        if type(limit) is not int or not 1<=limit<=100:
+            raise ValueError("Attempt history limit must be 1 to 100")
+        with self._connect() as db:
+            rows = db.execute('SELECT * FROM (SELECT * FROM task_attempts WHERE task_id=? ORDER BY attempt_no DESC LIMIT ?) ORDER BY attempt_no', (task_id,limit)).fetchall()
+        return [dict(row) for row in rows]
 
     def complete(self, task_id, result):
         encoded = json.dumps(result, separators=(",", ":"), sort_keys=True, default=str)

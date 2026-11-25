@@ -48,9 +48,9 @@ def supervise_plan(plan_id: str, max_steps: StrictInt = 3, max_seconds: StrictIn
 
 
 @mcp.tool()
-def retry_failed_plan_step(plan_id: str, step_id: str) -> dict:
+def retry_failed_plan_step(plan_id: str, step_id: str, retry_reason: str = "explicit_retry_requested") -> dict:
     """Explicitly requeue one failed step; a subsequent run_next_plan_step or authorized run_plan_until_done call is required to execute it."""
-    return store.retry_failed_step(plan_id, step_id)
+    return store.retry_failed_step(plan_id, step_id, retry_reason)
 
 
 @mcp.tool()
