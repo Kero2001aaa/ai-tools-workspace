@@ -101,10 +101,12 @@ class BoundedTextApplication:
         task = self._task(task_id)
         if type(decision) is not str or decision not in {'continue', 'cancel'}:
             raise ValueError('invalid_resume_decision')
+        if decision == 'cancel':
+            if task.status not in {'waiting_user', 'checkpointed', 'paused', 'needs_input'}:
+                raise ValueError('text_resume_unavailable')
+            return self.cancel_task(task_id)
         if task.status not in {'waiting_user', 'checkpointed'}:
             raise ValueError('text_resume_unavailable')
-        if decision == 'cancel':
-            return self.cancel_task(task_id)
         # External authenticated callers must ground the real approval themselves.
         # This only persists their explicit decision and runs one bounded segment.
         was_waiting = task.status == 'waiting_user'
