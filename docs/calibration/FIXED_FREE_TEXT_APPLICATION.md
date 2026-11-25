@@ -44,3 +44,13 @@ A mocked success becomes an encrypted task-owned result. Mocked 429 and 307
 responses are sanitized, never followed/retried and never yield completion.
 Terminal reruns remain one attempt. This closes an offline wiring check, not
 live provider certification, semantic-quality evaluation or a real AI success.
+
+An optional injected AdultFeedback bridge can now prepare a private proposal
+only after run_task observes a new durably finished attempt. It must share the
+same task store and fingerprint key. Default is disabled. The run result reports
+private_proposal_created, not_applicable or proposal_failed separately from the
+authoritative task outcome. A feedback-storage failure does not hide a completed
+task or discard its result, and terminal reruns do not rebuild a proposal. Zero-
+call pauses do not build one. Only the existing fixed generic lesson templates
+qualify. Publication is never part of this hook and still requires a separate
+explicit call. No integration installation, retry or background job is triggered.
