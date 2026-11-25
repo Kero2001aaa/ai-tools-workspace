@@ -21,7 +21,15 @@ class TaskSnapshot(StrictRequest):
     updated_at: str
     deadline_at: str
     attempt_count: int = Field(ge=0, le=20)
+    failed_attempts_since_approval: int = Field(ge=0, le=20)
     provider_calls: int = Field(ge=0, le=20)
+    approvals_granted: Count
+    max_total_attempts: int = Field(ge=1, le=20)
+    max_wall_seconds: int = Field(ge=1, le=600)
+    max_provider_calls: int = Field(ge=0, le=20)
+    max_cost_microusd: Count
+    spent_cost_microusd: Count
+    cancel_requested: bool
     current_step_id: Opaque | None
     selected_adapter: Opaque | None
     selected_provider: Opaque | None
@@ -66,9 +74,26 @@ class AttemptSummary(StrictRequest):
     provider_id: Opaque | None
     model_id: ModelID | None
     status: Literal['running','succeeded','failed','rejected','timed_out','unknown_outcome']
+    model_version: Opaque | None
+    tool_id: Opaque | None
+    tool_version: Opaque | None
+    failure_class: Literal['transient','capability_mismatch','permanent_request','policy_rejection','budget_exhaustion','unknown'] | None
+    retryable: bool
+    usage: 'Usage'
     elapsed_ms: Count | None
     error_code: Code | None
     cost_microusd: Count | None
+
+
+class Usage(StrictRequest):
+    input_tokens: int | None = Field(default=None,ge=0,le=10**12)
+    output_tokens: int | None = Field(default=None,ge=0,le=10**12)
+    total_tokens: int | None = Field(default=None,ge=0,le=10**12)
+    image_tokens: int | None = Field(default=None,ge=0,le=10**12)
+    provider_units: int | None = Field(default=None,ge=0,le=10**12)
+
+
+AttemptSummary.model_rebuild()
 
 
 class AttemptPage(StrictRequest):
