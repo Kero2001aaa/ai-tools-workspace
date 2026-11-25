@@ -104,12 +104,20 @@ class FixedFreeTextApplication:
         return self._snapshot(self._service.tasks.request_cancel(task_id))
 
     def get_result_chunk(self, task_id: str, offset: int = 0, max_bytes: int = 262144):
-        task = self._task(task_id)
-        if task.status != 'completed' or task.latest_result_artifact_id is None:
-            raise ValueError('text_result_unavailable')
-        # The caller names a task, never a path or arbitrary artifact reference.
-        chunk = self._service.artifacts.read_chunk(task.latest_result_artifact_id, offset, max_bytes)
-        return {'task_id': task_id, 'artifact_id': chunk.artifact_id,
-                'data_base64': base64.b64encode(chunk.data).decode('ascii'),
-                'offset': chunk.offset, 'total_bytes': chunk.total_bytes,
-                'mime_type': chunk.mime_type, 'next_offset': chunk.next_offset, 'complete': chunk.eof}
+        return task_result_chunk(self._task(task_id), self._service.artifacts, offset, max_bytes)
+
+
+def task_result_chunk(task, artifacts, offset=0, max_bytes=262144):
+    """Shared task-owned read without requiring provider configuration or a call."""
+    from agent.adult.payload_store import AdultArtifactStore
+    FixedFreeTextApplication._snapshot(task)
+    if not isinstance(artifacts, AdultArtifactStore):
+        raise TypeError('artifact_store_required')
+    if task.status != 'completed' or task.latest_result_artifact_id is None:
+        raise ValueError('text_result_unavailable')
+    # The caller names a task, never a path or arbitrary artifact reference.
+    chunk = artifacts.read_chunk(task.latest_result_artifact_id, offset, max_bytes)
+    return {'task_id': task.task_id, 'artifact_id': chunk.artifact_id,
+            'data_base64': base64.b64encode(chunk.data).decode('ascii'),
+            'offset': chunk.offset, 'total_bytes': chunk.total_bytes,
+            'mime_type': chunk.mime_type, 'next_offset': chunk.next_offset, 'complete': chunk.eof}
