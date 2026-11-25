@@ -49,3 +49,9 @@ also returns needs_input. The execution step remains pending until begin()
 commits an attempt, so exact restoration can rerun it without a fabricated
 lease-recovery checkpoint or a forbidden step reset. A committed unknown
 attempt is still never replayed.
+
+The internal facade supports safe bounded task paging and attempt history.
+It refuses mixed-lane task lists rather than exposing or silently skipping
+image tasks. These metadata reads do not run cleanup or change task state.
+A cancellation that fences finalization is returned as durable cancellation
+with input cleanup; an ordinary nonterminal exception is still surfaced.
