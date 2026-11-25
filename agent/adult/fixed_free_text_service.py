@@ -84,6 +84,28 @@ class FixedFreeTextService:
         return executor.stage(task_type, data, budget,
             retention_policy="encrypted" if retain_payload else "ephemeral")
 
+    def restore_input_and_run(self, task_id: str, text: str, instruction: str = '', *, max_seconds=120):
+        """Explicit exact ephemeral reupload and one segment, not generic resume."""
+        import hmac
+        task = self.tasks.get_task(task_id)
+        request = self.tasks.get_task_request(task_id)
+        if (task is None or request is None or task.status != 'needs_input'
+                or request.retention_policy != 'ephemeral' or task.attempt_count != 0
+                or request.payload_id is None or task.cancel_requested):
+            raise ValueError('ephemeral_restore_unavailable')
+        if (not isinstance(max_seconds, int) or isinstance(max_seconds, bool)
+                or not 1 <= max_seconds <= 240):
+            raise ValueError('invalid_segment_seconds')
+        data = encode_text_input(task.task_type, text, instruction)
+        if not hmac.compare_digest(self.cipher.fingerprint(data), request.input_fingerprint):
+            raise ValueError('restored_input_mismatch')
+        self.artifacts.restore_transient_input(task_id, request.payload_id, data)
+        # Response loss propagates before run: it cannot trigger a hidden call.
+        from agent.adult.adult_task_restore import resume_restored_ephemeral
+        resume_restored_ephemeral(self.tasks, task_id, request.payload_id,
+                                             request.input_fingerprint, task.state_version)
+        return self.run(task_id, max_seconds=max_seconds)
+
     def run(self, task_id: str, *, max_attempts=1, max_seconds=120):
         # Provider availability/rate-limit recovery is external, never a loop.
         if isinstance(max_attempts, bool) or max_attempts != 1:
@@ -103,10 +125,17 @@ class FixedFreeTextService:
                 # Only an absent process-local input is a recoverable loss here.
                 # Never turn wrong keys, authentication errors or retained input
                 # expiry into a silent replacement permission.
-                if request.retention_policy != 'ephemeral' or task.status != 'checkpointed':
+                if request.retention_policy != 'ephemeral' or task.status not in {'queued', 'checkpointed'}:
                     raise
-                self.tasks.transition(task_id, {'checkpointed'}, 'needs_input',
-                    'state_transition', task.state_version)
+                if task.status == 'checkpointed':
+                    self.tasks.transition(task_id, {'checkpointed'}, 'needs_input',
+                        'state_transition', task.state_version)
+                else:
+                    # A restore can queue successfully before process loss.
+                    # Use the existing lease path, never generic active writes.
+                    lease = self.tasks.claim_task(task_id, 'missing-transient-input', lease_seconds=30)
+                    current = self.tasks.get_task(task_id)
+                    self.tasks.release_lease(lease, current.state_version, 'needs_input')
                 return TextExecutionResult(task_id, 'needs_input', error_code='input_required')
             if self.cipher.fingerprint(data) != request.input_fingerprint:
                 raise ValueError('input_key_mismatch')
