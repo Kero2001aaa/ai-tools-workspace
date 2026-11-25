@@ -73,6 +73,14 @@ class BoundedTextApplication:
         from agent.adult.safe_task_views import attempt_summary
         return [attempt_summary(item) for item in attempts[-limit:]]
 
+    def get_attempt_history(self, task_id, limit=20):
+        self._task(task_id)
+        # Preserve legacy list-returning get_attempts; the richer internal
+        # envelope keeps skipped audit records out of actual attempt counters.
+        attempts = self.get_attempts(task_id, limit)
+        skipped = self.executor.pipeline._attempt_tracker.list_skipped(task_id, limit)
+        return {'attempts': attempts, 'skipped': list(skipped)}
+
     def run_task(self, task_id, *, max_attempts=5, max_seconds=240):
         self._bounds(max_attempts, max_seconds)
         self._task(task_id)
