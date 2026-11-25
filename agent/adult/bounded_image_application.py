@@ -1,7 +1,8 @@
-"""Internal single-attempt image application. No provider factory or transport."""
+"""Internal bounded image application. No provider factory or transport."""
 import base64
 from agent.adult.adult_image_executor import AdultImageExecutor, ImageExecutionResult
 from agent.adult.models import StepRecord, TaskBudget
+from agent.adult.adult_image_supervisor import AdultImageSupervisor
 
 
 class BoundedImageApplication:
@@ -12,6 +13,7 @@ class BoundedImageApplication:
             raise TypeError('explicit_task_budget_required')
         StepRecord('config-validation', 'config-validation', 1, 'image.generate', 'pending',
                    config_fingerprint=config_fingerprint)
+        self.supervisor = AdultImageSupervisor(executor)
         self.executor = executor
         self.tasks = executor.tasks
         self.artifacts = executor.intake.artifacts
@@ -72,10 +74,19 @@ class BoundedImageApplication:
             'model_id', 'status', 'elapsed_ms', 'error_code', 'cost_microusd')}
             for item in attempts[-limit:]]
 
-    def run_task(self, task_id):
+    @staticmethod
+    def _bounds(max_attempts, max_seconds):
+        if type(max_attempts) is not int or not 1 <= max_attempts <= 5:
+            raise ValueError('invalid_segment_attempts')
+        if type(max_seconds) is not int or not 1 <= max_seconds <= 240:
+            raise ValueError('invalid_segment_seconds')
+
+    def run_task(self, task_id, *, max_attempts=1, max_seconds=240):
+        self._bounds(max_attempts, max_seconds)
         self._task(task_id)
         try:
-            outcome = self.executor.run(task_id, self.config_fingerprint)
+            outcome = self.supervisor.run_until_done(task_id, self.config_fingerprint,
+                max_attempts=max_attempts, max_seconds=max_seconds)
         except Exception:
             # Cancellation can fence pipeline finalization after an adapter
             # returned. Preserve durable cancellation, not a false task error.
@@ -84,12 +95,39 @@ class BoundedImageApplication:
             outcome = ImageExecutionResult(task_id, 'cancelled')
         return self._outcome(outcome)
 
-    def restore_input_and_run(self, task_id, *, image=None, prompt=None):
+    def restore_input_and_run(self, task_id, *, image=None, prompt=None, max_attempts=1, max_seconds=240):
+        self._bounds(max_attempts, max_seconds)
         self._task(task_id)
         # An uncertain restore commit must stop before dispatch. A later
         # explicit run can reconcile queued state without replaying the restore.
         self.executor.restore_input(task_id, image=image, prompt=prompt)
-        return self.run_task(task_id)
+        return self.run_task(task_id, max_attempts=max_attempts, max_seconds=max_seconds)
+
+    def resume_task(self, task_id, decision, *, max_attempts=5, max_seconds=240):
+        self._bounds(max_attempts, max_seconds)
+        task = self._task(task_id)
+        if type(decision) is not str or decision not in {'continue', 'cancel'}:
+            raise ValueError('invalid_resume_decision')
+        if task.status not in {'waiting_user', 'checkpointed'}:
+            raise ValueError('image_resume_unavailable')
+        if decision == 'cancel':
+            return self.cancel_task(task_id)
+        # Internal caller must ground authenticated real approval separately.
+        was_waiting = task.status == 'waiting_user'
+        resumed = self.tasks.resume(task_id, 'continue')
+        if resumed.status != 'queued':
+            return self._outcome(ImageExecutionResult(task_id, resumed.status,
+                error_code='execution_budget_exhausted'))
+        if not was_waiting:
+            return self.run_task(task_id, max_attempts=max_attempts, max_seconds=max_seconds)
+        try:
+            outcome = self.supervisor.continue_after_approval(task_id, self.config_fingerprint,
+                max_attempts=max_attempts, max_seconds=max_seconds)
+        except Exception:
+            if self._task(task_id).status != 'cancelled':
+                raise
+            outcome = ImageExecutionResult(task_id, 'cancelled')
+        return self._outcome(outcome)
 
     def cancel_task(self, task_id):
         self._task(task_id)
