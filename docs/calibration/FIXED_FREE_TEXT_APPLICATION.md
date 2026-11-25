@@ -76,7 +76,14 @@ is not implemented or claimed.
 If transient input is absent after cache eviction, expiry or process restart, a
 checkpointed fixed-free task moves atomically to needs_input before any attempt.
 Repeated run calls keep that state without provider work. Wrong keys and retained
-input integrity/expiry errors are not reclassified as transient loss. Replacement
-input resume is not yet implemented; cancellation remains available. Tests include
+input integrity/expiry errors are not reclassified as transient loss. General replacement
+input resume is not implemented; the separately documented exact zero-attempt
+ephemeral reupload is available, as is cancellation. Tests include
 same-process fake completion, no input plaintext on disk, and an actual new Python
 process observing needs_input with zero attempts. No MCP tool is registered.
+
+`restore_input_and_run` accepts the same text and instruction only for a lost,
+zero-attempt ephemeral task in needs_input. It restores the original transient
+reference, persists one guarded queue transition and runs one bounded segment.
+It is not `resume_task`, waiting-user approval or a general changed-input API.
+See EPHEMERAL_INPUT_RESTORE.md for failure/restart semantics and boundaries.
