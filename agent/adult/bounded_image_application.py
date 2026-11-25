@@ -69,6 +69,14 @@ class BoundedImageApplication:
         from agent.adult.safe_task_views import attempt_summary
         return [attempt_summary(item) for item in attempts[-limit:]]
 
+    def get_attempt_history(self, task_id, limit=20):
+        self._task(task_id)
+        # Preserve legacy list-returning get_attempts; the richer internal
+        # envelope keeps skipped audit records out of actual attempt counters.
+        attempts = self.get_attempts(task_id, limit)
+        skipped = self.executor.pipeline._attempt_tracker.list_skipped(task_id, limit)
+        return {'attempts': attempts, 'skipped': list(skipped)}
+
     @staticmethod
     def _bounds(max_attempts, max_seconds):
         if type(max_attempts) is not int or not 1 <= max_attempts <= 5:
