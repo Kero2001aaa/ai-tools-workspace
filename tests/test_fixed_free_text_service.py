@@ -157,3 +157,16 @@ class FixedServiceTests(unittest.TestCase):
             self.assertFalse(service.registry.current_text_route_in_transaction(db,replace(route,capability_version='a'*64),now))
         with self.tasks._connect() as db:
             self.assertFalse(service.registry.current_text_route_in_transaction(db,route,now))
+
+    def test_invalid_segment_limits_cannot_mutate_lost_ephemeral_state(self):
+        service=self.service()
+        task=service.submit('text.analyze','Safe transient context.',
+             budget=TaskBudget(max_provider_calls=1),retain_payload=False).task_id
+        lost=FixedFreeTextService(self.tasks,AdultArtifactStore(self.root/'retained',cipher=self.cipher),
+                                  self.cipher,service.config)
+        before=(self.root/'tasks.sqlite3').read_bytes()
+        for kwargs in ({'max_attempts':1.0},{'max_attempts':True},{'max_seconds':True},
+                       {'max_seconds':0},{'max_seconds':241},{'max_seconds':1.0}):
+            with self.subTest(kwargs=kwargs),self.assertRaises(ValueError):lost.run(task,**kwargs)
+            self.assertEqual(before,(self.root/'tasks.sqlite3').read_bytes())
+        self.assertEqual('checkpointed',self.tasks.get_task(task).status)
