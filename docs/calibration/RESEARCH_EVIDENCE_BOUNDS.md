@@ -30,3 +30,27 @@ url remains the requested target, with source_url_matches_request explicit. A
 provider report cannot silently relabel a fetch as another source. Whole-response
 rejection on any unsafe search result is intentional for now: sources are not
 silently omitted, and no best-effort/partial-success claim is made.
+
+## Quote-only evidence report, separate next candidate
+
+`agent.research_evidence.build_evidence_report` creates a bounded local report from
+already supplied normalized source excerpts and explicit quote selections. It
+checks exact SHA-256 and substring support, carries source URLs, rejects scrape
+requested/reported mismatch, and labels all quotes as untrusted source data. It
+adds no task type, model call, database table, persistence, source authentication,
+claim synthesis or live fetch. Existing plan/recovery contracts are unchanged.
+This is an internal Stage5.3 report boundary, not accepted research or an answer
+whose truth was checked. Plan/step attachment remains unimplemented, not implied.
+
+`research_context.plan_evidence_envelope` adds a read-only snapshot of a real
+plan/step pair chosen by a trusted local caller. It opens SQLite mode=ro without
+constructing PlanStore, creating or migrating a database. Pair lookup is a single
+SELECT with a short busy timeout and instruction budget. It returns fixed status
+and task type only, not titles, payloads, stored results, errors or file paths.
+The envelope explicitly says persisted=false and execution_provenance_verified=false.
+It is context association only: not an executed result, ownership check or access
+authorization. No HTTP/MCP registration exists. No report is stored in the plan,
+no task is executed, and no plan/queue state changes. Missing pair/file, malformed
+identity/schema and database errors fail with a stable code. Existing checkpoint,
+recovery and two-task allowlist remain unchanged. Persistence and a real research
+plan task need a separate reviewed integration; this helper does not imply them.
