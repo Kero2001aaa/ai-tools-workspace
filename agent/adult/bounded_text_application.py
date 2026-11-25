@@ -58,11 +58,37 @@ class BoundedTextApplication:
     def get_task(self, task_id):
         return FixedFreeTextApplication._snapshot(self._task(task_id))
 
+    def list_tasks(self, status=None, limit=20, cursor=None):
+        if type(limit) is not int or not 1 <= limit <= 20:
+            raise ValueError('invalid_page_limit')
+        page = self.tasks.list_tasks(status, limit, cursor)
+        return {'tasks': [self.get_task(task.task_id) for task in page.items],
+                'next_cursor': page.next_cursor, 'has_more': page.has_more}
+
+    def get_attempts(self, task_id, limit=20):
+        self._task(task_id)
+        if type(limit) is not int or not 1 <= limit <= 20:
+            raise ValueError('invalid_page_limit')
+        attempts = self.executor.pipeline._attempt_tracker.list_summaries(task_id)
+        return [{name: getattr(item, name) for name in (
+            'attempt_id', 'attempt_no', 'adapter_id', 'adapter_version', 'provider_id',
+            'model_id', 'status', 'elapsed_ms', 'error_code', 'cost_microusd')}
+            for item in attempts[-limit:]]
+
     def run_task(self, task_id, *, max_attempts=5, max_seconds=240):
         self._bounds(max_attempts, max_seconds)
         self._task(task_id)
-        return self._outcome(self.supervisor.run_until_done(task_id, self.config_fingerprint,
-                             max_attempts=max_attempts, max_seconds=max_seconds))
+        try:
+            outcome = self.supervisor.run_until_done(task_id, self.config_fingerprint,
+                             max_attempts=max_attempts, max_seconds=max_seconds)
+        except Exception:
+            # A cancellation can fence pipeline finalization after a result.
+            # Return durable cancellation and cleanup, not a false task error.
+            if self._task(task_id).status != 'cancelled':
+                raise
+            from agent.adult.adult_text_executor import TextExecutionResult
+            outcome = TextExecutionResult(task_id, 'cancelled')
+        return self._outcome(outcome)
 
     def resume_task(self, task_id, decision, *, max_attempts=5, max_seconds=240):
         self._bounds(max_attempts, max_seconds)
