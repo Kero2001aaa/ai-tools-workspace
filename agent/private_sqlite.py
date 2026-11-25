@@ -9,9 +9,13 @@ import stat
 
 
 def prepare_database(path):
+    # Some SQLite builds interpret file: even without uri=True. Refuse before
+    # touching disk so precreation and the actual SQLite target cannot differ.
+    if str(path).startswith('file:'):
+        raise ValueError('SQLite URI-style database names are not supported')
     path = Path(path).expanduser()
     # sqlite3.connect uses this exact non-URI name for an in-memory database.
-    # Do not create a literal file; ordinary file: names are not URI-enabled here.
+    # Do not create a literal file.
     if str(path) == ':memory:':
         return path
     path.parent.mkdir(parents=True, exist_ok=True)

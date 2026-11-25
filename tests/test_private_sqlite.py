@@ -62,6 +62,21 @@ class PrivateSQLiteTests(unittest.TestCase):
             result=subprocess.run([sys.executable,'-c',program],cwd=directory,env={**os.environ,'PYTHONPATH':str(Path(__file__).resolve().parents[1])},capture_output=True,text=True,timeout=5)
             self.assertEqual(0,result.returncode,result.stderr)
             self.assertEqual([],list(Path(directory).iterdir()))
-            # file: names stay ordinary protected files because no uri=True is used.
-            path=Path(directory)/'file:ordinary.db';prepare_database(path)
-            self.assertEqual(0o600,path.stat().st_mode & 0o777)
+
+    def test_uri_style_actual_store_entrypoints_refuse_before_any_file_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            program="""import os
+from pathlib import Path
+from agent.task_queue import TaskQueue
+from agent.plan_store import PlanStore
+os.umask(0o022)
+for factory in (TaskQueue,PlanStore):
+ for name in ('file:target.db','file:target.db?mode=rwc','file::memory:'):
+  try: factory(name)
+  except ValueError: pass
+  else: raise AssertionError('URI name accepted')
+assert list(Path('.').iterdir())==[]
+"""
+            result=subprocess.run([sys.executable,'-c',program],cwd=directory,env={**os.environ,'PYTHONPATH':str(Path(__file__).resolve().parents[1])},capture_output=True,text=True,timeout=5)
+            self.assertEqual(0,result.returncode,result.stderr)
+            self.assertEqual([],list(Path(directory).iterdir()))

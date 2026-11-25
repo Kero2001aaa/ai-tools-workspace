@@ -23,3 +23,11 @@ initialization; it is not deleted automatically because another process may use 
 Tests use real subprocesses under permissive umasks, concurrent creation,
 existing mode/data preservation and non-regular-file refusals, followed by a
 normal bound-plan execution. This is not a complete host-security audit.
+
+Exact `:memory:` keeps SQLite's existing in-memory behavior without creating a
+literal disk file. Names beginning `file:` are refused before disk creation at
+both store entrypoints. Some SQLite builds interpret those names as URI targets
+even when the Python call omits uri=True; allowing them could create a different
+file with broad permissions. Use a normal filesystem path instead. This refusal
+is intentional compatibility narrowing, not a claim that file: is ordinary on
+all builds. Absolute normal paths containing a colon remain filesystem paths.
