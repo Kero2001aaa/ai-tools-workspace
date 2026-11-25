@@ -52,5 +52,15 @@ def retry_failed_plan_step(plan_id: str, step_id: str) -> dict:
     return store.retry_failed_step(plan_id, step_id)
 
 
+@mcp.tool()
+def cancel_plan(plan_id: str, expected_updated_at: str) -> dict:
+    """Explicitly cancel only inactive remaining plan work using its last-read updated_at.
+
+    Never interrupts running work or rolls back completed steps. Reload after a
+    stale state refusal. Cancelled plans cannot be resumed or retried.
+    """
+    return store.cancel_plan(plan_id, expected_updated_at)
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")

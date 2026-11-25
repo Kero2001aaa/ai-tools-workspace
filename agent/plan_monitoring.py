@@ -42,7 +42,7 @@ def plan_snapshot(limit=20):
             _id(row['id'])
             _timestamp(row['created_at'])
             _timestamp(row['updated_at'])
-            if row['status'] not in {'queued', 'running', 'checkpointed', 'paused', 'completed'}:
+            if row['status'] not in {'queued', 'running', 'checkpointed', 'paused', 'completed', 'cancelled'}:
                 raise ValueError('invalid_plan_state')
             steps = db.execute('SELECT id,position,task_type,status FROM plan_steps WHERE plan_id=? ORDER BY position LIMIT 11', (row['id'],)).fetchall()
             if len(steps) > 10:
@@ -51,13 +51,13 @@ def plan_snapshot(limit=20):
             for step in steps:
                 _id(step['id'])
                 if (step['task_type'] not in {'workspace_status', 'memory_recent', 'local_code_report'}
-                        or step['status'] not in {'pending', 'running', 'succeeded', 'failed'}
+                        or step['status'] not in {'pending', 'running', 'succeeded', 'failed', 'cancelled'}
                         or type(step['position']) is not int or not 1 <= step['position'] <= 10):
                     raise ValueError('invalid_plan_step')
                 task_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'workspace-plan-step:' + step['id']))
                 task = db.execute('SELECT id,status,attempts,plan_step_id FROM tasks WHERE id=?', (task_id,)).fetchone()
                 if task is not None and (task['plan_step_id'] != step['id']
-                        or task['status'] not in {'pending', 'running', 'succeeded', 'failed'}
+                        or task['status'] not in {'pending', 'running', 'succeeded', 'failed', 'cancelled'}
                         or type(task['attempts']) is not int or task['attempts'] < 0):
                     raise ValueError('invalid_plan_execution')
                 bound = task is not None

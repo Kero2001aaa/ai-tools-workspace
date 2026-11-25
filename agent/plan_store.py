@@ -159,6 +159,10 @@ class PlanStore:
             plan = db.execute("SELECT * FROM plans WHERE id=?",(plan_id,)).fetchone()
             if not plan:
                 raise ValueError("Plan not found")
+            if plan["status"] == "cancelled":
+                db.commit()
+                return {"status":"cancelled","plan_id":plan_id,"step":None,
+                        "reason":"Plan was explicitly cancelled; no execution"}
             steps = db.execute("SELECT * FROM plan_steps WHERE plan_id=? ORDER BY position",(plan_id,)).fetchall()
             failed = next((step for step in steps if step["status"]=="failed"),None)
             if failed:
@@ -266,7 +270,7 @@ class PlanStore:
                         "remaining_steps": 0,
                     }
                 continue
-            if outcome.get("status") in {"completed", "paused", "running"}:
+            if outcome.get("status") in {"completed", "paused", "running", "cancelled"}:
                 current = self.get_plan(plan_id)
                 remaining = sum(
                     step["status"] in {"pending", "running"}
@@ -301,9 +305,9 @@ class PlanStore:
         if plan is None:
             raise ValueError("Plan not found")
         status = plan["status"]
-        if status == "completed":
+        if status in {"completed", "cancelled"}:
             return {"decision": "stop", "status": status, "plan_id": plan_id,
-                    "reason": "Plan is already complete", "run": None}
+                    "reason": "Plan is already terminal", "run": None}
         if status == "paused":
             return {"decision": "stop", "status": status, "plan_id": plan_id,
                     "reason": "A failed step requires an explicit retry", "run": None}
@@ -317,17 +321,52 @@ class PlanStore:
             decision = "stop"
         elif run["status"] == "checkpointed":
             decision = "resume_later"
-        elif run["status"] == "paused":
+        elif run["status"] in {"paused", "cancelled"}:
             decision = "stop"
         else:
             decision = "wait"
         return {"decision": decision, "status": run["status"], "plan_id": plan_id,
                 "reason": run.get("reason"), "run": run}
 
+    def cancel_plan(self, plan_id, expected_updated_at):
+        """Explicit local stop of inactive work only, with optimistic state guard.
+
+        Not interruption or rollback. Running/unknown outcomes must be reconciled
+        first. Completed results and attempts are retained, never replayed.
+        """
+        if not isinstance(expected_updated_at, str) or not expected_updated_at:
+            raise ValueError("Expected plan updated_at is required")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            plan = db.execute("SELECT status,updated_at FROM plans WHERE id=?",(plan_id,)).fetchone()
+            if plan is None or plan["updated_at"] != expected_updated_at:
+                raise ValueError("Plan missing or state changed; reload before cancellation")
+            if plan["status"] not in {"queued", "checkpointed", "paused"}:
+                raise ValueError("Only inactive plans may be cancelled; reconcile running outcomes first")
+            steps = db.execute("SELECT id,status,task_type,payload FROM plan_steps WHERE plan_id=?",(plan_id,)).fetchall()
+            for step in steps:
+                task_id = str(uuid.uuid5(uuid.NAMESPACE_URL,"workspace-plan-step:"+step["id"]))
+                task = db.execute("SELECT status,plan_step_id,task_type,payload FROM tasks WHERE id=?",(task_id,)).fetchone()
+                if step["status"] not in {"pending", "failed", "succeeded"}:
+                    raise ValueError("Plan has running or unknown work; reconcile before cancellation")
+                if task and (task["plan_step_id"] != step["id"] or task["task_type"] != step["task_type"] or task["payload"] != step["payload"] or
+                        (step["status"] == "succeeded" and task["status"] != "succeeded") or
+                        (step["status"] != "succeeded" and task["status"] not in {"pending", "failed"})):
+                    raise ValueError("Plan execution outcome must be reconciled before cancellation")
+            now = _stamp(_now())
+            db.execute("UPDATE tasks SET status='cancelled',updated_at=? WHERE plan_step_id IN (SELECT id FROM plan_steps WHERE plan_id=? AND status IN ('pending','failed')) AND status IN ('pending','failed')",(now,plan_id))
+            db.execute("UPDATE plan_steps SET status='cancelled',completed_at=? WHERE plan_id=? AND status IN ('pending','failed')",(now,plan_id))
+            db.execute("UPDATE plans SET status='cancelled',updated_at=? WHERE id=?",(now,plan_id))
+            db.commit()
+        return self.get_plan(plan_id)
+
     def retry_failed_step(self, plan_id, step_id):
         now = _stamp(_now())
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            plan = db.execute("SELECT status FROM plans WHERE id=?",(plan_id,)).fetchone()
+            if plan is None or plan["status"] == "cancelled":
+                raise ValueError("Cancelled or missing plan cannot be retried")
             task_id=str(uuid.uuid5(uuid.NAMESPACE_URL,"workspace-plan-step:"+step_id))
             task=db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
             if task is not None and task["status"] != "failed":

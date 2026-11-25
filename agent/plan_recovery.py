@@ -46,9 +46,9 @@ def _validate(db, deadline):
         raise ValueError("Snapshot has orphaned queue tasks")
     if db.execute("SELECT 1 FROM tasks WHERE plan_step_id IS NULL AND status='running' LIMIT 1").fetchone():
         raise ValueError("Standalone running task outcome must be reconciled before snapshot")
-    for table, statuses in (("plans", {"queued", "running", "checkpointed", "paused", "completed"}),
-                            ("plan_steps", {"pending", "running", "succeeded", "failed"}),
-                            ("tasks", {"pending", "running", "succeeded", "failed"})):
+    for table, statuses in (("plans", {"queued", "running", "checkpointed", "paused", "completed", "cancelled"}),
+                            ("plan_steps", {"pending", "running", "succeeded", "failed", "cancelled"}),
+                            ("tasks", {"pending", "running", "succeeded", "failed", "cancelled"})):
         if any(row[0] not in statuses for row in db.execute("SELECT DISTINCT status FROM " + table)):
             raise ValueError("Unsupported stored lifecycle state")
     for table in ("tasks", "plan_steps"):

@@ -29,7 +29,7 @@ def plan_evidence_envelope(db_path, plan_id, step_id, question, sources, citatio
             (plan_id, step_id)).fetchone()
         if row is None or len(row) != 3:
             raise ValueError('research_context_unavailable')
-        if row[0] not in {'queued', 'checkpointed', 'running', 'completed', 'paused'} or row[1] not in {'pending', 'running', 'succeeded', 'failed'}:
+        if row[0] not in {'queued', 'checkpointed', 'running', 'completed', 'paused', 'cancelled'} or row[1] not in {'pending', 'running', 'succeeded', 'failed', 'cancelled'}:
             raise ValueError('research_context_unavailable')
         if row[2] not in {'workspace_status', 'memory_recent', 'local_code_report'}:
             raise ValueError('research_context_unavailable')

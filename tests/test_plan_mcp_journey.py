@@ -29,7 +29,7 @@ class PlanMCPJourneyTests(unittest.TestCase):
                         await session.initialize()
                         tools = await session.list_tools()
                         self.assertEqual({'create_plan', 'get_plan', 'list_plans', 'run_next_plan_step',
-                            'run_plan_until_done', 'supervise_plan', 'retry_failed_plan_step'}, {tool.name for tool in tools.tools})
+                            'run_plan_until_done', 'supervise_plan', 'retry_failed_plan_step', 'cancel_plan'}, {tool.name for tool in tools.tools})
                         response = await session.call_tool('create_plan', {'title': 'Real MCP checkpoint', 'steps': [
                             {'task_type': 'workspace_status'}, {'task_type': 'memory_recent', 'payload': {'limit': 5}}]})
                         self.assertFalse(response.isError)
