@@ -490,7 +490,8 @@ class MemoryStore:
         configured = db_path or os.getenv("WORKSPACE_MEMORY_DB") or str(DEFAULT_DB)
         self.db_path = Path(configured).expanduser()
         existed_before_open = self.db_path.exists()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        from agent.private_sqlite import prepare_database
+        prepare_database(self.db_path)
         self._initialize(existed_before_open=existed_before_open)
 
     def _connect(self) -> sqlite3.Connection:
