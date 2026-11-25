@@ -46,3 +46,12 @@ class PrivateSQLiteTests(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=8) as pool:list(pool.map(prepare_database,[path]*16))
             self.assertEqual(0o600,path.stat().st_mode & 0o777)
             store=PlanStore(path);plan=store.create_plan('private',[{'task_type':'workspace_status'}]);store.run_next_step(plan['id']);self.assertEqual('completed',store.get_plan(plan['id'])['status'])
+
+    def test_live_native_sqlite_wal_sidecars_inherit_private_new_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'wal.db';prepare_database(path)
+            with sqlite3.connect(path) as db:
+                self.assertEqual('wal',db.execute('PRAGMA journal_mode=WAL').fetchone()[0])
+                db.execute('CREATE TABLE note(value)');db.execute("INSERT INTO note VALUES('synthetic')");db.commit()
+                for suffix in ('-wal','-shm'):
+                    sidecar=Path(str(path)+suffix);self.assertTrue(sidecar.exists());self.assertEqual(0o600,sidecar.stat().st_mode & 0o777)
