@@ -70,10 +70,8 @@ class BoundedTextApplication:
         if type(limit) is not int or not 1 <= limit <= 20:
             raise ValueError('invalid_page_limit')
         attempts = self.executor.pipeline._attempt_tracker.list_summaries(task_id)
-        return [{name: getattr(item, name) for name in (
-            'attempt_id', 'attempt_no', 'adapter_id', 'adapter_version', 'provider_id',
-            'model_id', 'status', 'elapsed_ms', 'error_code', 'cost_microusd')}
-            for item in attempts[-limit:]]
+        from agent.adult.safe_task_views import attempt_summary
+        return [attempt_summary(item) for item in attempts[-limit:]]
 
     def run_task(self, task_id, *, max_attempts=5, max_seconds=240):
         self._bounds(max_attempts, max_seconds)
