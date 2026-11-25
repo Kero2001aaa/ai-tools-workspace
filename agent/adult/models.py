@@ -199,9 +199,8 @@ class ImageInputEnvelope:
             raise AdultModelValidationError("Image input task_type is unsupported.")
         if self.task_type == "image.analyze":
             _identifier("image_payload_id", self.image_payload_id)
+            # The analysis prompt is optional; promptless envelopes stay valid.
             _identifier("prompt_payload_id", self.prompt_payload_id, optional=True)
-            if self.prompt_payload_id is not None:
-                raise AdultModelValidationError("image.analyze cannot include a prompt payload.")
         elif self.task_type == "image.generate":
             _identifier("prompt_payload_id", self.prompt_payload_id)
             _identifier("image_payload_id", self.image_payload_id, optional=True)
