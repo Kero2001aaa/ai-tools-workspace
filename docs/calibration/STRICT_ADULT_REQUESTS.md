@@ -17,10 +17,11 @@ are refused. This is not semantic moderation or proof of image consent.
 
 These models describe the draft external contract, not implemented dispatch
 support. In particular, a valid300-second request exceeds the current internal
-facade240-second bound; a valid optional image-analysis prompt is not supported
-by its current image-only envelope; generic replacement still lacks the full
-state-aware correction contract. Those requests must not be silently truncated,
-dropped or executed through an unfinished dispatcher. Request validation does
+facade240-second bound, and generic replacement still lacks the full
+state-aware correction contract. The optional image-analysis prompt is now
+supported end to end by the internal envelope, executor and adapter as marked
+untrusted user data. Valid requests must not be silently truncated, dropped or
+executed through an unfinished dispatcher. Request validation does
 not authenticate a caller or approve a continuation. Public exposure remains
 blocked on the explicit release boundaries and supported operation mapping.
 
