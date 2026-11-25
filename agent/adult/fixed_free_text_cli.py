@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 from pathlib import Path
 import sys
@@ -10,6 +9,7 @@ import sys
 from agent.adult.adult_task_store import AdultTaskStore
 from agent.adult.adult_text_input import encode_text_input, _unique_object, _reject_constant
 from agent.adult.fixed_free_text_service import FixedFreeTextService
+from agent.adult.fixed_free_text_application import FixedFreeTextApplication
 from agent.adult.integrations.omniroute_chat import AdultOmniRouteConfig
 from agent.adult.models import TaskBudget
 from agent.adult.payload_store import AdultArtifactStore, PayloadCipher
@@ -58,8 +58,10 @@ def main(argv=None):
             tasks = AdultTaskStore(root / 'tasks.sqlite3')
             artifacts = AdultArtifactStore(root / 'artifacts', cipher=cipher)
             service = FixedFreeTextService(tasks, artifacts, cipher, config)
-            staged = service.submit(args.task_type, text, instruction, budget=budget)
-            result = _status(tasks.get_task(staged.task_id))
+            application = FixedFreeTextApplication(service, budget=budget)
+            # The stage command explicitly requests encrypted durable retention.
+            staged = application.submit_text_task(args.task_type, text, instruction, retain_payload=True)
+            result = _status(tasks.get_task(staged['task_id']))
         else:
             # A read must not create/migrate a replacement database.
             tasks = AdultTaskStore(root / 'tasks.sqlite3', read_only=True)
@@ -81,19 +83,19 @@ def main(argv=None):
                     if cipher.fingerprint(data) != request.input_fingerprint:
                         raise ValueError('input_key_mismatch')
                 service = FixedFreeTextService(AdultTaskStore(root / 'tasks.sqlite3'), artifacts, cipher, config)
-                outcome = service.run(args.task_id)
+                application = FixedFreeTextApplication(service, budget=TaskBudget(
+                    max_provider_calls=task.max_provider_calls))
+                outcome = application.run_task(args.task_id)
                 result = _status(service.tasks.get_task(args.task_id))
-                result['error_code'] = outcome.error_code
+                result['error_code'] = outcome['error_code']
             elif args.command == 'result':
                 if task.status != 'completed' or task.latest_result_artifact_id is None:
                     raise ValueError('result_unavailable')
                 cipher = PayloadCipher.from_environment()
                 artifacts = AdultArtifactStore(root / 'artifacts', cipher=cipher)
-                chunk = artifacts.read_chunk(task.latest_result_artifact_id, args.offset, args.max_bytes)
-                result['artifact'] = {'artifact_id': chunk.artifact_id, 'offset': chunk.offset,
-                    'data_base64': base64.b64encode(chunk.data).decode('ascii'),
-                    'total_bytes': chunk.total_bytes, 'mime_type': chunk.mime_type,
-                    'next_offset': chunk.next_offset, 'complete': chunk.eof}
+                from agent.adult.fixed_free_text_application import task_result_chunk
+                chunk = task_result_chunk(task, artifacts, args.offset, args.max_bytes)
+                result['artifact'] = {key:value for key,value in chunk.items() if key != 'task_id'}
         print(json.dumps(result, sort_keys=True))
         return 0
     except Exception:
