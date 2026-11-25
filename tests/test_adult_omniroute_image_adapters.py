@@ -178,6 +178,54 @@ class AdultOmniRouteImageAdapterTests(unittest.TestCase):
         self.assertNotIn("http://", data_url)
         self.assertNotIn("https://", data_url)
 
+    def test_analysis_includes_optional_prompt_as_marked_untrusted_user_text(self):
+        image_bytes = _png()
+        payload_id = self._save_input(image_bytes, "image/png")
+        prompt_id = self._save_input(b"Read any visible text.", "text/plain")
+        request = ImageAnalysisRequest(
+            task_id=self.task_id, step_id=self.step_id,
+            input_payload_id=payload_id, mime_type="image/png",
+            prompt_payload_id=prompt_id,
+        )
+        fake = FakeClient(FakeResponse(
+            {"choices": [{"message": {"content": "A stop sign."}}]},
+            headers={"x-omniroute-response-cost": "0.0000000000"},
+        ))
+        adapter = OmniRouteImageUnderstandingAdapter(
+            self.config, self._route("image.analyze"), self.store,
+            client_factory=lambda: fake,
+        )
+
+        result = adapter.analyze(request)
+
+        self.assertEqual("A stop sign.", result.text)
+        body = fake.calls[0][2]["json"]
+        # The fixed adapter-owned system instruction is unchanged.
+        self.assertEqual("system", body["messages"][0]["role"])
+        self.assertIn("untrusted data", body["messages"][0]["content"])
+        content = body["messages"][1]["content"]
+        # Fixed instruction first, marked untrusted prompt second, image last.
+        self.assertEqual("text", content[0]["type"])
+        self.assertEqual("text", content[1]["type"])
+        self.assertIn("untrusted user analysis request", content[1]["text"])
+        self.assertIn("Read any visible text.", content[1]["text"])
+        self.assertEqual("image_url", content[2]["type"])
+
+    def test_analysis_missing_prompt_payload_is_input_unavailable(self):
+        payload_id = self._save_input(_png(), "image/png")
+        request = ImageAnalysisRequest(
+            task_id=self.task_id, step_id=self.step_id,
+            input_payload_id=payload_id, mime_type="image/png",
+            prompt_payload_id="a" * 32,
+        )
+        adapter = OmniRouteImageUnderstandingAdapter(
+            self.config, self._route("image.analyze"), self.store,
+            client_factory=lambda: FakeClient(FakeResponse({})),
+        )
+        with self.assertRaises(OmniRouteImageAdapterError) as raised:
+            adapter.analyze(request)
+        self.assertEqual("input_unavailable", raised.exception.error_code)
+
     def test_generate_uses_exact_model_one_image_and_inline_base64(self):
         image_bytes = _png()
         prompt_id = self._save_input(b"A red car", "text/plain")
