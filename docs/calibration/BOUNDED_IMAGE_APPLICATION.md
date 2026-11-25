@@ -8,8 +8,13 @@ the registry atomic image validator into its attempt tracker and supply only
 separately verified adapters.
 
 submit_image_task stages validated image/prompt input with ephemeral retention
-by default and makes zero model calls. run_task executes at most one attempt;
-there is no image retry supervisor or approval-resume API here. Exact zero-attempt
+by default and makes zero model calls. run_task defaults to one attempt and accepts an explicit bounded segment of
+one to five attempts and one to 240 seconds through AdultImageSupervisor.
+resume_task persists an explicit internal continue/cancel decision for a
+checkpointed or waiting_user task, then returns one bounded continuation.
+A waiting task never dispatches through ordinary run_task, and a lost decision
+commit response stops before dispatch. These synthetic/internal decisions do
+not establish a real user approval source or expose a public approval API. Exact zero-attempt
 ephemeral restoration delegates to the executor's narrow restore path.
 
 Read methods return bounded metadata, paged task lists, safe attempt history or
