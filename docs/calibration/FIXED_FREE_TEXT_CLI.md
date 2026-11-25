@@ -41,3 +41,11 @@ Validation uses real separate processes for stage/status/run/cancel and no-route
 pause, and a patched fake client for an encrypted completed artifact chunk.
 No live inference was performed. The prior local counting journey remains a
 separate deterministic demo and is not relabeled as AI.
+
+The CLI now delegates staging and running through FixedFreeTextApplication,
+including its explicit encrypted-retention choice. CLI output field names stay
+compatible. Application and CLI share one task-owned artifact-chunk serializer;
+reading a completed result still requires only its encryption key, not provider
+credentials or availability. Keyless status/cancel paths remain unchanged. The
+CLI does not inject the optional feedback bridge, so it never creates or publishes
+feedback implicitly. No new entry point, model request or transport is added.
