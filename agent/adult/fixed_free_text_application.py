@@ -44,6 +44,16 @@ class FixedFreeTextApplication:
         self._snapshot(task)
         return task
 
+    def _cleanup_terminal_input(self, task):
+        if task.status not in {'completed', 'cancelled'}:
+            return {'status': 'not_applicable'}
+        try:
+            self._service.artifacts.delete_task_inputs(task.task_id)
+            return {'status': 'input_removed'}
+        except Exception:
+            # A durable outcome cannot be hidden or replayed by cleanup failure.
+            return {'status': 'cleanup_failed', 'error_code': 'input_cleanup_unavailable'}
+
     def submit_text_task(self, task_type: str, text: str, instruction: str = '', *, retain_payload=False):
         if not isinstance(retain_payload, bool):
             raise ValueError('retention_boolean_required')
@@ -55,7 +65,8 @@ class FixedFreeTextApplication:
         before = self._task(task_id)
         outcome = self._service.run(task_id, max_attempts=1, max_seconds=max_seconds)
         after = self._task(task_id)
-        result = {'task': self._snapshot(after), 'error_code': outcome.error_code}
+        result = {'task': self._snapshot(after), 'error_code': outcome.error_code,
+                  'input_cleanup': self._cleanup_terminal_input(after)}
         if self._feedback is not None:
             result['feedback'] = {'status': 'not_applicable'}
             # Only a new, durably finished attempt can trigger private proposal
@@ -75,7 +86,9 @@ class FixedFreeTextApplication:
 
     def restore_input_and_run(self, task_id: str, text: str, instruction: str = '', *, max_seconds=120):
         outcome = self._service.restore_input_and_run(task_id, text, instruction, max_seconds=max_seconds)
-        return {'task': self.get_task(task_id), 'error_code': outcome.error_code}
+        after = self._task(task_id)
+        return {'task': self._snapshot(after), 'error_code': outcome.error_code,
+                'input_cleanup': self._cleanup_terminal_input(after)}
 
     def get_task(self, task_id: str):
         return self._snapshot(self._task(task_id))
@@ -104,7 +117,10 @@ class FixedFreeTextApplication:
 
     def cancel_task(self, task_id: str):
         self._task(task_id)
-        return self._snapshot(self._service.tasks.request_cancel(task_id))
+        task = self._service.tasks.request_cancel(task_id)
+        result = self._snapshot(task)
+        result['input_cleanup'] = self._cleanup_terminal_input(task)
+        return result
 
     def get_result_chunk(self, task_id: str, offset: int = 0, max_bytes: int = 262144):
         return task_result_chunk(self._task(task_id), self._service.artifacts, offset, max_bytes)
