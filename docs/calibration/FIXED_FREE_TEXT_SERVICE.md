@@ -52,3 +52,10 @@ between selection and attempt creation produces zero attempts and provider calls
 The default tracker path stays compatible for existing explicit callers. This
 fences pre-commit revocation, not changes after an attempt is committed or a call
 is in flight. It does not certify availability or alter the transport policy.
+
+Input staging reuses the executor's retention-aware stage method. The low-level
+service keeps its encrypted default for compatibility; the application passes an
+explicit boolean and defaults to ephemeral process-local input. Missing ephemeral
+input on a checkpointed task yields needs_input with zero attempts. The configured
+service fingerprint/output key is still required. No replacement resume or MCP
+registration is included in this slice.
