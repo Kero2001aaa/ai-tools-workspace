@@ -116,7 +116,7 @@ def task_result_chunk(task, artifacts, offset=0, max_bytes=262144):
     if task.status != 'completed' or task.latest_result_artifact_id is None:
         raise ValueError('text_result_unavailable')
     # The caller names a task, never a path or arbitrary artifact reference.
-    chunk = artifacts.read_chunk(task.latest_result_artifact_id, offset, max_bytes)
+    chunk = artifacts.read_chunk(task.latest_result_artifact_id, offset, max_bytes, task_id=task.task_id)
     return {'task_id': task.task_id, 'artifact_id': chunk.artifact_id,
             'data_base64': base64.b64encode(chunk.data).decode('ascii'),
             'offset': chunk.offset, 'total_bytes': chunk.total_bytes,
