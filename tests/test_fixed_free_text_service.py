@@ -127,3 +127,33 @@ class FixedServiceTests(unittest.TestCase):
         with self.assertRaises(Exception):other.run(staged.task_id)
         task=self.tasks.get_task(staged.task_id)
         self.assertEqual(('checkpointed',0),(task.status,task.attempt_count))
+
+    def test_disable_between_route_selection_and_attempt_commit_makes_zero_calls(self):
+        service=self.service();record=self.enable_route(service)
+        original=service.tracker.begin
+        def revoke_then_begin(*args,**kwargs):
+            service.registry.disable(record.capability_id,'operator_disabled',record.state_version)
+            return original(*args,**kwargs)
+        with patch.dict('os.environ',{'ADULT_PAYLOAD_ENCRYPTION_KEY':self.key}),patch(
+            'agent.adult.integrations.omniroute_chat.build_chat_model') as factory:
+            staged=service.submit('text.analyze','Safe context.',budget=TaskBudget(max_provider_calls=1))
+            with patch.object(service.tracker,'begin',side_effect=revoke_then_begin):
+                self.assertEqual('paused',service.run(staged.task_id).status)
+            factory.assert_not_called()
+        task=self.tasks.get_task(staged.task_id)
+        self.assertEqual((0,0),(task.attempt_count,task.provider_calls))
+
+    def test_transactional_route_check_refuses_expired_or_changed_candidate(self):
+        from dataclasses import replace
+        from agent.adult.models import CapabilityQuery,CostPolicy
+        service=self.service();self.enable_route(service)
+        query=CapabilityQuery('text.analyze',('text',),'text',service.cipher.fingerprint(b'sample'),service._fingerprint('text.analyze'))
+        route=service.registry.list_eligible(query,CostPolicy(1,0,False))[0]
+        now=datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+        future=(datetime.now(timezone.utc)+timedelta(hours=2)).isoformat().replace('+00:00','Z')
+        with self.tasks._transaction() as db:
+            self.assertTrue(service.registry.current_text_route_in_transaction(db,route,now))
+            self.assertFalse(service.registry.current_text_route_in_transaction(db,route,future))
+            self.assertFalse(service.registry.current_text_route_in_transaction(db,replace(route,capability_version='a'*64),now))
+        with self.tasks._connect() as db:
+            self.assertFalse(service.registry.current_text_route_in_transaction(db,route,now))
