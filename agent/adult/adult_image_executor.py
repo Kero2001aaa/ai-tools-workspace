@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hmac
+import time
 import uuid
 
 from agent.adult.adult_image_input import (
@@ -204,6 +205,12 @@ class AdultImageExecutor:
 
     def run(self, task_id: str, config_fingerprint: str, *, image: bytes | None = None,
             prompt: str | None = None, worker_id='bounded-image-worker') -> ImageExecutionResult:
+        return self._execute(task_id, config_fingerprint, image=image, prompt=prompt,
+                             worker_id=worker_id)
+
+    def _execute(self, task_id, config_fingerprint, *, image=None, prompt=None, worker_id,
+                 supervised=False, max_attempts=1, max_seconds=300):
+        started = time.monotonic()
         task = self.tasks.get_task(task_id)
         if task is None:
             raise ValueError('task_unavailable')
@@ -219,18 +226,29 @@ class AdultImageExecutor:
         # Unknown, successful or nonretryable prior attempts are never replayed.
         # This boundary comes first: after a committed attempt, missing cached
         # input is a recovery matter, never a needs_input re-upload request,
-        # because restore_input refuses that state.
+        # because restore_input refuses that state. Supervision may continue
+        # only known terminal retryable failures.
         prior = self.pipeline._attempt_tracker.list_summaries(task_id)
-        if task.attempt_count:
+        safe_prior = (supervised and bool(prior) and len(prior) == task.attempt_count
+                      and all(item.status in {'failed', 'timed_out'} and item.retryable
+                              and item.failure_class not in {'policy_rejection', 'budget_exhaustion'}
+                              for item in prior))
+        if task.attempt_count and not safe_prior:
             return ImageExecutionResult(task_id, task.status,
                                         error_code='prior_attempt_requires_recovery')
-        if (request is not None and request.payload_id is not None
+        if (not task.attempt_count and request is not None and request.payload_id is not None
                 and self._input_missing(task, request)):
             return self._needs_input(task.task_id, task)
         checkpoint = self.tasks.get_latest_checkpoint(task_id)
         recovered_pre_attempt = bool(checkpoint and checkpoint.reason == 'lease_recovered'
                                      and checkpoint.snapshot.total_attempts == 0)
-        lease = self.tasks.claim_task(task_id, worker_id, lease_seconds=300)
+        try:
+            lease = self.tasks.claim_task(task_id, worker_id, lease_seconds=300)
+        except TaskBudgetExhausted:
+            if not supervised:
+                raise
+            return ImageExecutionResult(task_id, self.tasks.get_task(task_id).status,
+                                        error_code='execution_budget_exhausted')
         try:
             task = self.tasks.get_task(task_id)
             request = self.tasks.get_task_request(task_id)
@@ -257,7 +275,7 @@ class AdultImageExecutor:
             # adapter could have been invoked by this executor. Preserve the step
             # identity and require an actual expired-lease recovery checkpoint.
             runnable_step = step.status == 'pending' or (
-                step.status == 'running' and recovered_pre_attempt
+                step.status == 'running' and (recovered_pre_attempt or (supervised and safe_prior))
                 and checkpoint is not None
                 and checkpoint.snapshot.active_step_id == step.step_id
                 and checkpoint.snapshot.payload_id == request.payload_id
@@ -273,39 +291,100 @@ class AdultImageExecutor:
                 task = self.tasks.transition(task_id, {'analyzing'}, 'running', 'state_transition',
                                              task.state_version, lease=lease)
             excluded = {item.approach_key for item in prior}
-            outcome = self.pipeline.run_one_attempt(task, step.step_id, request,
-                                                    config_fingerprint, excluded, lease=lease)
-            task = self.tasks.get_task(task_id)
-            if task.cancel_requested:
-                self.tasks.release_lease(lease, task.state_version, 'cancelled', 'cancel_observed')
-                return ImageExecutionResult(task_id, 'cancelled')
-            if outcome.attempt is not None:
-                step = self.tasks.save_step(task_id, replace(step, status='running',
-                                            started_at=None, completed_at=None),
-                                            lease, task.state_version)
+            for segment_index in range(max_attempts):
+                if (supervised and task.failed_attempts_since_approval == 5
+                        and task.max_provider_calls > 0 and task.provider_calls >= task.max_provider_calls):
+                    self._checkpoint(task, step, request, lease)
+                    task = self.tasks.get_task(task_id)
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'state_transition',
+                                          task.state_version, lease=lease)
+                    return ImageExecutionResult(task_id, 'failed', error_code='execution_budget_exhausted')
+                if supervised and task.failed_attempts_since_approval == 5:
+                    try:
+                        self._checkpoint(task, step, request, lease, waiting=True)
+                    except TaskBudgetExhausted:
+                        pass
+                    current = self.tasks.get_task(task_id)
+                    return ImageExecutionResult(task_id, current.status, error_code='approval_required')
+                outcome = self.pipeline.run_one_attempt(task, step.step_id, request,
+                                                        config_fingerprint, excluded, lease=lease)
                 task = self.tasks.get_task(task_id)
-            if outcome.status == 'succeeded':
-                # Only the pipeline's evaluated, committed artifact can become a task result.
-                self.tasks.save_step(task_id, replace(step, status='succeeded',
-                    output_artifact_id=outcome.artifact.artifact_id, started_at=None, completed_at=None),
-                    lease, task.state_version)
+                if task.cancel_requested:
+                    self.tasks.release_lease(lease, task.state_version, 'cancelled', 'cancel_observed')
+                    return ImageExecutionResult(task_id, 'cancelled')
+                if outcome.attempt is not None and step.status != 'running':
+                    step = self.tasks.save_step(task_id, replace(step, status='running',
+                                                started_at=None, completed_at=None),
+                                                lease, task.state_version)
+                    task = self.tasks.get_task(task_id)
+                if outcome.status == 'succeeded':
+                    # Only the pipeline's evaluated, committed artifact can become a task result.
+                    self.tasks.save_step(task_id, replace(step, status='succeeded',
+                        output_artifact_id=outcome.artifact.artifact_id, started_at=None, completed_at=None),
+                        lease, task.state_version)
+                    task = self.tasks.get_task(task_id)
+                    task = self.tasks.transition(task_id, {'running'}, 'evaluating', 'state_transition',
+                                                 task.state_version, lease=lease)
+                    self._checkpoint(task, step, request, lease, artifact_id=outcome.artifact.artifact_id, completed=True)
+                    task = self.tasks.get_task(task_id)
+                    task = self.tasks.transition(task_id, {'evaluating'}, 'completed', 'state_transition',
+                                                 task.state_version, lease=lease)
+                    return ImageExecutionResult(task_id, task.status, task.latest_result_artifact_id)
+                if outcome.attempt is None and self._input_missing(task, request):
+                    # Input lost between the pre-run check and a zero-attempt
+                    # outcome is the same recoverable absence, not a paused
+                    # end. After a committed attempt it stays a recovery
+                    # matter: restore_input refuses that state, so no
+                    # needs_input re-upload request is ever implied.
+                    if not task.attempt_count:
+                        self.tasks.release_lease(lease, task.state_version, 'needs_input')
+                        return ImageExecutionResult(task_id, 'needs_input', error_code='input_required')
+                    self._checkpoint(task, step, request, lease)
+                    task = self.tasks.get_task(task_id)
+                    self.tasks.release_lease(lease, task.state_version, 'paused')
+                    return ImageExecutionResult(task_id, 'paused', error_code=outcome.error_code)
+                if not supervised:
+                    self._checkpoint(task, step, request, lease)
+                    task = self.tasks.get_task(task_id)
+                    self.tasks.release_lease(lease, task.state_version, 'paused')
+                    return ImageExecutionResult(task_id, 'paused', error_code=outcome.error_code)
+                attempts = self.pipeline._attempt_tracker.list_summaries(task_id)
+                excluded.update(item.approach_key for item in attempts)
+                if (task.failed_attempts_since_approval == 5 and task.max_provider_calls > 0
+                        and task.provider_calls >= task.max_provider_calls):
+                    self._checkpoint(task, step, request, lease)
+                    task = self.tasks.get_task(task_id)
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'state_transition',
+                                          task.state_version, lease=lease)
+                    return ImageExecutionResult(task_id, 'failed', error_code=outcome.error_code)
+                if task.failed_attempts_since_approval == 5:
+                    try:
+                        self._checkpoint(task, step, request, lease, waiting=True)
+                    except TaskBudgetExhausted:
+                        pass
+                    current = self.tasks.get_task(task_id)
+                    return ImageExecutionResult(task_id, current.status, error_code=outcome.error_code)
+                if outcome.status == 'rejected':
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'state_transition',
+                                          task.state_version, lease=lease)
+                    return ImageExecutionResult(task_id, 'failed', error_code=outcome.error_code)
+                retryable = (outcome.attempt is not None and outcome.attempt.retryable
+                             and outcome.attempt.status in {'failed', 'timed_out'})
+                self._checkpoint(task, step, request, lease)
                 task = self.tasks.get_task(task_id)
-                task = self.tasks.transition(task_id, {'running'}, 'evaluating', 'state_transition',
-                                             task.state_version, lease=lease)
-                self._checkpoint(task, step, request, lease, artifact_id=outcome.artifact.artifact_id, completed=True)
-                task = self.tasks.get_task(task_id)
-                task = self.tasks.transition(task_id, {'evaluating'}, 'completed', 'state_transition',
-                                             task.state_version, lease=lease)
-                return ImageExecutionResult(task_id, task.status, task.latest_result_artifact_id)
-            if outcome.attempt is None and self._input_missing(task, request):
-                # Input lost between the pre-run check and a zero-attempt
-                # outcome is the same recoverable absence, not a paused end.
-                self.tasks.release_lease(lease, task.state_version, 'needs_input')
-                return ImageExecutionResult(task_id, 'needs_input', error_code='input_required')
-            self._checkpoint(task, step, request, lease)
-            task = self.tasks.get_task(task_id)
-            self.tasks.release_lease(lease, task.state_version, 'paused')
-            return ImageExecutionResult(task_id, 'paused', error_code=outcome.error_code)
+                exhausted = (task.attempt_count >= task.max_total_attempts
+                    or datetime.now(timezone.utc) >= datetime.fromisoformat(task.deadline_at.replace('Z', '+00:00'))
+                    or task.provider_calls >= task.max_provider_calls and task.max_provider_calls > 0)
+                if exhausted:
+                    self.tasks.transition(task_id, {'running'}, 'failed', 'state_transition',
+                                          task.state_version, lease=lease)
+                    return ImageExecutionResult(task_id, 'failed', error_code=outcome.error_code)
+                if not retryable:
+                    self.tasks.release_lease(lease, task.state_version, 'paused')
+                    return ImageExecutionResult(task_id, 'paused', error_code=outcome.error_code)
+                if segment_index + 1 >= max_attempts or time.monotonic() - started >= max_seconds:
+                    self.tasks.release_lease(lease, task.state_version, 'checkpointed', 'yielded')
+                    return ImageExecutionResult(task_id, 'checkpointed', error_code=outcome.error_code)
         except Exception:
             # Best effort cancellation/yield never invents success. Failed or
             # unknown writes remain visible and require reconciliation.
