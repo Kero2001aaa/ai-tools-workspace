@@ -784,6 +784,32 @@ class AdultAttemptTracker:
                               (task_id,)).fetchall()
             return tuple(self._summary(row) for row in rows)
 
+    def list_skipped(self, task_id: str, limit: int = 20) -> tuple[dict, ...]:
+        """Latest bounded duplicate audit, separate from actual provider attempts.
+
+        Do not return audit metadata, approach keys, error summaries or content.
+        Join to the original attempt to avoid trusting duplicate-event metadata.
+        """
+        _validate_identifier("task_id", task_id)
+        if type(limit) is not int or not 1 <= limit <= 20:
+            raise AttemptValidationError("Invalid skipped history limit.")
+        db = self._store._connect()
+        try:
+            rows = db.execute(
+                """SELECT e.event_id,e.created_at,a.attempt_id,a.attempt_no,
+                          a.adapter_id,a.adapter_version,a.provider_id,a.model_id,
+                          a.tool_id,a.status
+                   FROM adult_attempt_events e
+                   JOIN adult_attempts a ON a.task_id=e.task_id
+                       AND a.approach_key=e.approach_key
+                   WHERE e.task_id=? AND e.event_type='approach_skipped'
+                   ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?""",
+                (task_id, limit),
+            ).fetchall()
+            return tuple({**dict(row), "skipped_as_duplicate": True} for row in reversed(rows))
+        finally:
+            db.close()
+
     def find_prior_approach(
         self, task_id: str, approach_key: str
     ) -> AttemptSummary | None:
