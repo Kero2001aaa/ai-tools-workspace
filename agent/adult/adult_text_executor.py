@@ -205,9 +205,8 @@ class AdultTextExecutor:
             )
             if not runnable_step or step.config_fingerprint != config_fingerprint:
                 raise ValueError('step_requires_recovery')
-            step = self.tasks.save_step(task_id, replace(step, status='running', started_at=None,
-                                         completed_at=None), lease, task.state_version)
-            task = self.tasks.get_task(task_id)
+            # Keep a zero-attempt execution step pending. Input/route loss
+            # before begin() commits must not strand an unattempted running step.
             if task.status == 'analyzing':
                 task = self.tasks.transition(task_id, {'analyzing'}, 'running', 'state_transition',
                                              task.state_version, lease=lease)
@@ -232,6 +231,16 @@ class AdultTextExecutor:
                 if task.cancel_requested:
                     self.tasks.release_lease(lease, task.state_version, 'cancelled', 'cancel_observed')
                     return TextExecutionResult(task_id, 'cancelled')
+                if outcome.attempt is not None and step.status != 'running':
+                    step = self.tasks.save_step(task_id, replace(step, status='running',
+                        started_at=None, completed_at=None), lease, task.state_version)
+                    task = self.tasks.get_task(task_id)
+                if outcome.attempt is None and request.retention_policy == 'ephemeral':
+                    try:
+                        self.intake.artifacts.load_input(request.payload_id, task_id)
+                    except PayloadUnavailable:
+                        self.tasks.release_lease(lease, task.state_version, 'needs_input')
+                        return TextExecutionResult(task_id, 'needs_input', error_code='input_required')
                 if outcome.status == 'succeeded':
                     # Only the pipeline's evaluated, committed artifact can become a task result.
                     self.tasks.save_step(task_id, replace(step, status='succeeded',
