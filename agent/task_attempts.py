@@ -8,6 +8,10 @@ COLUMNS = {'task_id','attempt_no','plan_step_id','method_fingerprint','input_fin
            'error_code','result_sha256','retry_reason'}
 
 
+class RetryBlockedError(ValueError):
+    """A nonretryable attempt needs an explicit, unverified repair assertion."""
+
+
 def initialize(db):
     db.execute('''CREATE TABLE IF NOT EXISTS task_attempts (
         task_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, plan_step_id TEXT NOT NULL,

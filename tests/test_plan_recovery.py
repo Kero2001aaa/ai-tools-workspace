@@ -146,7 +146,7 @@ class PlanRecoveryTests(unittest.TestCase):
         with patch('agent.task_worker.execute_task') as worker:
             self.assertEqual('paused', recovered.run_next_step(self.plan['id'])['status'])
             worker.assert_not_called()
-        recovered.retry_failed_step(self.plan['id'], self.plan['steps'][0]['id'])
+        recovered.retry_failed_step(self.plan['id'], self.plan['steps'][0]['id'], retry_reason="synthetic_fixture_repaired")
         with patch('agent.task_worker.execute_task', return_value={'safe': True}):
             result = recovered.run_next_step(self.plan['id'])
         self.assertEqual(old['id'], result['task_id'])

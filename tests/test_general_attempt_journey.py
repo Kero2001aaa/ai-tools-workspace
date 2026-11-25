@@ -46,6 +46,40 @@ class GeneralAttemptJourneyTests(unittest.TestCase):
             with patch('agent.task_worker.execute_task') as worker:
                 self.assertEqual('completed',restored_store.run_until_done(plan['id'])['status']);worker.assert_not_called()
 
+    def test_nonretryable_default_or_empty_retry_refused_atomically(self):
+        from agent.task_attempts import RetryBlockedError
+        for error in (PermissionError(), RuntimeError(), ValueError(), sqlite3.OperationalError()):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as tmp:
+                store=PlanStore(Path(tmp)/'p.sqlite3');p=store.create_plan('Blocked',[{'task_type':'workspace_status'}])
+                with patch('agent.task_worker.execute_task',side_effect=error):f=store.run_next_step(p['id'])
+                before=store.get_plan(p['id']);task=store.queue.get(f['task_id']);history=store.queue.list_plan_attempts(f['task_id'])
+                with patch('agent.task_worker.execute_task') as worker:
+                    for reason in ('explicit_retry_requested', '', '   ', ' explicit_retry_requested '):
+                        with self.assertRaises(RetryBlockedError):store.retry_failed_step(p['id'],p['steps'][0]['id'],reason)
+                        self.assertEqual(before,store.get_plan(p['id']))
+                        self.assertEqual(task,store.queue.get(f['task_id']))
+                        self.assertEqual(history,store.queue.list_plan_attempts(f['task_id']))
+                    self.assertEqual('paused',store.run_next_step(p['id'])['status']);worker.assert_not_called()
+                # A specific reason is an operator assertion, not proof of repair.
+                with patch('agent.task_worker.execute_task',side_effect=error):
+                    store.retry_failed_step(p['id'],p['steps'][0]['id'],'operator_asserts_external_condition_changed')
+                    store.run_next_step(p['id'])
+                self.assertEqual(2,len(store.queue.list_plan_attempts(f['task_id'])))
+                with self.assertRaises(RetryBlockedError):store.retry_failed_step(p['id'],p['steps'][0]['id'])
+
+    def test_transient_and_legacy_default_retry_preserved(self):
+        for legacy in (False,True):
+            with self.subTest(legacy=legacy), tempfile.TemporaryDirectory() as tmp:
+                store=PlanStore(Path(tmp)/'p.sqlite3');p=store.create_plan('Default',[{'task_type':'workspace_status'}])
+                with patch('agent.task_worker.execute_task',side_effect=TimeoutError() if not legacy else RuntimeError()):f=store.run_next_step(p['id'])
+                if legacy:
+                    with store._connect() as db:db.execute('DELETE FROM task_attempts WHERE task_id=?',(f['task_id'],))
+                with patch('agent.task_worker.execute_task') as worker:
+                    store.retry_failed_step(p['id'],p['steps'][0]['id']);worker.assert_not_called()
+                self.assertEqual('pending',store.queue.get(f['task_id'])['status'])
+                with patch('agent.task_worker.execute_task',wraps=execute_task) as worker:
+                    self.assertEqual('step_succeeded',store.run_next_step(p['id'])['status']);self.assertEqual(1,worker.call_count)
+
     def test_fingerprint_canonicalization_and_different_inputs(self):
         self.assertEqual(fingerprints('memory_recent',{'limit':5}),fingerprints('memory_recent',{'limit':5}))
         self.assertNotEqual(fingerprints('memory_recent',{'limit':5})[1],fingerprints('memory_recent',{'limit':6})[1])

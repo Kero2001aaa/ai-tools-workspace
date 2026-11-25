@@ -69,7 +69,7 @@ class PlanQueueBindingTests(unittest.TestCase):
         self.assertEqual('paused',outcome['status'])
         self.assertEqual('failed',self.plans.queue.get(self.identity())['status'])
         self.assertEqual('paused',self.plans.run_next_step(self.plan['id'])['status'])
-        self.plans.retry_failed_step(self.plan['id'],self.plan['steps'][0]['id'])
+        self.plans.retry_failed_step(self.plan['id'],self.plan['steps'][0]['id'], retry_reason="synthetic_fixture_repaired")
         with patch('agent.task_worker.execute_task',return_value={'retry':True}):
             result=self.plans.run_next_step(self.plan['id'])
         self.assertEqual(self.identity(),result['task_id'])
@@ -121,7 +121,7 @@ class PlanQueueBindingTests(unittest.TestCase):
         with patch('agent.task_worker.execute_task',side_effect=RuntimeError('known failure')):
             self.plans.run_next_step(self.plan['id'])
         before=self.path.read_bytes()
-        with self.assertRaises(ValueError):self.plans.retry_failed_step(other['id'],self.plan['steps'][0]['id'])
+        with self.assertRaises(ValueError):self.plans.retry_failed_step(other['id'],self.plan['steps'][0]['id'], retry_reason="synthetic_fixture_repaired")
         self.assertEqual(before,self.path.read_bytes())
         with self.plans._connect() as db:
             db.execute("UPDATE plan_steps SET task_type='image.generate' WHERE plan_id=?",(other['id'],))
@@ -133,7 +133,7 @@ class PlanQueueBindingTests(unittest.TestCase):
         with patch('agent.task_worker.execute_task',side_effect=RuntimeError('known failure')):
             second=self.plans.run_next_step(self.plan['id'])
         self.assertEqual('paused',second['status'])
-        self.plans.retry_failed_step(self.plan['id'],self.plan['steps'][1]['id'])
+        self.plans.retry_failed_step(self.plan['id'],self.plan['steps'][1]['id'], retry_reason="synthetic_fixture_repaired")
         self.plans.run_next_step(self.plan['id'])
         self.assertEqual(before,self.plans.queue.get(first['task_id']))
     def test_supervisor_reconciles_durable_success_while_plan_still_running(self):

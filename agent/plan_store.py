@@ -351,8 +351,10 @@ class PlanStore:
         return self.get_plan(plan_id)
 
     def retry_failed_step(self, plan_id, step_id, retry_reason="explicit_retry_requested"):
-        if not isinstance(retry_reason,str) or not 1<=len(retry_reason)<=240 or any(ord(c)<32 for c in retry_reason):
-            raise ValueError("A bounded explicit retry reason is required")
+        if not isinstance(retry_reason,str) or not 1<=len(retry_reason.strip())<=240 or len(retry_reason)>240 or any(ord(c)<32 for c in retry_reason):
+            from agent.task_attempts import RetryBlockedError
+            raise RetryBlockedError("A bounded explicit retry reason is required")
+        retry_reason = retry_reason.strip()
         now = _stamp(_now())
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -363,6 +365,14 @@ class PlanStore:
             task=db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
             if task is not None and task["status"] != "failed":
                 raise ValueError("Only known failed execution may be explicitly retried")
+            step = db.execute("SELECT status FROM plan_steps WHERE id=? AND plan_id=?",(step_id,plan_id)).fetchone()
+            if step is None or step["status"] != "failed":
+                raise ValueError("No failed step with that ID exists in this plan")
+            latest = db.execute("SELECT status,retryable FROM task_attempts WHERE task_id=? ORDER BY attempt_no DESC LIMIT 1",(task_id,)).fetchone()
+            if latest is not None and (latest["status"] != "failed" or
+                    (not latest["retryable"] and retry_reason == "explicit_retry_requested")):
+                from agent.task_attempts import RetryBlockedError
+                raise RetryBlockedError("REPAIR_ASSERTION_REQUIRED: record a specific repair or changed-condition reason; assertion is unverified")
             changed = db.execute(
                 """UPDATE plan_steps SET status='pending',last_error=NULL,result=NULL,
                 started_at=NULL,completed_at=NULL WHERE id=? AND plan_id=? AND status='failed'""",

@@ -62,7 +62,7 @@ class PlanStoreTests(unittest.TestCase):
         self.assertEqual("paused", failed["status"])
         step = self.store.get_plan(plan["id"])["steps"][0]
         self.assertEqual("failed", step["status"])
-        self.store.retry_failed_step(plan["id"], step["id"])
+        self.store.retry_failed_step(plan["id"], step["id"], retry_reason="synthetic_fixture_repaired")
         self.assertEqual("pending", self.store.get_plan(plan["id"])["steps"][0]["status"])
         result = self.store.run_next_step(plan["id"])
         self.assertEqual("completed", result["plan_status"])
@@ -201,7 +201,7 @@ class PlanStoreTests(unittest.TestCase):
     def test_rejects_retry_for_non_failed_step(self):
         plan = self.store.create_plan("No retry", [{"task_type": "workspace_status"}])
         with self.assertRaises(ValueError):
-            self.store.retry_failed_step(plan["id"], plan["steps"][0]["id"])
+            self.store.retry_failed_step(plan["id"], plan["steps"][0]["id"], retry_reason="synthetic_fixture_repaired")
 
 
 if __name__ == "__main__":
