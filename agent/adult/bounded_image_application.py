@@ -28,11 +28,8 @@ class BoundedImageApplication:
 
     @staticmethod
     def _snapshot(task):
-        return {name: getattr(task, name) for name in (
-            'task_id', 'task_type', 'status', 'created_at', 'updated_at', 'deadline_at',
-            'attempt_count', 'provider_calls', 'current_step_id', 'selected_adapter',
-            'selected_provider', 'selected_model', 'selected_tool', 'latest_result_artifact_id',
-            'last_error_code', 'user_action_required')}
+        from agent.adult.safe_task_views import task_snapshot
+        return task_snapshot(task)
 
     def _outcome(self, outcome):
         task = self._task(outcome.task_id)
@@ -69,10 +66,8 @@ class BoundedImageApplication:
         if type(limit) is not int or not 1 <= limit <= 20:
             raise ValueError('invalid_page_limit')
         attempts = self.executor.pipeline._attempt_tracker.list_summaries(task_id)
-        return [{name: getattr(item, name) for name in (
-            'attempt_id', 'attempt_no', 'adapter_id', 'adapter_version', 'provider_id',
-            'model_id', 'status', 'elapsed_ms', 'error_code', 'cost_microusd')}
-            for item in attempts[-limit:]]
+        from agent.adult.safe_task_views import attempt_summary
+        return [attempt_summary(item) for item in attempts[-limit:]]
 
     @staticmethod
     def _bounds(max_attempts, max_seconds):
