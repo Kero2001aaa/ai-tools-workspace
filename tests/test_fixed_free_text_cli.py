@@ -103,3 +103,6 @@ class FixedFreeCliTests(unittest.TestCase):
         self.assertEqual(b'Safe',base64.b64decode(artifact['data_base64']))
         self.assertFalse(artifact['complete']);self.assertEqual(4,artifact['next_offset'])
         self.assertEqual(1,self.call('result',task,'--offset','-1').returncode)
+        # Completed output is independent of provider credentials/availability.
+        key_only={k:v for k,v in self.env.items() if k not in {'ADULT_OMNIROUTE_BASE_URL','ADULT_OMNIROUTE_API_KEY'}}
+        self.assertEqual(0,self.call('result',task,env=key_only).returncode)
