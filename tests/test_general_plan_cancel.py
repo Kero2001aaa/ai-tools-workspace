@@ -83,3 +83,30 @@ class GeneralPlanCancelTests(unittest.TestCase):
                 self.assertEqual(before,PlanStore(root/'plans.db').get_plan(plan['id']))
                 self.assertEqual(1,len(PlanStore(root/'plans.db').queue.list_tasks()))
             asyncio.run(journey())
+
+    def test_worker_claim_wins_cancel_refuses_without_disturbing_completion(self):
+        import threading
+        with tempfile.TemporaryDirectory() as directory:
+            store=PlanStore(Path(directory)/'plans.db');plan=store.create_plan('claim first',[{'task_type':'workspace_status'},{'task_type':'workspace_status'}])
+            entered=threading.Event();release=threading.Event();outcomes=[];failures=[]
+            def execute(claim):
+                entered.set()
+                if not release.wait(3):raise RuntimeError('test timeout')
+                return {'synthetic':'original completion'}
+            def run():
+                try:outcomes.append(store.run_next_step(plan['id']))
+                except BaseException as error:failures.append(error)
+            with patch('agent.task_worker.execute_task',side_effect=execute):
+                worker=threading.Thread(target=run);worker.start()
+                try:
+                    self.assertTrue(entered.wait(3))
+                    before=store.get_plan(plan['id']);task=store.queue.list_tasks()[0]
+                    self.assertEqual(('running',1),(task['status'],task['attempts']))
+                    with self.assertRaisesRegex(ValueError,'inactive'):
+                        store.cancel_plan(plan['id'],before['updated_at'])
+                    self.assertEqual(before,store.get_plan(plan['id']));self.assertEqual(task,store.queue.get(task['id']))
+                finally:release.set();worker.join(3)
+            self.assertFalse(worker.is_alive());self.assertEqual([],failures)
+            self.assertEqual(task['id'],outcomes[0]['task_id'])
+            done=store.queue.get(task['id']);self.assertEqual(('succeeded',1,{'synthetic':'original completion'}),(done['status'],done['attempts'],done['result']))
+            after=store.get_plan(plan['id']);self.assertEqual(['succeeded','pending'],[s['status'] for s in after['steps']])
