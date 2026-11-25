@@ -87,3 +87,16 @@ zero-attempt ephemeral task in needs_input. It restores the original transient
 reference, persists one guarded queue transition and runs one bounded segment.
 It is not `resume_task`, waiting-user approval or a general changed-input API.
 See EPHEMERAL_INPUT_RESTORE.md for failure/restart semantics and boundaries.
+
+Completed and cancelled application tasks now call the existing input-only
+cleanup method. This removes retained/transient original input, not generated
+outputs, task history or checkpoints. The run/restore response includes a
+separate input_cleanup status. Cancellation keeps its existing snapshot fields
+and adds that status. Cleanup failure is a fixed code: it cannot mask durable
+completion/cancellation, delete output, publish feedback or trigger another
+provider attempt. An explicit terminal run/cancel can retry cleanup safely.
+Metadata reads remain read-only. Failed/paused tasks keep bounded input according
+to their existing retention policy because they may still need recovery.
+This application wiring does not claim a background retention janitor or change
+the existing keyless CLI cancel implementation; direct low-level service/store
+callers remain responsible for their input lifecycle.
