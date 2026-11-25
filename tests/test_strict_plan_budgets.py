@@ -47,7 +47,7 @@ class StrictPlanBudgetTests(unittest.TestCase):
         # Build each version in a fresh process to avoid module/global-store leakage.
         repository=Path(__file__).resolve().parents[1]
         current=(repository/'agent/plan_mcp_server.py').read_text()
-        previous=current.replace('from pydantic import StrictInt\n','').replace('max_steps: StrictInt','max_steps: int').replace('max_seconds: StrictInt','max_seconds: int')
+        previous=current.replace('from pydantic import StrictInt\n','').replace('max_steps: StrictInt','max_steps: int').replace('max_seconds: StrictInt','max_seconds: int').replace('expected_failure_count: StrictInt','expected_failure_count: int')
         runner='''import asyncio,json,sys
 namespace={'__name__':'schema_probe'}
 exec(sys.stdin.read(),namespace)

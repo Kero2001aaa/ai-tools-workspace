@@ -75,6 +75,8 @@ class PlanStore:
                 )
             """)
             db.execute("CREATE INDEX IF NOT EXISTS idx_plan_steps_status ON plan_steps(plan_id, status, position)")
+            from agent.plan_continuation import initialize
+            initialize(db)
 
     def _connect(self):
         db = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
@@ -159,6 +161,8 @@ class PlanStore:
                 db.commit()
                 return {"status":"paused","plan_id":plan_id,"step":None,
                         "reason":"A failed step must be explicitly retried before continuing"}
+            from agent.plan_continuation import require_below_ceiling
+            require_below_ceiling(db, plan_id)
             step = next((step for step in steps if step["status"]!="succeeded"),None)
             if step is None:
                 db.execute("UPDATE plans SET status='completed',updated_at=? WHERE id=?",(now_stamp,plan_id))
@@ -299,8 +303,10 @@ class PlanStore:
             return {"decision": "stop", "status": status, "plan_id": plan_id,
                     "reason": "Plan is already terminal", "run": None}
         if status == "paused":
-            return {"decision": "stop", "status": status, "plan_id": plan_id,
-                    "reason": "A failed step requires an explicit retry", "run": None}
+            checkpoint = self.get_failure_checkpoint(plan_id)
+            return {"decision": "wait" if checkpoint["continuation_required"] else "stop",
+                    "status": status, "plan_id": plan_id, "failure_checkpoint": checkpoint,
+                    "reason": "Five recorded failures require an explicit continuation decision" if checkpoint["continuation_required"] else "A failed step requires an explicit retry", "run": None}
         # A running plan may have a committed queue outcome not yet projected
         # into plan_steps after interruption. Targeted claims make reconciliation
         # safe; genuinely running/unknown work returns wait without redispatch.
@@ -361,6 +367,8 @@ class PlanStore:
             plan = db.execute("SELECT status FROM plans WHERE id=?",(plan_id,)).fetchone()
             if plan is None or plan["status"] == "cancelled":
                 raise ValueError("Cancelled or missing plan cannot be retried")
+            from agent.plan_continuation import require_below_ceiling
+            require_below_ceiling(db, plan_id)
             task_id=str(uuid.uuid5(uuid.NAMESPACE_URL,"workspace-plan-step:"+step_id))
             task=db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
             if task is not None and task["status"] != "failed":
@@ -385,3 +393,27 @@ class PlanStore:
             db.execute("UPDATE plans SET status='queued',updated_at=? WHERE id=?", (now, plan_id))
             db.commit()
         return self.get_plan(plan_id)
+
+    def get_failure_checkpoint(self, plan_id):
+        """Read the persisted failure/decision watermark; never dispatch or infer consent."""
+        from agent.plan_continuation import checkpoint
+        with self._connect() as db:
+            db.execute("BEGIN")
+            plan = db.execute("SELECT status,updated_at FROM plans WHERE id=?",(plan_id,)).fetchone()
+            if plan is None:
+                raise ValueError("Plan not found")
+            return {"plan_id":plan_id, "status":plan["status"], "updated_at":plan["updated_at"], **checkpoint(db,plan_id)}
+
+    def continue_after_decision(self, plan_id, expected_updated_at, expected_failure_count, decision_id):
+        """Persist a trusted caller's explicit continue decision, never execute/requeue.
+
+        This API cannot authenticate a human reply. The trusted entry point owns
+        that check; a stored record is software state, not owner consent proof.
+        Nonretryable repair assertions remain independently required.
+        """
+        from agent.plan_continuation import decide
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            result = decide(db,plan_id,expected_updated_at,expected_failure_count,decision_id,_stamp(_now()))
+            db.commit()
+            return result

@@ -63,5 +63,21 @@ def cancel_plan(plan_id: str, expected_updated_at: str) -> dict:
     return store.cancel_plan(plan_id, expected_updated_at)
 
 
+@mcp.tool()
+def get_failure_checkpoint(plan_id: str) -> dict:
+    """Inspect recorded failures and whether the five-failure continuation gate is closed."""
+    return store.get_failure_checkpoint(plan_id)
+
+
+@mcp.tool()
+def continue_after_decision(plan_id: str, expected_updated_at: str, expected_failure_count: StrictInt, decision_id: str) -> dict:
+    """Record a separately obtained explicit continue decision without dispatch or requeue.
+
+    Trusted entry must authenticate the owner's reply. This tool does not prove
+    owner identity or waive permissions, repair gates or execution authority.
+    """
+    return store.continue_after_decision(plan_id,expected_updated_at,expected_failure_count,decision_id)
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")

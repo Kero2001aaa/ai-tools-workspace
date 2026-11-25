@@ -14,6 +14,46 @@ from agent.plan_store import PlanStore
 
 
 class PlanMCPJourneyTests(unittest.TestCase):
+    def test_fifth_failure_mcp_explicit_continue_no_dispatch_then_real_repair(self):
+        import uuid
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);memory=MemoryStore(root/'m.sqlite3');memory.remember('synthetic repair note')
+            import sqlite3
+            with sqlite3.connect(memory.db_path) as db:db.execute("UPDATE memories SET metadata_json='invalid'")
+            store=PlanStore(root/'p.sqlite3');plan=store.create_plan('MCP ceiling',[{'task_type':'memory_recent'}])
+            # Genuine production worker failures on corrupt synthetic metadata, individually explicit retries.
+            from unittest.mock import patch
+            with patch.dict(os.environ,{'WORKSPACE_MEMORY_DB':str(memory.db_path)}):
+                for index in range(5):
+                    if index:store.retry_failed_step(plan['id'],plan['steps'][0]['id'],'synthetic_repair_assertion_unverified')
+                    self.assertEqual('paused',store.run_next_step(plan['id'])['status'])
+            tid=store.queue.list_tasks()[0]['id']
+            parameters=StdioServerParameters(command=sys.executable,args=['-m','agent.plan_mcp_server'],
+                cwd=str(Path(__file__).resolve().parents[1]),env={**os.environ,
+                'WORKSPACE_PLAN_DB':str(store.db_path),'WORKSPACE_MEMORY_DB':str(memory.db_path)})
+            async def journey():
+                async with stdio_client(parameters) as (read,write):
+                    async with ClientSession(read,write) as session:
+                        await session.initialize()
+                        response=await session.call_tool('get_failure_checkpoint',{'plan_id':plan['id']})
+                        state=json.loads(response.content[0].text);self.assertTrue(state['continuation_required'])
+                        response=await session.call_tool('retry_failed_plan_step',{'plan_id':plan['id'],'step_id':plan['steps'][0]['id'],'retry_reason':'specific_repair_assertion'})
+                        self.assertTrue(response.isError);self.assertIn('EXPLICIT_CONTINUATION_REQUIRED',response.content[0].text)
+                        args={'plan_id':plan['id'],'expected_updated_at':state['updated_at'],'expected_failure_count':5,'decision_id':str(uuid.uuid4())}
+                        response=await session.call_tool('continue_after_decision',args)
+                        self.assertFalse(response.isError);self.assertFalse(json.loads(response.content[0].text)['dispatched'])
+                        response=await session.call_tool('continue_after_decision',args);self.assertTrue(response.isError)
+                        self.assertEqual(5,store.queue.get(tid)['attempts'])
+                        response=await session.call_tool('retry_failed_plan_step',{'plan_id':plan['id'],'step_id':plan['steps'][0]['id']})
+                        self.assertTrue(response.isError);self.assertIn('REPAIR_ASSERTION_REQUIRED',response.content[0].text)
+                        with sqlite3.connect(memory.db_path) as db:db.execute("UPDATE memories SET metadata_json='{}'")
+                        response=await session.call_tool('retry_failed_plan_step',{'plan_id':plan['id'],'step_id':plan['steps'][0]['id'],'retry_reason':'synthetic_memory_metadata_repaired'})
+                        self.assertFalse(response.isError)
+                        response=await session.call_tool('run_next_plan_step',{'plan_id':plan['id']})
+                        self.assertFalse(response.isError);self.assertEqual('completed',json.loads(response.content[0].text)['plan_status'])
+            asyncio.run(journey())
+            self.assertEqual(6,store.queue.get(tid)['attempts'])
+
     def test_stdio_restart_memory_scope_and_completed_no_replay(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -29,7 +69,7 @@ class PlanMCPJourneyTests(unittest.TestCase):
                         await session.initialize()
                         tools = await session.list_tools()
                         self.assertEqual({'create_plan', 'get_plan', 'list_plans', 'run_next_plan_step',
-                            'run_plan_until_done', 'supervise_plan', 'retry_failed_plan_step', 'cancel_plan'}, {tool.name for tool in tools.tools})
+                            'run_plan_until_done', 'supervise_plan', 'retry_failed_plan_step', 'cancel_plan', 'get_failure_checkpoint', 'continue_after_decision'}, {tool.name for tool in tools.tools})
                         response = await session.call_tool('create_plan', {'title': 'Real MCP checkpoint', 'steps': [
                             {'task_type': 'workspace_status'}, {'task_type': 'memory_recent', 'payload': {'limit': 5}}]})
                         self.assertFalse(response.isError)

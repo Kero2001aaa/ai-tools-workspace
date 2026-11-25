@@ -29,7 +29,7 @@ class ResearchRecoveryTests(unittest.TestCase):
             self.assertEqual(old, recovered)
             self.assertEqual(snapshot, recovered_path.read_bytes())
             with sqlite3.connect(recovered_path) as db:
-                self.assertEqual({'plans', 'plan_steps', 'tasks', 'task_attempts'}, {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")})
+                self.assertEqual({'plans', 'plan_steps', 'tasks', 'task_attempts', 'plan_continuations'}, {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")})
             restored = PlanStore(recovered_path)
             restored.run_until_done(plan['id'])
             self.assertEqual(before['steps'][0], restored.get_plan(plan['id'])['steps'][0])

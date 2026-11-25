@@ -101,7 +101,9 @@ class GeneralAttemptJourneyTests(unittest.TestCase):
     def test_legacy_backup_and_cancel_not_forced_to_migrate(self):
         with tempfile.TemporaryDirectory() as tmp:
             db=Path(tmp)/'old.sqlite3';store=PlanStore(db);store.create_plan('Old',[{'task_type':'workspace_status'}])
-            with sqlite3.connect(db) as c:c.execute('DROP TABLE task_attempts')
+            with sqlite3.connect(db) as c:
+                c.execute('DROP TABLE plan_continuations')
+                c.execute('DROP TABLE task_attempts')
             copy_database(db,Path(tmp)/'old-backup.sqlite3')
             with sqlite3.connect(db) as c:self.assertIsNone(c.execute("SELECT name FROM sqlite_master WHERE name='task_attempts'").fetchone())
 

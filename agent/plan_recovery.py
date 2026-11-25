@@ -14,11 +14,14 @@ import tempfile
 import time
 
 MAX_BYTES = 64 * 1024 * 1024
-TABLES = {"plans", "plan_steps", "tasks", "task_attempts"}
-LEGACY_TABLES = TABLES - {"task_attempts"}
+TABLES = {"plans", "plan_steps", "tasks", "task_attempts", "plan_continuations"}
+JOURNAL_TABLES = TABLES - {"plan_continuations"}
+LEGACY_TABLES = JOURNAL_TABLES - {"task_attempts"}
+SUPPORTED_TABLES = (TABLES, JOURNAL_TABLES, LEGACY_TABLES)
 from agent.task_attempts import COLUMNS as ATTEMPT_COLUMNS
 COLUMNS = {
     "task_attempts": ATTEMPT_COLUMNS,
+    "plan_continuations": {"decision_id", "plan_id", "failure_count", "created_at"},
     "plans": {"id", "title", "status", "created_at", "updated_at"},
     "plan_steps": {"id", "plan_id", "position", "task_type", "payload", "description", "status", "result", "last_error", "started_at", "completed_at"},
     "tasks": {"id", "task_type", "payload", "status", "attempts", "max_attempts", "run_at", "locked_at", "result", "last_error", "created_at", "updated_at", "plan_step_id"},
@@ -35,7 +38,7 @@ def _validate(db, deadline):
         raise ValueError("Snapshot integrity check failed")
     objects = db.execute("SELECT type,name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
     present = {name for kind,name in objects if kind == "table"}
-    if present not in (TABLES, LEGACY_TABLES):
+    if present not in SUPPORTED_TABLES:
         raise ValueError("Only the general plan and queue database is supported")
     if any(kind not in {"table", "index"} for kind, name in objects):
         raise ValueError("Views and triggers are not supported")
@@ -91,7 +94,27 @@ def _validate(db, deadline):
                 raise ValueError('Snapshot retry reason invalid')
             if row[1]==task[3] and row[8]=='succeeded' and task[4]=='succeeded' and row[12]!=digest(task[5]):
                 raise ValueError('Snapshot result evidence mismatch')
-    return {table: db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0] for table in sorted(TABLES - {"task_attempts"})}
+    if 'plan_continuations' in present:
+        import uuid
+        from datetime import datetime
+        for decision_id,plan_id,count,created_at in db.execute('SELECT decision_id,plan_id,failure_count,created_at FROM plan_continuations'):
+            if time.monotonic()>deadline:
+                raise ValueError('Snapshot validation time limit exceeded')
+            failures=db.execute("SELECT COUNT(*) FROM task_attempts a JOIN plan_steps s ON s.id=a.plan_step_id WHERE s.plan_id=? AND a.status='failed'",(plan_id,)).fetchone()[0]
+            if type(count) is not int or count<5 or count>failures:
+                raise ValueError('Snapshot continuation count invalid')
+            try:
+                if str(uuid.UUID(decision_id))!=decision_id or datetime.fromisoformat(created_at).tzinfo is None:
+                    raise ValueError()
+            except (ValueError,TypeError,AttributeError):
+                raise ValueError('Snapshot continuation metadata invalid') from None
+            if not db.execute('SELECT 1 FROM plans WHERE id=?',(plan_id,)).fetchone():
+                raise ValueError('Snapshot orphan continuation')
+        for plan_id, in db.execute('SELECT DISTINCT plan_id FROM plan_continuations'):
+            counts=[row[0] for row in db.execute('SELECT failure_count FROM plan_continuations WHERE plan_id=? ORDER BY failure_count',(plan_id,))]
+            if any(b-a<5 for a,b in zip([0]+counts,counts)):
+                raise ValueError('Snapshot continuation sequence invalid')
+    return {table: db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0] for table in sorted(LEGACY_TABLES)}
 
 
 def _copy_database(source, destination, *, tables, validate):
@@ -119,7 +142,7 @@ def _copy_database(source, destination, *, tables, validate):
             incoming.execute("PRAGMA trusted_schema=OFF")
             # Reject unrelated namespaces before making a copy.
             names = {row[0] for row in incoming.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-            if names != tables and not (tables == TABLES and names == LEGACY_TABLES):
+            if names != tables and not (tables == TABLES and names in SUPPORTED_TABLES):
                 raise ValueError("Only the general plan and queue database is supported")
             pages = incoming.execute("PRAGMA page_count").fetchone()[0]
             size = incoming.execute("PRAGMA page_size").fetchone()[0]
