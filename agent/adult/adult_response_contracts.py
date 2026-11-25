@@ -108,6 +108,36 @@ class AttemptPage(StrictRequest):
         return self
 
 
+class SkippedApproach(StrictRequest):
+    event_id: ArtifactID
+    created_at: str
+    attempt_id: ArtifactID
+    attempt_no: int = Field(ge=1, le=20)
+    adapter_id: Opaque
+    adapter_version: Opaque
+    provider_id: Opaque | None
+    model_id: ModelID | None
+    tool_id: Opaque | None
+    status: Literal['running','succeeded','failed','rejected','timed_out','unknown_outcome']
+    skipped_as_duplicate: Literal[True]
+
+    @field_validator('created_at')
+    @classmethod
+    def timestamp(cls,value):
+        return TaskSnapshot.timestamp(value)
+
+
+class AttemptHistory(AttemptPage):
+    skipped: list[SkippedApproach] = Field(max_length=20)
+
+    @model_validator(mode='after')
+    def unique_skips(self):
+        ids=[item.event_id for item in self.skipped]
+        if len(ids)!=len(set(ids)):
+            raise ValueError('duplicate_skip_event')
+        return self
+
+
 class ArtifactChunk(StrictRequest):
     artifact_id: ArtifactID
     data_base64: str = Field(max_length=349528, repr=False)
@@ -157,7 +187,7 @@ class Cleanup(StrictRequest):
 
 ExecutionOutcome.model_rebuild()
 RESPONSE_MODELS={'task':TaskSnapshot,'tasks':TaskPage,'attempts':AttemptPage,
-                 'artifact':ArtifactChunk,'execution':ExecutionOutcome}
+                 'artifact':ArtifactChunk,'execution':ExecutionOutcome,'history':AttemptHistory}
 
 
 class ErrorResponse(StrictRequest):
