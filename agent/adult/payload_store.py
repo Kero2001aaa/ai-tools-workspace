@@ -719,6 +719,28 @@ class AdultArtifactStore:
             )
             return PayloadRef(payload_id, task_id, True, expiry)
 
+    def restore_transient_input(self, task_id: str, payload_id: str, data: bytes) -> None:
+        """Restore an absent original input reference, never persist or overwrite.
+
+        The trusted application verifies the task/type/keyed fingerprint first.
+        A byte-identical cached value makes a response-loss retry idempotent.
+        """
+        _validate_task_id(task_id)
+        _validate_payload_id(payload_id)
+        if not isinstance(data, bytes):
+            raise TypeError("Input payload must be bytes.")
+        if len(data) > self.max_input_bytes:
+            raise PayloadTooLarge("Input payload exceeds its configured size limit.")
+        with self._lock:
+            if self._get_record(payload_id) is not None:
+                raise InvalidPayloadReference("Persistent input cannot be restored as transient.")
+            existing = self.cache.get_input(task_id, payload_id)
+            if existing is not None:
+                if not hmac.compare_digest(existing, data):
+                    raise InvalidPayloadReference("Transient input reference already exists.")
+                return
+            self.cache._put_reference(task_id, payload_id, data, kind="input")
+
     def load_input(self, payload_id: str, task_id: str) -> bytes:
         _validate_task_id(task_id)
         _validate_payload_id(payload_id)
