@@ -76,3 +76,14 @@ class ApplicationTests(unittest.TestCase):
         self.assertFalse(last['has_more'])
         for task in ids:app.get_task(task);app.get_attempts(task)
         self.assertEqual(before,(self.root/'tasks.sqlite3').read_bytes())
+
+    def test_cross_task_artifact_reference_is_refused_before_content_read(self):
+        from dataclasses import replace
+        from agent.adult.fixed_free_text_application import task_result_chunk
+        from agent.adult.payload_store import PayloadNotFound
+        app=self.application()
+        with patch.dict('os.environ',{'ADULT_PAYLOAD_ENCRYPTION_KEY':self.key}):
+            task=app.submit_text_task('text.analyze','Safe sample.',retain_payload=True)['task_id']
+        other=app._service.artifacts.save_output('other-task','other-attempt',b'Other private result.','text/plain')
+        forged=replace(self.tasks.get_task(task),status='completed',latest_result_artifact_id=other.artifact_id)
+        with self.assertRaises(PayloadNotFound):task_result_chunk(forged,app._service.artifacts)
