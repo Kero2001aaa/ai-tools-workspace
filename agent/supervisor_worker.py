@@ -12,9 +12,41 @@ MAX_PLAN_CALLS = 1
 MAX_SPECIALIST_CALLS = 3
 MAX_TOTAL_CALLS = MAX_PLAN_CALLS + MAX_SPECIALIST_CALLS
 MAX_WORKFLOW_SECONDS = 150
+MAX_WORKFLOW_INPUT_BYTES = 40000
 MAX_ASSIGNMENT_TASK = 1000
 MAX_REVIEW_CONTEXT = 8000
 ALLOWED_ASSIGNMENT_ROLES = {"research", "coding"}
+
+
+class _SharedModelBudget:
+    """Charge attempted calls and UTF-8 prompt content bytes before delegation.
+
+    Content bytes exclude HTTP serialization, schemas, model output and token
+    accounting. This is an input/call ceiling, not a billing or timeout guard.
+    A failed model call remains charged and is never retried here.
+    """
+    def __init__(self, model):
+        self._model = model
+        self.attempted_calls = 0
+        self.input_bytes = 0
+
+    def invoke(self, messages):
+        if not isinstance(messages, list) or not messages:
+            raise ValueError('supervisor_budget_invalid_messages')
+        size = 0
+        for message in messages:
+            content = getattr(message, 'content', None)
+            if not isinstance(content, str):
+                raise ValueError('supervisor_budget_invalid_messages')
+            try:
+                size += len(content.encode('utf-8'))
+            except UnicodeError:
+                raise ValueError('supervisor_budget_invalid_messages') from None
+        if self.attempted_calls >= MAX_TOTAL_CALLS or self.input_bytes + size > MAX_WORKFLOW_INPUT_BYTES:
+            raise ValueError('supervisor_shared_model_budget_exceeded')
+        self.attempted_calls += 1
+        self.input_bytes += size
+        return self._model.invoke(messages)
 
 
 def _response_text(response):
@@ -117,6 +149,7 @@ def supervise_request(request, context=""):
     if model is None:
         raise RuntimeError("No chat model configured; supervised workflows are unavailable offline.")
 
+    model = _SharedModelBudget(model)
     started = time.monotonic()
     planning_messages = [
         SystemMessage(content=(
@@ -180,6 +213,12 @@ def supervise_request(request, context=""):
         "review": review,
         "model_calls": 1 + len(results) + 1,
         "max_model_calls": MAX_TOTAL_CALLS,
+        "input_budget": {
+            "attempted_calls": model.attempted_calls,
+            "content_utf8_bytes": model.input_bytes,
+            "max_content_utf8_bytes": MAX_WORKFLOW_INPUT_BYTES,
+            "scope": "message_content_only_not_tokens_or_billing",
+        },
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "synthesis": "\n\n".join(sections),
         "limitations": [
@@ -189,5 +228,6 @@ def supervise_request(request, context=""):
             "The workflow does not edit files or execute code.",
             "Review uses explicitly truncated untrusted excerpts, not complete source evidence.",
             "Elapsed checks do not interrupt a blocking model call.",
+            "Shared input bytes exclude transport overhead and outputs; not a token or cost guarantee.",
         ],
     }
