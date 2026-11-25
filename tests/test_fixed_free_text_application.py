@@ -152,3 +152,46 @@ print(json.dumps({'first':first.status,'second':second.status,
             'TEST_ROOT':str(self.root),'TEST_KEY':self.key,'TEST_TASK':task},capture_output=True,text=True,timeout=20)
         self.assertEqual(0,result.returncode,result.stderr)
         self.assertEqual({'first':'needs_input','second':'needs_input','attempts':0},json.loads(result.stdout))
+
+    def test_completed_retained_input_removed_but_task_owned_output_survives(self):
+        from agent.adult.payload_store import PayloadUnavailable
+        app=self.application();self.enable_route(app._service)
+        fake=Mock();fake.invoke.return_value=SimpleNamespace(content='Safe fake output.',usage_metadata={},response_metadata={})
+        with patch.dict('os.environ',{'ADULT_PAYLOAD_ENCRYPTION_KEY':self.key}),patch(
+             'agent.adult.integrations.omniroute_chat.build_chat_model',return_value=fake):
+            task=app.submit_text_task('text.analyze','Private source.',retain_payload=True)['task_id']
+            ref=self.tasks.get_task_request(task).payload_id
+            outcome=app.run_task(task)
+            self.assertEqual('input_removed',outcome['input_cleanup']['status'])
+            with self.assertRaises(PayloadUnavailable):self.artifacts.load_input(ref,task)
+            self.assertEqual(b'Safe fake output.',base64.b64decode(app.get_result_chunk(task)['data_base64']))
+            self.assertEqual('completed',app.run_task(task)['task']['status']);self.assertEqual(1,fake.invoke.call_count)
+
+    def test_cancel_removes_only_input_and_cleanup_failure_cannot_hide_outcome(self):
+        from agent.adult.payload_store import PayloadUnavailable
+        app=self.application()
+        task=app.submit_text_task('text.analyze','Transient private source.')['task_id']
+        ref=self.tasks.get_task_request(task).payload_id
+        output=self.artifacts.save_output(task,'synthetic-attempt',b'Output stays.','text/plain')
+        with patch.object(self.artifacts,'delete_task_inputs',side_effect=OSError('private path')):
+            cancelled=app.cancel_task(task)
+            self.assertEqual('cancelled',cancelled['status'])
+            self.assertEqual('cleanup_failed',cancelled['input_cleanup']['status'])
+            self.assertNotIn('private path',json.dumps(cancelled))
+        result=app.run_task(task)
+        self.assertEqual('cancelled',result['task']['status'])
+        self.assertEqual('input_removed',result['input_cleanup']['status'])
+        with self.assertRaises(PayloadUnavailable):self.artifacts.load_input(ref,task)
+        self.assertEqual(b'Output stays.',self.artifacts.read_chunk(output.artifact_id,0,task_id=task).data)
+
+    def test_failed_completion_cleanup_is_visible_and_retry_does_not_replay(self):
+        app=self.application();self.enable_route(app._service)
+        fake=Mock();fake.invoke.return_value=SimpleNamespace(content='Safe fake output.',usage_metadata={},response_metadata={})
+        with patch('agent.adult.integrations.omniroute_chat.build_chat_model',return_value=fake):
+            task=app.submit_text_task('text.analyze','Transient source.')['task_id']
+            with patch.object(self.artifacts,'delete_task_inputs',side_effect=OSError):
+                outcome=app.run_task(task)
+                self.assertEqual('completed',outcome['task']['status'])
+                self.assertEqual('cleanup_failed',outcome['input_cleanup']['status'])
+            self.assertEqual('input_removed',app.run_task(task)['input_cleanup']['status'])
+            self.assertEqual(1,fake.invoke.call_count)
