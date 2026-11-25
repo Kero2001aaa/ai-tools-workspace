@@ -770,9 +770,12 @@ class AdultArtifactStore:
             return ArtifactRef(artifact_id, task_id, mime_type, len(data), True, expiry)
 
     def read_chunk(
-        self, artifact_id: str, offset: int, max_bytes: int = _DEFAULT_CHUNK_BYTES
+        self, artifact_id: str, offset: int, max_bytes: int = _DEFAULT_CHUNK_BYTES,
+        *, task_id: str | None = None,
     ) -> ArtifactChunk:
         _validate_payload_id(artifact_id)
+        if task_id is not None:
+            _validate_task_id(task_id)
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ValueError("offset must be a non-negative integer.")
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or not 1 <= max_bytes <= _DEFAULT_CHUNK_BYTES:
@@ -784,8 +787,10 @@ class AdultArtifactStore:
                 if transient_info is None:
                     raise PayloadNotFound("Artifact is unavailable.")
                 self._transient_artifacts.move_to_end(artifact_id)
-                task_id, mime_type, expected_size, _attempt_id = transient_info
-                data = self.cache.get(task_id, artifact_id)
+                stored_task_id, mime_type, expected_size, _attempt_id = transient_info
+                if task_id is not None and stored_task_id != task_id:
+                    raise PayloadNotFound("Artifact does not belong to this task.")
+                data = self.cache.get(stored_task_id, artifact_id)
                 if data is None:
                     self._transient_artifacts.pop(artifact_id, None)
                     raise PayloadUnavailable("Transient artifact is no longer available.")
@@ -794,6 +799,8 @@ class AdultArtifactStore:
             else:
                 if record["kind"] != "output":
                     raise PayloadNotFound("Artifact is unavailable.")
+                if task_id is not None and record["task_id"] != task_id:
+                    raise PayloadNotFound("Artifact does not belong to this task.")
                 if _parse_utc(str(record["expires_at"])) <= self._now():
                     raise PayloadExpired("Artifact retention has expired.")
                 self._verify_record_key(record)
