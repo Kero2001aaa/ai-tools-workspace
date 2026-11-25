@@ -470,6 +470,42 @@ class ModelCapabilityRegistry:
             )
         return self.get(capability_id)
 
+    def current_text_route_in_transaction(self, db, route: RouteCandidate, now: str) -> bool:
+        """Check an exact text candidate inside the caller's attempt transaction.
+
+        Internal fixed-service dispatch hook, not a registry management API.
+        The caller must hold this store's BEGIN IMMEDIATE transaction. This
+        fences changes before attempt commitment, not revocation after dispatch.
+        """
+        if not db.in_transaction or route.task_type not in {'text.analyze','text.generate','text.rewrite'}:
+            return False
+        rows = db.execute("""SELECT * FROM adult_model_capabilities WHERE
+            adapter_id=? AND adapter_version=? AND provider_id IS ? AND model_id IS ?
+            AND task_type=?""", (route.adapter_id,route.adapter_version,route.provider_id,
+                                  route.model_id,route.task_type)).fetchall()
+        if len(rows) != 1:
+            return False
+        row = rows[0]
+        capability = _to_capability(row)
+        spec = capability.spec
+        if (not capability.enabled or capability.verification_status != 'verified'
+                or capability.evidence is None or spec.cost_class != route.cost_class
+                or capability.capability_version != route.capability_version
+                or row['capability_verified_at'] != route.verified_at
+                or spec.model_version != route.model_version
+                or route.tool_id is not None or route.tool_version is not None
+                or 'text' not in spec.input_modalities or 'text' not in spec.output_modalities):
+            return False
+        instant = _parse_utc(now)
+        if (row['capability_verified_at'] is None or row['capability_expires_at'] is None
+                or not _parse_utc(row['capability_verified_at']) <= instant < _parse_utc(row['capability_expires_at'])):
+            return False
+        if spec.cost_class == 'free_verified':
+            return (capability.evidence.cost_is_zero is True
+                    and row['cost_verified_at'] is not None and row['cost_expires_at'] is not None
+                    and _parse_utc(row['cost_verified_at']) <= instant < _parse_utc(row['cost_expires_at']))
+        return spec.cost_class == 'local'
+
     def list_eligible(
         self, query: CapabilityQuery, cost_policy: CostPolicy,
     ) -> list[RouteCandidate]:
