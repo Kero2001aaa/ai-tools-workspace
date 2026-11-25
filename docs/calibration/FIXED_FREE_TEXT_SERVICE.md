@@ -42,3 +42,13 @@ roundtrip, missing/disabled/wrong-model no-call, fixed endpoint and explicit bud
 wrong-key state preservation, and rejection of multi-attempt requests. Synthetic
 URLs are test fixtures, not source evidence or production certification. No live
 provider request was made. No live AI, image generation or installation is claimed.
+
+The fixed service now injects an optional internal route validator into the
+existing attempt tracker. It revalidates the exact candidate against its current
+registry row within the same BEGIN IMMEDIATE transaction as attempt creation:
+enabled/verified state, contract/evidence version, task/model identity, text
+modalities, capability expiry and zero-cost evidence expiry. A disable that lands
+between selection and attempt creation produces zero attempts and provider calls.
+The default tracker path stays compatible for existing explicit callers. This
+fences pre-commit revocation, not changes after an attempt is committed or a call
+is in flight. It does not certify availability or alter the transport policy.
