@@ -59,3 +59,9 @@ explicit boolean and defaults to ephemeral process-local input. Missing ephemera
 input on a checkpointed task yields needs_input with zero attempts. The configured
 service fingerprint/output key is still required. No replacement resume or MCP
 registration is included in this slice.
+
+Segment limits are validated before loading input or changing task state. Exactly
+one integer attempt is accepted, not float/bool lookalikes. max_seconds must be an
+integer from 1 to 240. An invalid segment cannot turn a missing ephemeral input
+into needs_input or create a lease. Adapter timeouts remain separate from this
+between-call segment bound; no hard interruption claim is made.
