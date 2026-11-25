@@ -31,9 +31,10 @@ the executor re-derives it again before any attempt.
 ## Additive contract
 
 1. `AdultImageExecutor.create` validates content per task type
-   (`image.analyze`: image only; `image.generate`: prompt only; `image.edit`:
-   both) through the existing validator and prompt encoder, then creates the
-   task with the content-bound fingerprint. Invalid input creates no task.
+   (`image.analyze`: image plus an optional prompt; `image.generate`: prompt
+   only; `image.edit`: both) through the existing validator and prompt encoder,
+   then creates the task with the content-bound fingerprint. Invalid input
+   creates no task.
 2. `AdultImageIntake.attach` under a claimed lease validates content and
    fingerprint, stores image/prompt/envelope inputs with the task's retention
    policy, reads each back through the task-owned input path, and attaches the
