@@ -66,7 +66,7 @@ def _validate(db, deadline):
     return {table: db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0] for table in sorted(TABLES)}
 
 
-def copy_database(source, destination):
+def _copy_database(source, destination, *, tables, validate):
     """Create a validated private copy at a NEW path, without modifying source.
 
     The destination is published atomically only after validation. Both backup
@@ -91,7 +91,7 @@ def copy_database(source, destination):
             incoming.execute("PRAGMA trusted_schema=OFF")
             # Reject unrelated namespaces before making a copy.
             names = {row[0] for row in incoming.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-            if names != TABLES:
+            if names != tables:
                 raise ValueError("Only the general plan and queue database is supported")
             pages = incoming.execute("PRAGMA page_count").fetchone()[0]
             size = incoming.execute("PRAGMA page_size").fetchone()[0]
@@ -104,7 +104,7 @@ def copy_database(source, destination):
             incoming.backup(outgoing, pages=128, progress=progress, sleep=0.01)
             outgoing.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
             outgoing.execute("PRAGMA trusted_schema=OFF")
-            counts = _validate(outgoing, deadline)
+            counts = validate(outgoing, deadline)
         if temporary.stat().st_size > MAX_BYTES:
             raise ValueError("Snapshot exceeds size limit")
         os.chmod(temporary, 0o600)
@@ -122,6 +122,11 @@ def copy_database(source, destination):
                 "workers_started": False, "states_rewritten": False}
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def copy_database(source, destination):
+    """Copy only the general plan/queue database with its fixed validator."""
+    return _copy_database(source, destination, tables=TABLES, validate=_validate)
 
 
 def main():
