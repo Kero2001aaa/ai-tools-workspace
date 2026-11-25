@@ -54,3 +54,12 @@ task or discard its result, and terminal reruns do not rebuild a proposal. Zero-
 call pauses do not build one. Only the existing fixed generic lesson templates
 qualify. Publication is never part of this hook and still requires a separate
 explicit call. No integration installation, retry or background job is triggered.
+
+Task-owned result reads now pass an explicit expected task ID to the existing
+artifact store. Persistent and transient output ownership is checked under its
+lock before decryption or cache access. A corrupted or forged task-to-artifact
+pointer cannot read another task's output. The optional low-level owner argument
+preserves existing trusted library callers; the application/CLI boundary always
+supplies it. Regression tests exercise both storage modes and reject a cross-task
+pointer before any plaintext read. This is boundary hardening, not evidence of an
+observed external attack or previous disclosure.
