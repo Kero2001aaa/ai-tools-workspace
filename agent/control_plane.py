@@ -197,7 +197,7 @@ button{background:#26384c;color:#fff;border:0;padding:9px 13px;border-radius:8px
 <input id="control-token" type="password" autocomplete="off" placeholder="Control token" style="width:min(100%,420px);box-sizing:border-box;padding:10px">
 <button onclick="load().catch(showLoadError)">Load private data</button></section>
 <div class="grid">
-<section class="card"><h2>Workspace</h2><div class="value" id="state">Loading</div><p id="runtime" class="muted"></p></section>
+<section class="card"><h2>Workspace monitoring</h2><div class="value" id="state">Loading</div><p id="runtime" class="muted"></p></section>
 <section class="card"><h2>Memory records</h2><div class="value" id="memories">—</div></section>
 <section class="card"><h2>Task records</h2><div class="value" id="tasks">—</div></section>
 </div>
@@ -310,6 +310,10 @@ async function loadSavedReport(){
   lines.push('Verification: '+result.verification);
   lines.push(...result.limitations);
   output.textContent=lines.join('\\n');
+  if(document.getElementById('state').textContent.startsWith('Locked')){
+   document.getElementById('state').textContent='Not loaded';
+   document.getElementById('runtime').textContent='Saved report authenticated. Load monitoring separately.';
+  }
  }catch(error){if(current())output.textContent='Saved report unavailable. Check IDs, token and completed state.';}
 }
 async function controlPost(path,body){

@@ -21,7 +21,8 @@ const ok=()=>({ok:true,json:async()=>sample});
         checks='''
 (async()=>{
  document.getElementById('control-token').value='token';document.getElementById('report-plan').value='plan';document.getElementById('report-step').value='step';
- let call=loadSavedReport();pending.shift()(ok());await call;assert.match(document.getElementById('saved-report').textContent,/<img src=x>/);
+ document.getElementById('state').textContent='Locked';
+ let call=loadSavedReport();pending.shift()(ok());await call;assert.match(document.getElementById('saved-report').textContent,/<img src=x>/);assert.equal('Not loaded',document.getElementById('state').textContent);assert.match(document.getElementById('runtime').textContent,/Saved report authenticated/);
  call=loadSavedReport();clearPrivateData();pending.shift()(ok());await call;assert.equal(document.getElementById('saved-report').textContent,'');
  const old=loadSavedReport();document.getElementById('report-step').value='new';clearSavedReport();const recent=loadSavedReport();
  const oldResolve=pending.shift();pending.shift()(ok());await recent;const text=document.getElementById('saved-report').textContent;
