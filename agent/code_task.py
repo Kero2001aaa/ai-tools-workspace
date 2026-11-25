@@ -54,6 +54,14 @@ def configured_context():
     return config, digest
 
 
+def _close_input(file):
+    if file is not None:
+        try:
+            file.close()
+        except OSError:
+            pass
+
+
 def execute_code_report(payload):
     validate_payload(payload)
     config, digest = configured_context()
@@ -68,14 +76,21 @@ def execute_code_report(payload):
     request = json.dumps(context, ensure_ascii=False).encode('utf-8')
     if len(request) > 32768:
         raise ValueError('code_task_config_invalid')
-    input_file = tempfile.TemporaryFile()
-    input_file.write(request);input_file.seek(0)
+    input_file = None
+    try:
+        input_file = tempfile.TemporaryFile()
+        input_file.write(request)
+        input_file.seek(0)
+    except OSError:
+        if input_file is not None:
+            _close_input(input_file)
+        raise ValueError('code_task_read_failed') from None
     try:
         process = subprocess.Popen([sys.executable, '-c', program], stdin=input_file,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=package,
             env={'PATH': os.environ.get('PATH', ''), 'PYTHONPATH': package, 'PYTHONIOENCODING': 'utf-8'})
     except OSError:
-        input_file.close()
+        _close_input(input_file)
         raise ValueError('code_task_read_failed') from None
     output = bytearray();deadline = time.monotonic() + 5
     try:
@@ -108,4 +123,4 @@ def execute_code_report(payload):
             process.kill()
         process.wait()
         process.stdout.close()
-        input_file.close()
+        _close_input(input_file)

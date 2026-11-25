@@ -144,3 +144,30 @@ class CodeTaskTests(unittest.TestCase):
         self.assertEqual(1, task['attempts'])
         store.supervise(plan['id'])
         self.assertEqual(1, store.queue.get(task['id'])['attempts'])
+
+    def test_temp_input_create_write_seek_failures_sanitized_and_closed(self):
+        from unittest.mock import MagicMock
+        with patch('agent.code_task.tempfile.TemporaryFile', side_effect=OSError('synthetic private path')):
+            with self.assertRaisesRegex(ValueError, '^code_task_read_failed$'):
+                execute_code_report(self.payload)
+        for operation in ('write', 'seek'):
+            temporary = MagicMock()
+            getattr(temporary, operation).side_effect = OSError('synthetic private path')
+            with patch('agent.code_task.tempfile.TemporaryFile', return_value=temporary):
+                with self.subTest(operation=operation), self.assertRaisesRegex(ValueError, '^code_task_read_failed$'):
+                    execute_code_report(self.payload)
+            temporary.close.assert_called_once()
+
+    def test_temp_cleanup_error_does_not_replace_stable_failure(self):
+        from unittest.mock import MagicMock
+        temporary = MagicMock()
+        temporary.write.side_effect = OSError('synthetic write path')
+        temporary.close.side_effect = OSError('synthetic cleanup path')
+        with patch('agent.code_task.tempfile.TemporaryFile', return_value=temporary):
+            with self.assertRaisesRegex(ValueError, '^code_task_read_failed$'):
+                execute_code_report(self.payload)
+        temporary = MagicMock()
+        temporary.close.side_effect = OSError('synthetic cleanup path')
+        with patch('agent.code_task.tempfile.TemporaryFile', return_value=temporary), patch('agent.code_task.subprocess.Popen', side_effect=OSError('synthetic launch path')):
+            with self.assertRaisesRegex(ValueError, '^code_task_read_failed$'):
+                execute_code_report(self.payload)
