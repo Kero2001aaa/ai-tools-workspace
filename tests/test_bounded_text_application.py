@@ -69,3 +69,56 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual('paused',app.run_task(task)['task']['status'])
         with self.assertRaises(ValueError):app.resume_task(task,'continue')
         self.assertEqual(0,self.tasks.get_task(task).attempt_count)
+
+    def test_process_cache_loss_moves_needs_input_and_exact_restore_runs_once(self):
+        from agent.adult.payload_store import AdultArtifactStore
+        app=self.app(1);task=app.submit_text_task('text.analyze','Safe original.')['task_id']
+        # A fresh artifact store models a new process with no transient bytes.
+        reopened=AdultArtifactStore(self.root/'artifacts',cipher=self.cipher)
+        self.executor.intake.artifacts=reopened;self.pipeline._artifact_store=reopened
+        app=BoundedTextApplication(self.executor,fixtures.CONFIG,budget=TaskBudget())
+        outcome=app.run_task(task)
+        self.assertEqual('needs_input',outcome['task']['status'])
+        self.assertEqual(0,self.adapters[0].calls)
+        self.assertEqual(0,self.tasks.get_task(task).attempt_count)
+        with self.assertRaises(ValueError):app.restore_input_and_resume(task,'Changed input.')
+        self.assertEqual('needs_input',self.tasks.get_task(task).status)
+        result=app.restore_input_and_resume(task,'Safe original.',max_attempts=1)
+        self.assertEqual('completed',result['task']['status'])
+        self.assertEqual(1,self.adapters[0].calls)
+        self.assertEqual('input_removed',result['input_cleanup']['status'])
+
+    def test_actual_new_process_reports_missing_ephemeral_input_without_attempt(self):
+        import os,subprocess,sys
+        self.app(1)
+        code="""
+import json,os
+from pathlib import Path
+from agent.adult.adult_task_store import AdultTaskStore
+from agent.adult.payload_store import AdultArtifactStore,PayloadCipher
+from agent.adult.fixed_free_text_service import FixedFreeTextService
+from agent.adult.integrations.omniroute_chat import AdultOmniRouteConfig
+from agent.adult.models import TaskBudget
+root=Path(os.environ['TEST_ROOT']);cipher=PayloadCipher(os.environ['TEST_KEY'])
+service=FixedFreeTextService(AdultTaskStore(root/'tasks.sqlite3'),
+ AdultArtifactStore(root/'artifacts',cipher=cipher),cipher,
+ AdultOmniRouteConfig('https://openrouter.ai/api/v1','synthetic-offline-only'))
+request=service.tasks.get_task_request(os.environ['TEST_TASK'])
+executor=service._executor('text.analyze',request.input_fingerprint,TaskBudget())
+result=executor.run(os.environ['TEST_TASK'],None,'hmac-sha256:abcdef0123456789abcdef0123456789')
+print(json.dumps({'status':result.status,'attempts':service.tasks.get_task(result.task_id).attempt_count}))
+"""
+        import base64
+        # Fixture cipher cannot expose its key; build a second task with known test key.
+        from agent.adult.payload_store import PayloadCipher,AdultArtifactStore
+        import secrets
+        key=base64.urlsafe_b64encode(secrets.token_bytes(32)).decode();cipher=PayloadCipher(key)
+        self.executor.fingerprinter=cipher;self.executor.intake.fingerprinter=cipher
+        store=AdultArtifactStore(self.root/'artifacts',cipher=cipher)
+        self.executor.intake.artifacts=store;self.pipeline._artifact_store=store
+        app=BoundedTextApplication(self.executor,fixtures.CONFIG,budget=TaskBudget())
+        task=app.submit_text_task('text.analyze','Private process source.')['task_id']
+        result=subprocess.run([sys.executable,'-c',code],env={**os.environ,'TEST_ROOT':str(self.root),
+            'TEST_KEY':key,'TEST_TASK':task},capture_output=True,text=True,timeout=20)
+        self.assertEqual(0,result.returncode,result.stderr)
+        self.assertEqual({'status':'needs_input','attempts':0},json.loads(result.stdout))
