@@ -131,6 +131,7 @@ class ArtifactChunk:
     mime_type: str
     next_offset: int
     eof: bool
+    sha256: str | None = None
 
 
 def _validate_task_id(task_id: str) -> None:
@@ -793,9 +794,11 @@ class AdultArtifactStore:
 
     def read_chunk(
         self, artifact_id: str, offset: int, max_bytes: int = _DEFAULT_CHUNK_BYTES,
-        *, task_id: str | None = None,
+        *, task_id: str | None = None, include_digest: bool = False,
     ) -> ArtifactChunk:
         _validate_payload_id(artifact_id)
+        if type(include_digest) is not bool:
+            raise ValueError("include_digest must be a boolean.")
         if task_id is not None:
             _validate_task_id(task_id)
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -842,6 +845,7 @@ class AdultArtifactStore:
             return ArtifactChunk(
                 artifact_id, offset, chunk, len(data), mime_type,
                 next_offset, next_offset >= len(data),
+                hashlib.sha256(data).hexdigest() if include_digest else None,
             )
 
     def discard_output(self, artifact_id: str, task_id: str, attempt_id: str) -> bool:
