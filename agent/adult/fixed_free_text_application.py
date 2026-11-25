@@ -30,14 +30,8 @@ class FixedFreeTextApplication:
     def _snapshot(task):
         if task is None or task.task_type not in {'text.analyze', 'text.generate', 'text.rewrite'}:
             raise ValueError('text_task_unavailable')
-        return {'task_id': task.task_id, 'task_type': task.task_type, 'status': task.status,
-            'created_at': task.created_at, 'updated_at': task.updated_at,
-            'deadline_at': task.deadline_at, 'attempt_count': task.attempt_count,
-            'provider_calls': task.provider_calls, 'current_step_id': task.current_step_id,
-            'selected_adapter': task.selected_adapter, 'selected_provider': task.selected_provider,
-            'selected_model': task.selected_model, 'selected_tool': task.selected_tool,
-            'latest_result_artifact_id': task.latest_result_artifact_id,
-            'last_error_code': task.last_error_code, 'user_action_required': task.user_action_required}
+        from agent.adult.safe_task_views import task_snapshot
+        return task_snapshot(task)
 
     def _task(self, task_id):
         task = self._service.tasks.get_task(task_id)
