@@ -108,8 +108,10 @@ class FixedFreeTextService:
 
     def run(self, task_id: str, *, max_attempts=1, max_seconds=120):
         # Provider availability/rate-limit recovery is external, never a loop.
-        if isinstance(max_attempts, bool) or max_attempts != 1:
+        if type(max_attempts) is not int or max_attempts != 1:
             raise ValueError('fixed_free_single_attempt_only')
+        if type(max_seconds) is not int or not 1 <= max_seconds <= 240:
+            raise ValueError('invalid_segment_seconds')
         task = self.tasks.get_task(task_id)
         if task is None or task.task_type not in {'text.analyze', 'text.generate', 'text.rewrite'}:
             raise ValueError('text_task_unavailable')
