@@ -73,6 +73,10 @@ class FixedFreeTextApplication:
                                           'error_code': 'private_feedback_unavailable'}
         return result
 
+    def restore_input_and_run(self, task_id: str, text: str, instruction: str = '', *, max_seconds=120):
+        outcome = self._service.restore_input_and_run(task_id, text, instruction, max_seconds=max_seconds)
+        return {'task': self.get_task(task_id), 'error_code': outcome.error_code}
+
     def get_task(self, task_id: str):
         return self._snapshot(self._task(task_id))
 
