@@ -30,8 +30,11 @@ behavior could replay them after restore. Reconcile or finish them before backup
 Completed outputs and durable queue identities survive. A running task whose
 outcome is unknown stays running and needs reconciliation. This operation does
 not pretend it is safe to retry unknown work. Known failed tasks remain paused
-until the existing explicit retry path is used. Only the two existing read-only
-workers are supported; this feature grants no new execution authority.
+until the existing explicit retry path is used. Only the existing read-only
+workspace_status, memory_recent and explicitly configured local_code_report workers are supported; local_code_report requires
+the trusted operator source allowlist and matching configuration digest before
+new execution. Saved completed results can be restored without reopening source.
+This feature grants no new execution or file-disclosure authority.
 
 For a real recovery drill: checkpoint a two-step plan; back it up; restore to a
 new clean path; reopen PlanStore at that path; run the remaining step; confirm

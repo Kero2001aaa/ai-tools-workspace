@@ -9,7 +9,10 @@ stable UUIDv5 execution task ID derived from its existing step ID. Binding occur
 inside the plan transaction before dispatch; retries/restarts never mint a second
 identity. Existing completed plan steps and their outputs are not rewritten.
 
-Only workspace_status and memory_recent remain allowed. The plan's strict
+Only workspace_status, memory_recent and explicitly configured local_code_report
+are allowed. New local code report execution requires its trusted operator source allowlist
+and matching configuration digest; queue binding grants no filesystem scope.
+The plan's strict
 operation-specific payload validator is reused before binding. Worker receives
 the actual queue task, including its task ID and owning step ID. Queue output is
 committed first and projected into the plan step. A restart after output commit
