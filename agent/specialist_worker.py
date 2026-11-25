@@ -51,5 +51,9 @@ def run_specialist(specialist, task, context="", model=None):
     response = model.invoke(messages)
     content = getattr(response, "content", response)
     if not isinstance(content, str):
-        content = str(content)
+        raise ValueError("specialist_response_invalid")
+    try:
+        content.encode("utf-8")
+    except UnicodeError:
+        raise ValueError("specialist_response_invalid") from None
     return {"specialist": specialist, "analysis": content[:12000], "truncated": len(content) > 12000}
