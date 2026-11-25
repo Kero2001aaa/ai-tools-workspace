@@ -33,7 +33,7 @@ class ResponseContractTests(unittest.TestCase):
             elif isinstance(value,list):
                 for child in value:visit(child)
         visit(response_schemas())
-        schemas=response_schemas();schemas.clear();self.assertEqual(6,len(response_schemas()))
+        schemas=response_schemas();schemas.clear();self.assertEqual(7,len(response_schemas()))
 
     def test_unknown_payload_secret_and_path_fields_rejected_not_dropped(self):
         app,task,artifact,access=self.completed();safe=app.get_task(task)
