@@ -9,6 +9,23 @@ DEFAULT_DB = Path(".data") / "tasks.sqlite3"
 ALLOWED_TASK_TYPES = {"workspace_status", "memory_recent", "local_code_report"}
 
 
+def validate_task_payload(task_type, payload):
+    """One explicit payload contract before persistence and before dispatch."""
+    if not isinstance(task_type, str) or task_type not in ALLOWED_TASK_TYPES:
+        raise ValueError("Unsupported task type")
+    if not isinstance(payload, dict):
+        raise ValueError("Task payload must be a JSON object")
+    if task_type == "workspace_status" and payload:
+        raise ValueError("workspace_status does not accept a payload")
+    if task_type == "memory_recent":
+        limit = payload.get("limit", 5)
+        if set(payload) - {"limit"} or type(limit) is not int or not 1 <= limit <= 20:
+            raise ValueError("memory_recent accepts only an integer limit from 1 to 20")
+    if task_type == "local_code_report":
+        from agent.code_task import validate_payload
+        validate_payload(payload)
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -54,16 +71,10 @@ class TaskQueue:
         return db
 
     def enqueue(self, task_type, payload=None, *, run_at=None, max_attempts=3):
-        if task_type not in ALLOWED_TASK_TYPES:
-            raise ValueError(f"Unsupported task type: {task_type}")
-        if not 1 <= max_attempts <= 10:
-            raise ValueError("max_attempts must be between 1 and 10")
-        data = payload or {}
-        if not isinstance(data, dict):
-            raise ValueError("Task payload must be a JSON object")
-        if task_type == "local_code_report":
-            from agent.code_task import validate_payload
-            validate_payload(data)
+        if type(max_attempts) is not int or not 1 <= max_attempts <= 10:
+            raise ValueError("max_attempts must be an integer between 1 and 10")
+        data = {} if payload is None else payload
+        validate_task_payload(task_type, data)
         encoded = json.dumps(data, separators=(",", ":"), sort_keys=True)
         if len(encoded) > 4000:
             raise ValueError("Task payload must be 4,000 characters or fewer")

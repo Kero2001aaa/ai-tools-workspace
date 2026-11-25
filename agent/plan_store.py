@@ -27,20 +27,9 @@ def _validate_step(step):
     if not isinstance(step, dict) or set(step) - {"task_type", "payload", "description"}:
         raise ValueError("Each step must contain only task_type, payload, and description")
     task_type = step.get("task_type")
-    if task_type not in ALLOWED_TASK_TYPES:
-        raise ValueError(f"Unsupported plan task type: {task_type}")
     payload = step.get("payload", {})
-    if not isinstance(payload, dict):
-        raise ValueError("Step payload must be a JSON object")
-    if task_type == "workspace_status" and payload:
-        raise ValueError("workspace_status does not accept a payload")
-    if task_type == "memory_recent":
-        limit = payload.get("limit", 5)
-        if set(payload) - {"limit"} or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
-            raise ValueError("memory_recent accepts only an integer limit from 1 to 20")
-    if task_type == "local_code_report":
-        from agent.code_task import validate_payload
-        validate_payload(payload)
+    from agent.task_queue import validate_task_payload
+    validate_task_payload(task_type, payload)
     description = step.get("description", task_type)
     if not isinstance(description, str) or not description.strip() or len(description) > MAX_DESCRIPTION:
         raise ValueError(f"Step description must be 1 to {MAX_DESCRIPTION} characters")
