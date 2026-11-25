@@ -18,7 +18,7 @@ from agent.adult.integrations.protocols import (
 from agent.adult.models import (
     AdultModelValidationError, AdultTaskRequest, AdultTaskSnapshot,
     CapabilityQuery, CostPolicy, EvaluationResult, PolicyDecision,
-    RouteCandidate, StepRecord,
+    RouteCandidate, StepRecord, TaskLease,
 )
 from agent.adult.payload_store import AdultArtifactStore, ArtifactRef
 
@@ -162,6 +162,7 @@ class AdultImagePipeline:
         task_request: AdultTaskRequest,
         config_fingerprint: str,
         excluded_approach_keys: set[str],
+        *, lease: TaskLease | None = None,
     ) -> ImagePipelineOutcome:
         """Execute no more than one adapter call; the caller retains lease ownership."""
         if not isinstance(task, AdultTaskSnapshot) or not isinstance(task_request, AdultTaskRequest):
@@ -261,6 +262,7 @@ class AdultImagePipeline:
         try:
             handle = self._attempt_tracker.begin(
                 task.task_id, step_id, route, task_request.input_fingerprint, config_fingerprint,
+                **({"lease": lease} if lease is not None else {}),
             )
         except Exception:
             return self._outcome(task, step_id, "unavailable", "ATTEMPT_UNAVAILABLE", route)
