@@ -62,13 +62,19 @@ class AdultTextExecutor:
 
     def stage_encrypted(self, task_type: str, canonical_input: bytes,
                         budget: TaskBudget | None = None, *, worker_id="text-intake-worker") -> TextExecutionResult:
-        """Persist input/checkpoint and yield without selecting or invoking a model.
+        """Compatibility entry point for explicit encrypted durable staging."""
+        return self.stage(task_type, canonical_input, budget,
+                          retention_policy="encrypted", worker_id=worker_id)
 
-        Requires the caller's configured key. No generated persistent secret,
-        replacement input or implicit resume. The existing wall deadline starts
-        at creation and is not reset by staging or reopening.
+    def stage(self, task_type: str, canonical_input: bytes,
+              budget: TaskBudget | None = None, *, retention_policy="ephemeral",
+              worker_id="text-intake-worker") -> TextExecutionResult:
+        """Attach bounded input and checkpoint without selecting or calling a model.
+
+        Ephemeral input uses the existing process-local cache only. Encrypted
+        retention requires the caller's configured key before task creation.
         """
-        task = self.create(task_type, canonical_input, budget, retention_policy="encrypted")
+        task = self.create(task_type, canonical_input, budget, retention_policy=retention_policy)
         lease = self.tasks.claim_task(task.task_id, worker_id, lease_seconds=300)
         try:
             task = self.tasks.get_task(task.task_id)
